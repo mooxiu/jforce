@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <iostream>
 #include <ostream>
+#include <regex>
 #include <string>
 
 // Source - https://stackoverflow.com/a
@@ -31,8 +32,12 @@ auto addition_op_gen = [](int size) {
 };
 
 void execute_stableHLO(std::string stableHLO_func, char** args) {
-    std::cout << "stableHLO func: " << std::endl;
-    std::cout << stableHLO_func << std::endl;
+    static const std::regex addition_op_regexp(R"(stablehlo.add)");
+    if (std::regex_match(stableHLO_func, addition_op_regexp)) {
+        std::cout << "This is a addition operation" << std::endl;
+    } else {
+        std::cout << "other operations" << std::endl;
+    }
 }
 
 extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
