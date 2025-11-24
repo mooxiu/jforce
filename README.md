@@ -1,7 +1,9 @@
 # XLA_GLUE
 
 ## Compile
-```sh
-cd build
 
+```sh
+mkdir build && cd build
+cmake -G Ninja ./..
+ninja
 ```
