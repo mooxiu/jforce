@@ -19,8 +19,15 @@ def main():
   _N: int = 409600
   x = jnp.zeros(_N, dtype=jnp.float32)
   y = jnp.zeros(_N, dtype=jnp.float32)
-  stablehlo_axpy = export.export(addition)(x, y).mlir_module()
-  print(get_stablehlo_asm(stablehlo_axpy))
+  addition_op = export.export(addition)(x, y).mlir_module()
+
+  print("-" * 20)
+  print("stableHLO: ")
+  print(get_stablehlo_asm(addition_op))
+
+  print("-" * 20)
+  print("hlo: ")
+  print(addition.lower(x, y).compiler_ir(dialect="hlo").as_hlo_text())
   
 
 
