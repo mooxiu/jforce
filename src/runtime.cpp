@@ -70,7 +70,7 @@ auto addition_op_gen = [](int size) {
 //     }
 // }
 
-std::string get_err_msg(PJRT_Api* api, PJRT_Error* err) {
+std::string get_err_msg(const PJRT_Api* api, PJRT_Error* err) {
     PJRT_Error_GetCode_Args code_args = {};
     code_args.struct_size = PJRT_Error_GetCode_Args_STRUCT_SIZE;
     code_args.error = err;
@@ -108,7 +108,7 @@ PJRT_Api* extract_api() {
     return api;
 }
 
-PJRT_Client* create_client(PJRT_Api* api) {
+PJRT_Client* create_client(const PJRT_Api* api) {
     PJRT_Client_Create_Args args = {};
     args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
     PJRT_Error* error = api->PJRT_Client_Create(&args);
@@ -121,7 +121,7 @@ PJRT_Client* create_client(PJRT_Api* api) {
 }
 
 PJRT_LoadedExecutable* compile_mlir(
-    PJRT_Api* api, PJRT_Client* client, std::string func_code) {
+    const PJRT_Api* api, PJRT_Client* client, const std::string& func_code) {
     // TODO: why not use `PJRT_Compile` rather than `PJRT_Client_Compile`?
     PJRT_Client_Compile_Args compile_args = {};
     compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
@@ -129,8 +129,6 @@ PJRT_LoadedExecutable* compile_mlir(
     PJRT_Program program = {};
     program.struct_size = PJRT_Program_STRUCT_SIZE;
     std::string format = "mlir";
-    // program.code = (char *) func_code.c_str();
-    // program.code_size = func_code.size();
     std::cout << "[DEBUG] The code is : " << func_code << std::endl; 
     // We have to set as mlir here as we're passing MLIR module string rather than serialized HLOModuleProto
     program.code = (char*) func_code.c_str();
@@ -154,8 +152,8 @@ PJRT_LoadedExecutable* compile_mlir(
     // 序列化
     std::string buf;
     if (!opts.SerializeToString(&buf)) {
-        // 这里你自己决定怎么报错
-        throw std::runtime_error("failed to serialize CompileOptionsProto");
+        std::cerr << "Faile to serialize CompileOptionsProto" << std::endl;
+        return nullptr;
     }
     compile_args.compile_options = (char *)buf.c_str();
     compile_args.compile_options_size = (size_t)buf.size();
@@ -171,6 +169,38 @@ PJRT_LoadedExecutable* compile_mlir(
     return compile_args.executable;
 }
 
+void execute_kernel(const PJRT_Api* api, PJRT_LoadedExecutable* exe) {
+    PJRT_LoadedExecutable_Execute_Args leeas = {};
+    leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
+    // function and args 
+    leeas.executable = exe;
+    leeas.num_args = 0;
+    // leeas.argument_lists = 
+    // leeas.output_lists = 
+    leeas.num_devices = 1;
+
+    std::cout << "checkpoint" << std::endl;
+
+    PJRT_Error* error;
+    error = api->PJRT_LoadedExecutable_Execute(&leeas);
+    if (error) {
+        std::cerr << "[ERR] fail to execute" << get_err_msg(api, error) << std::endl;
+        return;
+    }
+    std::cout << "[LOG] execute successfully" << std::endl;
+
+
+    // TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
+    PJRT_LoadedExecutable_Destroy_Args ledargs;
+    ledargs.executable = exe; 
+    error = api->PJRT_LoadedExecutable_Destroy(&ledargs);
+    if (error) {
+        // TODO: 
+        return;
+    }
+}
+
+
 void check_null(void* ptr) {
     if (!ptr) {
        exit(1); 
@@ -178,7 +208,7 @@ void check_null(void* ptr) {
     return;
 }
 
-void execute(std::string func_code) {
+void ExecuteMLIR(std::string func_code) {
     auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
         std::cerr << "error loading plugin: " << dlerror() << std::endl;
@@ -199,27 +229,7 @@ void execute(std::string func_code) {
     auto exe = compile_mlir(api, client, func_code);
     check_null(exe);
 
-    PJRT_LoadedExecutable_Execute_Args leeas = {};
-    leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
-    leeas.executable = exe;
-
-    PJRT_Error* error;
-    error = api->PJRT_LoadedExecutable_Execute(&leeas);
-    if (error) {
-        std::cerr << "[ERR] fail to execute" << get_err_msg(api, error) << std::endl;
-        return;
-    }
-    std::cout << "[LOG] execute successfully" << std::endl;
-
-
-    // TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
-    PJRT_LoadedExecutable_Destroy_Args ledargs;
-    ledargs.executable = exe; 
-    error = api->PJRT_LoadedExecutable_Destroy(&ledargs);
-    if (error) {
-        // TODO: 
-        return;
-    }
+    execute_kernel(api, exe);
 
     dlclose(handle_);
 
@@ -256,7 +266,7 @@ extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
         Start: Using real addition through XLA
      */
     auto op = addition_op_gen(8);
-    execute(op);
+    ExecuteMLIR(op);
     /**
         End: Using real addition through XLA
      */
