@@ -32,7 +32,7 @@ auto replace_all= [](std::string& subject, const std::string& search, const std:
 
 auto addition_op_gen = [](int size) {
     // StableHLO
-    std::string op_bk =
+    std::string op =
         R"(
             module @jit_addition attributes {jax.uses_shape_polymorphism = false, mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} { 
                 func.func public @main(%arg0: tensor<{SHAPE}xf32>, %arg1: tensor<{SHAPE}xf32>) -> (tensor<{SHAPE}xf32> {jax.result_info = "result"}) {
@@ -44,7 +44,7 @@ auto addition_op_gen = [](int size) {
     
 
     // HLO
-    std::string op = 
+    std::string op_bk = 
         R"(
             HloModule jit_addition, entry_computation_layout={(f32[{SHAPE}]{0}, f32[{SHAPE}]{0})->f32[{SHAPE}]{0}}
 
@@ -123,27 +123,25 @@ void execute(std::string func_code) {
     Compile the stableHLO
      */
     // TODO: why not use `PJRT_Compile` rather than `PJRT_Client_Compile`?
-    PJRT_Client_Compile_Args cargs = {};
-    cargs.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
-    cargs.client = args.client;
+    PJRT_Client_Compile_Args compile_args = {};
+    compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
 
     PJRT_Program program = {};
     program.struct_size = PJRT_Program_STRUCT_SIZE;
-
     std::string format = "mlir";
     // program.code = (char *) func_code.c_str();
     // program.code_size = func_code.size();
     std::cout << "[DEBUG] The code is : " << func_code << std::endl; 
-
     // We have to set as mlir here as we're passing MLIR module string rather than serialized HLOModuleProto
     program.code = (char*) func_code.c_str();
     program.code_size = (size_t)func_code.size();
     program.format = format.c_str();
     program.format_size = (size_t)format.size();
 
-    cargs.program = &program;
+    compile_args.client = args.client;
+    compile_args.program = &program;
 
-    error = api->PJRT_Client_Compile(&cargs);
+    error = api->PJRT_Client_Compile(&compile_args);
     if (error) {
         std::cerr << "[ERR] error compiling the program: " << get_err_msg(api, error) << std::endl;
         return;
@@ -157,7 +155,7 @@ void execute(std::string func_code) {
     /**
     Execute the program
      */
-    PJRT_LoadedExecutable* exe = cargs.executable;
+    PJRT_LoadedExecutable* exe = compile_args.executable;
     if (!exe) {
         std::cerr << "[ERR] compile shows no error, but no exe produced" << std::endl; 
         return;
