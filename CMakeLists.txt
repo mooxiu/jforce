@@ -4,10 +4,11 @@ cmake_minimum_required(VERSION 3.20)
 set(LLVM_PREFIX "/home/haruka/Documents/workspace/projects/llvm-project/build")
 set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 set(CMAKE_Fortran_COMPILER "${LLVM_PREFIX}/bin/flang-new" CACHE FILEPATH "LLVM Fortran Compiler" FORCE)
-
 project(xla_glue LANGUAGES CXX Fortran)
 set(TARGET_NAME demo)
 
+#-----------------------
+find_package(Protobuf REQUIRED)
 add_subdirectory(third_party/protos)
 
 add_executable("${TARGET_NAME}"
@@ -15,16 +16,11 @@ add_executable("${TARGET_NAME}"
     src/runtime.cpp
 )
 
-target_include_directories("${TARGET_NAME}" PRIVATE 
-    "${PROTO_TARGET_DIR}"
-)
 
-# ----------------- End Protobuf
-
-message(CXX_COMPILER="${CMAKE_CXX_COMPILER}")
+# ----------------- LINK
 set(CMAKE_CXX_STANDARD 14)
-
-set(DEFAULT_PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins")
+set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+set(DEFAULT_PLUGIN_DIR "${THIRD_PARTY}/pjrt_plugins")
 
 
 target_compile_definitions("${TARGET_NAME}"
@@ -38,4 +34,6 @@ set_property(TARGET "${TARGET_NAME}" PROPERTY LINKER_LANGUAGE Fortran)
 
 target_link_libraries("${TARGET_NAME}" PRIVATE 
     stdc++
+    xla_protos
+    protobuf::libprotobuf
 )

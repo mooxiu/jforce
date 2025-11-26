@@ -9,6 +9,7 @@
 #include <string>
 #include <dlfcn.h>
 #include "../third_party/headers/pjrt_c_api.h"
+#include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
 
 std::string getPluginPath() {
     // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -140,6 +141,26 @@ void execute(std::string func_code) {
 
     compile_args.client = args.client;
     compile_args.program = &program;
+    xla::CompileOptionsProto opts = {};
+    opts.set_parameter_is_tupled_arguments(false);
+    opts.set_compile_portable_executable(false);
+    opts.set_profile_version(1);
+
+    // 设置 num_replicas 等
+    xla::ExecutableBuildOptionsProto* build_opts =
+        opts.mutable_executable_build_options();
+    build_opts->set_num_replicas(1);
+    build_opts->set_num_partitions(1);
+
+    // 序列化
+    std::string buf;
+    if (!opts.SerializeToString(&buf)) {
+        // 这里你自己决定怎么报错
+        throw std::runtime_error("failed to serialize CompileOptionsProto");
+    }
+    compile_args.compile_options = (char *)buf.c_str();
+    compile_args.compile_options_size = (size_t)buf.size();
+    
 
     error = api->PJRT_Client_Compile(&compile_args);
     if (error) {

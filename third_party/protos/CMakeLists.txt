@@ -1,5 +1,4 @@
 # Should install protobuf first: https://protobuf.dev/installation/
-find_package(Protobuf REQUIRED)
 message(STATUS "Found Protobuf: ${PROTOBUF_LIBRARY} (Version ${PROTOBUF_VERSION})")
 
 set(PROTO_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}")

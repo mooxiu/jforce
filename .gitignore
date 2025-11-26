@@ -2,3 +2,4 @@
 *.venv
 build
 third_party/pjrt_plugins/*.so
+third_party/protos/generated
