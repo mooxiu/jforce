@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <dlfcn.h>
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
+#include "xla/xla.pb.h"
 
 std::string getPluginPath() {
     // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -169,22 +171,74 @@ PJRT_LoadedExecutable* compile_mlir(
     return compile_args.executable;
 }
 
-void execute_kernel(const PJRT_Api* api, PJRT_LoadedExecutable* exe) {
+void execute_kernel(
+    const PJRT_Api* api, 
+    PJRT_LoadedExecutable* exe,
+    PJRT_Client* client,
+    const float* a_ptr,
+    const float* b_ptr,
+    float* o_ptr,
+    long vector_size   
+) {
+    auto getFromHostBuffer = [&](const float* ptr) -> PJRT_Buffer* {
+        PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
+        buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+        buffer_args.client = client;
+        buffer_args.data = ptr;
+        int64_t dims_arr[] = {vector_size}; // TODO: ?
+        buffer_args.dims = dims_arr;
+        buffer_args.num_dims = 1;
+        auto err = api -> PJRT_Client_BufferFromHostBuffer(&buffer_args);
+        if (err) {
+            std::cerr << "[ERR] faill to create host side buffer: " << get_err_msg(api, err) << std::endl;
+            return nullptr;
+        } 
+        return buffer_args.buffer;
+    };
+
+    // TODO: using event can make this part async
+    auto saveBackToHostBuffer = [&](float* ptr) -> void {
+        PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
+        buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
+        buffer_args.dst = ptr;
+        buffer_args.dst_size = vector_size * 4; // TODO: currently I hardcode the size consider its f32
+        auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
+        if (err) {
+            std::cout << "[ERR] fail to save back to the to host buffer: " << get_err_msg(api, err) << std::endl; 
+            return;
+        }
+        return;
+    };
+
+    
+
+
     PJRT_LoadedExecutable_Execute_Args leeas = {};
     leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
     // function and args 
     leeas.executable = exe;
-    leeas.num_args = 0;
+    PJRT_ExecuteOptions execute_options = {};
+    execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
+    leeas.options = &execute_options;
+
+    // 
+    leeas.num_devices = (size_t) 1;
+    leeas.num_args = (size_t) 3;
+    PJRT_Buffer* input_buffers[] = {getFromHostBuffer(a_ptr), getFromHostBuffer(b_ptr)};
+    PJRT_Buffer* const* device_input_list[] = {input_buffers};
+    leeas.argument_lists = device_input_list;
+    // PJRT_Buffer** const* output_lists = {{o_ptr}};
     // leeas.argument_lists = 
     // leeas.output_lists = 
-    leeas.num_devices = 1;
+
+
 
     std::cout << "checkpoint" << std::endl;
 
     PJRT_Error* error;
     error = api->PJRT_LoadedExecutable_Execute(&leeas);
     if (error) {
-        std::cerr << "[ERR] fail to execute" << get_err_msg(api, error) << std::endl;
+        std::cerr << "[ERR] fail to execute " << get_err_msg(api, error) << std::endl;
         return;
     }
     std::cout << "[LOG] execute successfully" << std::endl;
@@ -208,7 +262,14 @@ void check_null(void* ptr) {
     return;
 }
 
-void ExecuteMLIR(std::string func_code) {
+// TODO: argument number and vector shape (dimension) are hardcoded here, need to change later
+void ExecuteMLIR(
+    std::string func_code,
+    const float* a_ptr,
+    const float* b_ptr,
+    float* o_ptr,
+    long vector_size    
+) {
     auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
         std::cerr << "error loading plugin: " << dlerror() << std::endl;
@@ -229,7 +290,7 @@ void ExecuteMLIR(std::string func_code) {
     auto exe = compile_mlir(api, client, func_code);
     check_null(exe);
 
-    execute_kernel(api, exe);
+    execute_kernel(api, exe, client, a_ptr, b_ptr, o_ptr, vector_size);
 
     dlclose(handle_);
 
@@ -266,7 +327,7 @@ extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
         Start: Using real addition through XLA
      */
     auto op = addition_op_gen(8);
-    ExecuteMLIR(op);
+    ExecuteMLIR(op, a_float_ptr, b_float_ptr, o_float_ptr, n);
     /**
         End: Using real addition through XLA
      */

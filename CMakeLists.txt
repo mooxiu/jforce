@@ -7,6 +7,8 @@ set(CMAKE_Fortran_COMPILER "${LLVM_PREFIX}/bin/flang-new" CACHE FILEPATH "LLVM F
 project(xla_glue LANGUAGES CXX Fortran)
 set(TARGET_NAME demo)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+
 
 #-----------------------
 find_package(Protobuf REQUIRED)
