@@ -1,9 +1,9 @@
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <ostream>
-#include <regex>
 #include <string>
 #include <dlfcn.h>
 #include "../third_party/headers/pjrt_c_api.h"
@@ -59,15 +59,16 @@ auto addition_op_gen = [](int size) {
     return op; 
 };
 
-void execute_stableHLO(std::string stableHLO_func, char** args) {
+// Just for testing
+// void execute_stableHLO(std::string stableHLO_func, char** args) {
     
-    static const std::regex addition_op_regexp(R"(stablehlo.add)");
-    if (std::regex_match(stableHLO_func, addition_op_regexp)) {
-        std::cout << "This is a addition operation" << std::endl;
-    } else {
-        std::cout << "other operations" << std::endl;
-    }
-}
+//     static const std::regex addition_op_regexp(R"(stablehlo.add)");
+//     if (std::regex_match(stableHLO_func, addition_op_regexp)) {
+//         std::cout << "This is a addition operation" << std::endl;
+//     } else {
+//         std::cout << "other operations" << std::endl;
+//     }
+// }
 
 std::string get_err_msg(PJRT_Api* api, PJRT_Error* err) {
     PJRT_Error_GetCode_Args code_args = {};
@@ -90,37 +91,37 @@ std::string get_err_msg(PJRT_Api* api, PJRT_Error* err) {
     return s;
 }
 
-void execute(std::string func_code) {
-    auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
+PJRT_Api* extract_api() {
+     auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
         std::cerr << "error loading plugin: " << dlerror() << std::endl;
-        return;
+        return nullptr;
     }
     // follow the example of `man dlopen`
     auto get_api_fn = (PJRT_Api* (*)())dlsym(handle_, "GetPjrtApi");
     if (!get_api_fn) {
         std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
-        return;
+        return nullptr;
     }
     auto api = get_api_fn();
     std::cout << "[LOG] the api loaded successfully!" << std::endl;
+    return api;
+}
 
-    /**
-    Get the client
-     */
+PJRT_Client* create_client(PJRT_Api* api) {
     PJRT_Client_Create_Args args = {};
     args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
     PJRT_Error* error = api->PJRT_Client_Create(&args);
     if (error) {
         std::cerr << "[Err] error creating client" << std::endl;
-        return;
+        return nullptr;
     }
     std::cout << "[LOG] client is successfully created" << std::endl;
+    return args.client; 
+}
 
-    
-    /**
-    Compile the stableHLO
-     */
+PJRT_LoadedExecutable* compile_mlir(
+    PJRT_Api* api, PJRT_Client* client, std::string func_code) {
     // TODO: why not use `PJRT_Compile` rather than `PJRT_Client_Compile`?
     PJRT_Client_Compile_Args compile_args = {};
     compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
@@ -137,7 +138,7 @@ void execute(std::string func_code) {
     program.format = format.c_str();
     program.format_size = (size_t)format.size();
 
-    compile_args.client = args.client;
+    compile_args.client = client;
     compile_args.program = &program;
     xla::CompileOptionsProto opts = {};
     opts.set_parameter_is_tupled_arguments(false);
@@ -160,32 +161,52 @@ void execute(std::string func_code) {
     compile_args.compile_options_size = (size_t)buf.size();
     
 
+    PJRT_Error* error;
     error = api->PJRT_Client_Compile(&compile_args);
     if (error) {
         std::cerr << "[ERR] error compiling the program: " << get_err_msg(api, error) << std::endl;
-        return;
+        return nullptr;
     }
     std::cout << "[LOG] program is compiled successfully" << std::endl;
+    return compile_args.executable;
+}
 
-    /**
-    Dealing with the buffer
-     */
+void check_null(void* ptr) {
+    if (!ptr) {
+       exit(1); 
+    }
+    return;
+}
 
-    /**
-    Execute the program
-     */
-    PJRT_LoadedExecutable* exe = compile_args.executable;
-    if (!exe) {
-        std::cerr << "[ERR] compile shows no error, but no exe produced" << std::endl; 
+void execute(std::string func_code) {
+    auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
+    if (!handle_) {
+        std::cerr << "error loading plugin: " << dlerror() << std::endl;
         return;
     }
-    std::cout << "[LOG] got the exe" << std::endl;
+    // follow the example of `man dlopen`
+    auto get_api_fn = (PJRT_Api* (*)())dlsym(handle_, "GetPjrtApi");
+    if (!get_api_fn) {
+        std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
+        return;
+    }
+    auto api = get_api_fn();
+    std::cout << "[LOG] the api loaded successfully!" << std::endl;
 
-    PJRT_LoadedExecutable_Execute_Args leeas;
+    auto client = create_client(api);
+    check_null(client);
+
+    auto exe = compile_mlir(api, client, func_code);
+    check_null(exe);
+
+    PJRT_LoadedExecutable_Execute_Args leeas = {};
+    leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
     leeas.executable = exe;
+
+    PJRT_Error* error;
     error = api->PJRT_LoadedExecutable_Execute(&leeas);
     if (error) {
-        std::cerr << "[ERR] fail to execute" << std::endl;
+        std::cerr << "[ERR] fail to execute" << get_err_msg(api, error) << std::endl;
         return;
     }
     std::cout << "[LOG] execute successfully" << std::endl;
