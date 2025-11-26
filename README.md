@@ -1,12 +1,25 @@
 # XLA_GLUE
 
 ## Dependencies
-- compile time
+## compile time
 ```sh
 cp ${XLA}/xla/pjrt/c/*.h ./third_party/headers/
 ```
-- library
+But I think most header files are not needed, only `pjrt_c_api.h` is the single most important one.
 
+### Compile Option 
+To compile MLIR, we need to set compile option.
+But in the `pjrt_c_api.h`, we have to set a "Serialized CompileOptionsProto". 
+
+CompileOptionsProto is a `struct` produced by `xla/pjrt/proto/compile_options.proto`.
+Which means we have to copy it from XLA project and configure protobuf to compile it to `pb.cc` files and `pb.h` files.
+
+To make it worse, the `.proto` file also depends on others,
+to make it work, we have to copy and compile the whole tree of `.proto` files.
+
+This is done in `third_party/protos/`.
+
+## library
 seems we have build by ourseleves:
 ```sh
 # under xla project
