@@ -6,6 +6,7 @@ set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Com
 set(CMAKE_Fortran_COMPILER "${LLVM_PREFIX}/bin/flang-new" CACHE FILEPATH "LLVM Fortran Compiler" FORCE)
 project(xla_glue LANGUAGES CXX Fortran)
 set(TARGET_NAME demo)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 #-----------------------
 find_package(Protobuf REQUIRED)
