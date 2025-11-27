@@ -17,6 +17,8 @@ add_subdirectory(third_party/protos)
 add_executable("${TARGET_NAME}"
     host/host.f90
     src/runtime.cpp
+    src/operations.h
+    src/operations.cpp
 )
 
 
