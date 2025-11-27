@@ -177,7 +177,7 @@ PJRT_LoadedExecutable* compile_mlir(
 // TODO: if we want to implement auto-sharding, we may need multiple devices
 PJRT_Device* findCPUDevice(PJRT_Api* api, PJRT_Client* client) {
     PJRT_Client_AddressableDevices_Args device_args = {};
-    device_args.struct_size = PJRT_Client_LookupAddressableDevice_Args_STRUCT_SIZE;
+    device_args.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE;
     device_args.client = client;
     auto err = api->PJRT_Client_AddressableDevices(&device_args);
     if (err) {
@@ -210,7 +210,7 @@ PJRT_Device* findCPUDevice(PJRT_Api* api, PJRT_Client* client) {
         return ts_args.to_string;
     };
 
-    int chosen_device_idx = 0;
+    int chosen_device_idx = -1;
     for (int i = 0; i < device_args.num_addressable_devices; i++) {
         auto auto_device_desc = get_description(device_args.addressable_devices[i]);
         std::string tmp = auto_device_desc;
@@ -220,7 +220,12 @@ PJRT_Device* findCPUDevice(PJRT_Api* api, PJRT_Client* client) {
             break;
         }
     }
-
+    if (chosen_device_idx == -1) {
+        std::cerr << "[ERR] fail to find cpu device!" << std::endl;
+        return nullptr;
+    }
+    
+    std::cout << "[DEBUG] Have chosen device id: " << chosen_device_idx << std::endl;
     return device_args.addressable_devices[chosen_device_idx];
 }
 
@@ -274,7 +279,7 @@ void execute_kernel(
     leeas.options = &execute_options;
 
     leeas.num_devices = (size_t) 1;
-    leeas.num_args = (size_t) 3;
+    leeas.num_args = (size_t) 2;
     PJRT_Buffer* input_buffers[] = {getFromHostBuffer(a_ptr), getFromHostBuffer(b_ptr)};
     PJRT_Buffer* const* device_input_list[] = {input_buffers};
     leeas.argument_lists = device_input_list;
