@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <cassert>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -124,15 +127,16 @@ PJRT_Client* create_client(const PJRT_Api* api) {
 
 PJRT_LoadedExecutable* compile_mlir(
     const PJRT_Api* api, PJRT_Client* client, const std::string& func_code) {
-    // TODO: why not use `PJRT_Compile` rather than `PJRT_Client_Compile`?
+    // TODO: `PJRT_Compile` or `PJRT_Client_Compile`?
+    // It seems PJRT_Client_Compile will also help to load the execute
     PJRT_Client_Compile_Args compile_args = {};
     compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
 
     PJRT_Program program = {};
     program.struct_size = PJRT_Program_STRUCT_SIZE;
+    // We have to set as mlir here as we're passing MLIR module string rather than serialized HLOModuleProto.
     std::string format = "mlir";
     std::cout << "[DEBUG] The code is : " << func_code << std::endl; 
-    // We have to set as mlir here as we're passing MLIR module string rather than serialized HLOModuleProto
     program.code = (char*) func_code.c_str();
     program.code_size = (size_t)func_code.size();
     program.format = format.c_str();
@@ -145,14 +149,13 @@ PJRT_LoadedExecutable* compile_mlir(
     opts.set_compile_portable_executable(false);
     opts.set_profile_version(1);
 
-    // 设置 num_replicas 等
     xla::ExecutableBuildOptionsProto* build_opts =
         opts.mutable_executable_build_options();
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
 
-    // 序列化
     std::string buf;
+    // SerializeToString(): This is protobuf's method inherited by CompileOptionProto.
     if (!opts.SerializeToString(&buf)) {
         std::cerr << "Faile to serialize CompileOptionsProto" << std::endl;
         return nullptr;
@@ -171,10 +174,61 @@ PJRT_LoadedExecutable* compile_mlir(
     return compile_args.executable;
 }
 
+// TODO: if we want to implement auto-sharding, we may need multiple devices
+PJRT_Device* findCPUDevice(PJRT_Api* api, PJRT_Client* client) {
+    PJRT_Client_AddressableDevices_Args device_args = {};
+    device_args.struct_size = PJRT_Client_LookupAddressableDevice_Args_STRUCT_SIZE;
+    device_args.client = client;
+    auto err = api->PJRT_Client_AddressableDevices(&device_args);
+    if (err) {
+        std::cerr << "[ERR] fail to find any device: " << get_err_msg(api, err) << std::endl;
+        return nullptr;
+    }
+    if (device_args.num_addressable_devices < 1) {
+        std::cerr << "[ERR] cannot find any device!" << std::endl;
+        return nullptr;
+    }
+    std::cout << "[LOG] got " << device_args.num_addressable_devices << " devices." << std::endl;
+
+    auto get_description = [api](PJRT_Device* device)-> std::string {
+        PJRT_Device_GetDescription_Args args = {};
+        args.struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE;
+        args.device = device;
+        auto err1 = api->PJRT_Device_GetDescription(&args);
+        if (err1) {
+            std::cerr << "[ERR] fail to get description of device: " << get_err_msg(api, err1) << std::endl;
+            return nullptr;
+        }
+        PJRT_DeviceDescription_ToString_Args ts_args = {};
+        ts_args.struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE;
+        ts_args.device_description = args.device_description;
+        auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
+        if (err2) {
+            std::cerr << "[ERR] fail to get device description to string: " << get_err_msg(api, err2) << std::endl;
+            return nullptr;
+        }
+        return ts_args.to_string;
+    };
+
+    int chosen_device_idx = 0;
+    for (int i = 0; i < device_args.num_addressable_devices; i++) {
+        auto auto_device_desc = get_description(device_args.addressable_devices[i]);
+        std::string tmp = auto_device_desc;
+        std::transform(tmp.begin(), tmp.end(), tmp.begin(), [](auto c){return std::tolower(c);});
+        if (tmp.find("cpu") != std::string::npos) {
+            chosen_device_idx = i;
+            break;
+        }
+    }
+
+    return device_args.addressable_devices[chosen_device_idx];
+}
+
 void execute_kernel(
     const PJRT_Api* api, 
     PJRT_LoadedExecutable* exe,
     PJRT_Client* client,
+    PJRT_Device* device,
     const float* a_ptr,
     const float* b_ptr,
     float* o_ptr,
@@ -210,8 +264,6 @@ void execute_kernel(
         return;
     };
 
-    
-
 
     PJRT_LoadedExecutable_Execute_Args leeas = {};
     leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
@@ -221,21 +273,20 @@ void execute_kernel(
     execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
     leeas.options = &execute_options;
 
-    // 
     leeas.num_devices = (size_t) 1;
     leeas.num_args = (size_t) 3;
     PJRT_Buffer* input_buffers[] = {getFromHostBuffer(a_ptr), getFromHostBuffer(b_ptr)};
     PJRT_Buffer* const* device_input_list[] = {input_buffers};
     leeas.argument_lists = device_input_list;
-    // PJRT_Buffer** const* output_lists = {{o_ptr}};
-    // leeas.argument_lists = 
-    // leeas.output_lists = 
-
-
-
-    std::cout << "checkpoint" << std::endl;
+    // we have one device, and the output by this device is 1.
+    PJRT_Buffer** device_0_output = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
+    PJRT_Buffer*** output_lists = (PJRT_Buffer***)malloc(1 * sizeof(PJRT_Buffer**)); // we have one device
+    output_lists[0] = device_0_output;
+    leeas.output_lists = output_lists;
+    leeas.execute_device = device;  
 
     PJRT_Error* error;
+    std::cout << "checkpoint: to be deleted" << std::endl;
     error = api->PJRT_LoadedExecutable_Execute(&leeas);
     if (error) {
         std::cerr << "[ERR] fail to execute " << get_err_msg(api, error) << std::endl;
@@ -252,6 +303,8 @@ void execute_kernel(
         // TODO: 
         return;
     }
+
+    // TODO: delete output_lists PJRT_Buffer....!!!!
 }
 
 
@@ -287,10 +340,13 @@ void ExecuteMLIR(
     auto client = create_client(api);
     check_null(client);
 
+    auto cpu_device = findCPUDevice(api, client);
+    check_null(client);
+
     auto exe = compile_mlir(api, client, func_code);
     check_null(exe);
 
-    execute_kernel(api, exe, client, a_ptr, b_ptr, o_ptr, vector_size);
+    execute_kernel(api, exe, client, cpu_device, a_ptr, b_ptr, o_ptr, vector_size);
 
     dlclose(handle_);
 

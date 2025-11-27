@@ -24,11 +24,13 @@ contains
 
     allocate(a(n), b(n), out(n))
 
+    ! Initialization
     do i = 1, n
       a(i) = real(i, c_float)
       b(i) = 100.0_c_float
     end do
 
+    ! Instead of Running OpenMP, call Cpp function using ABI:
     call launch_kernel(c_loc(a), c_loc(b), c_loc(out), n)
 
     print *, "Result out = ", out
