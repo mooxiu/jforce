@@ -12,7 +12,6 @@
 #include <dlfcn.h>
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
-#include "xla/xla.pb.h"
 
 std::string getPluginPath() {
     // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -26,7 +25,7 @@ std::string getPluginPath() {
 // Source - https://stackoverflow.com/a
 // Posted by Czarek Tomczak, modified by community. See post 'Timeline' for change history
 // Retrieved 2025-11-24, License - CC BY-SA 3.0
-auto replace_all= [](std::string& subject, const std::string& search, const std::string& replace) {
+void replace_all(std::string& subject, const std::string& search, const std::string& replace) {
     size_t pos = 0;
     while ((pos = subject.find(search, pos)) != std::string::npos) {
         subject.replace(pos, search.length(), replace);
@@ -45,35 +44,11 @@ auto addition_op_gen = [](int size) {
                 } 
             }
         )";
-    
-
-    // HLO
-    std::string op_bk = 
-        R"(
-            HloModule jit_addition, entry_computation_layout={(f32[{SHAPE}]{0}, f32[{SHAPE}]{0})->f32[{SHAPE}]{0}}
-
-                ENTRY main.1 {
-                    x.1 = f32[{SHAPE}]{0} parameter(0)
-                    y.1 = f32[{SHAPE}]{0} parameter(1)
-                    ROOT add.1 = f32[{SHAPE}]{0} add(x.1, y.1)
-                }
-        )";
 
     replace_all(op, "{SHAPE}", std::to_string(size));
-    std::cout << "addition op: " << op << std::endl;
+    std::cout << "[DEBUG] addition op: " << op << std::endl;
     return op; 
 };
-
-// Just for testing
-// void execute_stableHLO(std::string stableHLO_func, char** args) {
-    
-//     static const std::regex addition_op_regexp(R"(stablehlo.add)");
-//     if (std::regex_match(stableHLO_func, addition_op_regexp)) {
-//         std::cout << "This is a addition operation" << std::endl;
-//     } else {
-//         std::cout << "other operations" << std::endl;
-//     }
-// }
 
 std::string get_err_msg(const PJRT_Api* api, PJRT_Error* err) {
     PJRT_Error_GetCode_Args code_args = {};
@@ -99,13 +74,13 @@ std::string get_err_msg(const PJRT_Api* api, PJRT_Error* err) {
 PJRT_Api* extract_api() {
      auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
-        std::cerr << "error loading plugin: " << dlerror() << std::endl;
+        std::cerr << "[ERR] error loading plugin: " << dlerror() << std::endl;
         return nullptr;
     }
     // follow the example of `man dlopen`
     auto get_api_fn = (PJRT_Api* (*)())dlsym(handle_, "GetPjrtApi");
     if (!get_api_fn) {
-        std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
+        std::cerr << "[ERR] error finding GetPjrtApi: " << dlerror() << std::endl;
         return nullptr;
     }
     auto api = get_api_fn();
@@ -373,33 +348,6 @@ extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
     float* b_float_ptr = static_cast<float*>(b_ptr);
     float* o_float_ptr = static_cast<float*>(out_ptr);
 
-    /** 
-        Start: testing Fortran could call runtime written in CPP
-    */
-    // for (long i = 0; i < n; ++i) {
-    //     o_float_ptr[i] = a_float_ptr[i] + b_float_ptr[i];
-    // }
-    // auto print_vec = [](float* vec, int len, std::string name) {
-    //     std::cout << "The element of " << name << ": ";
-    //     for (int i = 0; i < len; i++) {
-    //         std::cout << vec[i] << " ";
-    //     } 
-    //     std::cout << std::endl;
-    // };
-    // print_vec(a_float_ptr, n, "a_vec");
-    // print_vec(b_float_ptr, n, "b_vec");
-    // print_vec(o_float_ptr, n, "c_vec");
-    /**
-        End: testing Fortran could call runtime written in CPP
-     */
-
-
-    /**
-        Start: Using real addition through XLA
-     */
     auto op = addition_op_gen(8);
     ExecuteMLIR(op, a_float_ptr, b_float_ptr, o_float_ptr, n);
-    /**
-        End: Using real addition through XLA
-     */
 }
