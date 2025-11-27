@@ -242,6 +242,8 @@ void execute_kernel(
     auto getFromHostBuffer = [&](const float* ptr) -> PJRT_Buffer* {
         PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
         buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+        buffer_args.type = PJRT_Buffer_Type_F32;
+        buffer_args.device = device;
         buffer_args.client = client;
         buffer_args.data = ptr;
         int64_t dims_arr[] = {vector_size}; // TODO: ?
@@ -256,10 +258,11 @@ void execute_kernel(
     };
 
     // TODO: using event can make this part async
-    auto saveBackToHostBuffer = [&](float* ptr) -> void {
+    auto saveBackToHostBuffer = [&](PJRT_Buffer* source, float* dst) -> void {
         PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
         buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
-        buffer_args.dst = ptr;
+        buffer_args.src = source;
+        buffer_args.dst = dst;
         buffer_args.dst_size = vector_size * 4; // TODO: currently I hardcode the size consider its f32
         auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
         if (err) {
@@ -280,9 +283,11 @@ void execute_kernel(
 
     leeas.num_devices = (size_t) 1;
     leeas.num_args = (size_t) 2;
+    
     PJRT_Buffer* input_buffers[] = {getFromHostBuffer(a_ptr), getFromHostBuffer(b_ptr)};
     PJRT_Buffer* const* device_input_list[] = {input_buffers};
     leeas.argument_lists = device_input_list;
+
     // we have one device, and the output by this device is 1.
     PJRT_Buffer** device_0_output = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
     PJRT_Buffer*** output_lists = (PJRT_Buffer***)malloc(1 * sizeof(PJRT_Buffer**)); // we have one device
@@ -298,6 +303,9 @@ void execute_kernel(
         return;
     }
     std::cout << "[LOG] execute successfully" << std::endl;
+
+
+    saveBackToHostBuffer(leeas.output_lists[0][0], o_ptr);
 
 
     // TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
@@ -353,6 +361,8 @@ void ExecuteMLIR(
 
     execute_kernel(api, exe, client, cpu_device, a_ptr, b_ptr, o_ptr, vector_size);
 
+    // TODO: Check the result here
+
     dlclose(handle_);
 
     return;
@@ -366,19 +376,19 @@ extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
     /** 
         Start: testing Fortran could call runtime written in CPP
     */
-    for (long i = 0; i < n; ++i) {
-        o_float_ptr[i] = a_float_ptr[i] + b_float_ptr[i];
-    }
-    auto print_vec = [](float* vec, int len, std::string name) {
-        std::cout << "The element of " << name << ": ";
-        for (int i = 0; i < len; i++) {
-            std::cout << vec[i] << " ";
-        } 
-        std::cout << std::endl;
-    };
-    print_vec(a_float_ptr, n, "a_vec");
-    print_vec(b_float_ptr, n, "b_vec");
-    print_vec(o_float_ptr, n, "c_vec");
+    // for (long i = 0; i < n; ++i) {
+    //     o_float_ptr[i] = a_float_ptr[i] + b_float_ptr[i];
+    // }
+    // auto print_vec = [](float* vec, int len, std::string name) {
+    //     std::cout << "The element of " << name << ": ";
+    //     for (int i = 0; i < len; i++) {
+    //         std::cout << vec[i] << " ";
+    //     } 
+    //     std::cout << std::endl;
+    // };
+    // print_vec(a_float_ptr, n, "a_vec");
+    // print_vec(b_float_ptr, n, "b_vec");
+    // print_vec(o_float_ptr, n, "c_vec");
     /**
         End: testing Fortran could call runtime written in CPP
      */
