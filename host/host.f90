@@ -18,7 +18,7 @@ contains
     use iso_c_binding
     implicit none
 
-    integer(c_long), parameter :: n = 8
+    integer(c_long), parameter :: n = 33
     real(c_float), allocatable, target :: a(:), b(:), out(:)
     integer :: i
 
