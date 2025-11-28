@@ -362,9 +362,9 @@ void lauchKernelInternal(
     PJRT_Buffer** argLists[] = {inputArgsBuffers};
 
     int out_args_count = 1;
-    PJRT_Buffer*** outputLists = (PJRT_Buffer***)malloc(1 * sizeof(PJRT_Buffer**)); // we have one device
+    PJRT_Buffer*** outputLists = (PJRT_Buffer***)malloc(sizeof(PJRT_Buffer**)); // we have one device
     for (int i = 0; i < out_args_count; i++) {
-        PJRT_Buffer** outBuffer = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
+        PJRT_Buffer** outBuffer = (PJRT_Buffer**)malloc(sizeof(PJRT_Buffer*)); // we have one output
         outputLists[i] = outBuffer;
     }
 
