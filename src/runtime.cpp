@@ -212,13 +212,11 @@ void destroyPJRTBuffer(PJRT_Api* api, PJRT_Buffer* buffer) {
     args.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE;
     args.buffer = buffer;
     auto err = api->PJRT_Buffer_Destroy(&args);
-    if (err) {
-        std::cerr << "[ERR] fail to destroy buffer: " << getErrMsg(api, err) << std::endl;
-    }
+    checkPJRTError(api, err, "Destroy Buffer");
     return;
 }
 
-void execute_kernel(
+void executeKernel(
     const PJRT_Api* api, 
     PJRT_LoadedExecutable* exe,
     PJRT_Client* client,
@@ -285,32 +283,24 @@ void execute_kernel(
     leeas.output_lists = output_lists;
     leeas.execute_device = device;  
 
-    PJRT_Error* error;
-    std::cout << "checkpoint: to be deleted" << std::endl;
-    error = api->PJRT_LoadedExecutable_Execute(&leeas);
-    if (error) {
-        std::cerr << "[ERR] fail to execute " << getErrMsg(api, error) << std::endl;
+    auto executeErr= api->PJRT_LoadedExecutable_Execute(&leeas);
+    if (!checkPJRTError(api, executeErr, "Execute LoadedExecutable")) {
         return;
     }
-    std::cout << "[LOG] execute successfully" << std::endl;
-
 
     saveBackToHostBuffer(leeas.output_lists[0][0], o_ptr);
 
-
-
     // TODO: Destroy memory first
-
     delete device_0_output;
     delete output_lists;
 
 
     // TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
     PJRT_LoadedExecutable_Destroy_Args ledargs;
+    ledargs.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE;
     ledargs.executable = exe; 
-    error = api->PJRT_LoadedExecutable_Destroy(&ledargs);
-    if (error) {
-        // TODO: 
+    auto destroyErr= api->PJRT_LoadedExecutable_Destroy(&ledargs);
+    if (!checkPJRTError(api, destroyErr, "Destroy LoadedExecutable")) {
         return;
     }
 
@@ -356,7 +346,7 @@ void ExecuteMLIR(
     auto exe = compileMLIR(api, client, func_code);
     checkNull(exe);
 
-    execute_kernel(api, exe, client, cpu_device, a_ptr, b_ptr, o_ptr, vector_size);
+    executeKernel(api, exe, client, cpu_device, a_ptr, b_ptr, o_ptr, vector_size);
 
     // TODO: Check the result here
 
