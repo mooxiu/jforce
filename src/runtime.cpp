@@ -92,7 +92,7 @@ PJRT_Client* createClient(const PJRT_Api* api) {
     return args.client; 
 }
 
-PJRT_LoadedExecutable* compile_mlir(
+PJRT_LoadedExecutable* compileMLIR(
     const PJRT_Api* api, 
     PJRT_Client* client, 
     const std::string& func_code
@@ -146,69 +146,74 @@ PJRT_LoadedExecutable* compile_mlir(
     return compile_args.executable;
 }
 
-// TODO: if we want to implement auto-sharding, we may need multiple devices
-PJRT_Device* findCPUDevice(PJRT_Api* api, PJRT_Client* client) {
+std::string getDeviceDescription(
+    const PJRT_Api* api, 
+    PJRT_Device* device
+) {
+    PJRT_Device_GetDescription_Args args = {};
+    args.struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE;
+    args.device = device;
+    auto err1 = api->PJRT_Device_GetDescription(&args);
+    if (err1) {
+        logger::Log("Fail to get description of device: " + getErrMsg(api, err1), logLevel::ERROR);
+        return nullptr;
+    }
+    PJRT_DeviceDescription_ToString_Args ts_args = {};
+    ts_args.struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE;
+    ts_args.device_description = args.device_description;
+    auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
+    if (err2) {
+        logger::Log("Fail to get device description to string: " + getErrMsg(api, err2), logLevel::ERROR);
+        return nullptr;
+    }
+    return ts_args.to_string;
+}
+
+PJRT_Device* findDevice(
+    const PJRT_Api* api, 
+    PJRT_Client* client,
+    const std::string& deviceDescKeyword
+) {
     PJRT_Client_AddressableDevices_Args device_args = {};
     device_args.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE;
     device_args.client = client;
     auto err = api->PJRT_Client_AddressableDevices(&device_args);
-    if (err) {
-        std::cerr << "[ERR] fail to find any device: " << getErrMsg(api, err) << std::endl;
+    if (!checkPJRTError(api, err, "Find Device")) {
         return nullptr;
-    }
+    }    
     if (device_args.num_addressable_devices < 1) {
-        std::cerr << "[ERR] cannot find any device!" << std::endl;
+        logger::Log("Cannot find any device!", logLevel::ERROR);
         return nullptr;
     }
-    std::cout << "[LOG] got " << device_args.num_addressable_devices << " devices." << std::endl;
-
-    auto get_description = [api](PJRT_Device* device)-> std::string {
-        PJRT_Device_GetDescription_Args args = {};
-        args.struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE;
-        args.device = device;
-        auto err1 = api->PJRT_Device_GetDescription(&args);
-        if (err1) {
-            std::cerr << "[ERR] fail to get description of device: " << getErrMsg(api, err1) << std::endl;
-            return nullptr;
-        }
-        PJRT_DeviceDescription_ToString_Args ts_args = {};
-        ts_args.struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE;
-        ts_args.device_description = args.device_description;
-        auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
-        if (err2) {
-            std::cerr << "[ERR] fail to get device description to string: " << getErrMsg(api, err2) << std::endl;
-            return nullptr;
-        }
-        return ts_args.to_string;
-    };
 
     int chosen_device_idx = -1;
+    std::string desc = ""; // for logging purpose
     for (int i = 0; i < device_args.num_addressable_devices; i++) {
-        auto auto_device_desc = get_description(device_args.addressable_devices[i]);
+        auto auto_device_desc = getDeviceDescription(api, device_args.addressable_devices[i]);
         std::string tmp = auto_device_desc;
         std::transform(tmp.begin(), tmp.end(), tmp.begin(), [](auto c){return std::tolower(c);});
-        if (tmp.find("cpu") != std::string::npos) {
+        if (tmp.find(deviceDescKeyword) != std::string::npos) {
             chosen_device_idx = i;
+            desc = tmp;
             break;
         }
     }
     if (chosen_device_idx == -1) {
-        std::cerr << "[ERR] fail to find cpu device!" << std::endl;
+        logger::Log("Fail to find " + deviceDescKeyword + " device!", logLevel::ERROR);
         return nullptr;
     }
     
-    std::cout << "[DEBUG] Have chosen device id: " << chosen_device_idx << std::endl;
+    logger::Log("Have chosen device id: " + std::to_string(chosen_device_idx) + " , desc: " + desc, logLevel::DEBUG);
     return device_args.addressable_devices[chosen_device_idx];
 }
 
-void DestroyPJRTBuffer(PJRT_Api* api, PJRT_Buffer* buffer) {
+void destroyPJRTBuffer(PJRT_Api* api, PJRT_Buffer* buffer) {
     PJRT_Buffer_Destroy_Args args = {};
     args.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE;
     args.buffer = buffer;
     auto err = api->PJRT_Buffer_Destroy(&args);
     if (err) {
         std::cerr << "[ERR] fail to destroy buffer: " << getErrMsg(api, err) << std::endl;
-        return;
     }
     return;
 }
@@ -313,13 +318,6 @@ void execute_kernel(
 }
 
 
-void check_null(void* ptr) {
-    if (!ptr) {
-       exit(1); 
-    }
-    return;
-}
-
 // TODO: argument number and vector shape (dimension) are hardcoded here, need to change later
 void ExecuteMLIR(
     std::string func_code,
@@ -328,6 +326,13 @@ void ExecuteMLIR(
     float* o_ptr,
     long vector_size    
 ) {
+    auto checkNull = [](void* ptr) -> void {
+        if (!ptr) {
+            exit(1);
+        }
+        return;
+    };
+
     auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
         std::cerr << "error loading plugin: " << dlerror() << std::endl;
@@ -343,13 +348,13 @@ void ExecuteMLIR(
     std::cout << "[LOG] the api loaded successfully!" << std::endl;
 
     auto client = createClient(api);
-    check_null(client);
+    checkNull(client);
 
-    auto cpu_device = findCPUDevice(api, client);
-    check_null(client);
+    auto cpu_device = findDevice(api, client, "cpu");
+    checkNull(client);
 
-    auto exe = compile_mlir(api, client, func_code);
-    check_null(exe);
+    auto exe = compileMLIR(api, client, func_code);
+    checkNull(exe);
 
     execute_kernel(api, exe, client, cpu_device, a_ptr, b_ptr, o_ptr, vector_size);
 
