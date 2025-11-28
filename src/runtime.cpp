@@ -92,6 +92,14 @@ PJRT_Client* createClient(const PJRT_Api* api) {
     return args.client; 
 }
 
+void destroyClient(const PJRT_Api* api, PJRT_Client* client) {
+    PJRT_Client_Destroy_Args client_destroy_args = {};
+    client_destroy_args.struct_size = PJRT_Client_Destroy_Args_STRUCT_SIZE;
+    client_destroy_args.client = client;
+    api->PJRT_Client_Destroy(&client_destroy_args);
+    return;
+}
+
 PJRT_LoadedExecutable* compileMLIR(
     const PJRT_Api* api, 
     PJRT_Client* client, 
@@ -144,6 +152,16 @@ PJRT_LoadedExecutable* compileMLIR(
         return nullptr;
     }
     return compile_args.executable;
+}
+
+// TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
+void destroyLoadedExecutable(const PJRT_Api* api, PJRT_LoadedExecutable* exe) {
+    PJRT_LoadedExecutable_Destroy_Args ledargs;
+    ledargs.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE;
+    ledargs.executable = exe; 
+    auto destroyErr= api->PJRT_LoadedExecutable_Destroy(&ledargs);
+    checkPJRTError(api, destroyErr, "Destroy LoadedExecutable");
+    return;
 }
 
 std::string getDeviceDescription(
@@ -216,6 +234,62 @@ void destroyPJRTBuffer(PJRT_Api* api, PJRT_Buffer* buffer) {
     return;
 }
 
+
+// TODO: This work should be done by OpenMP runtime!
+PJRT_Buffer* getBufferFromHost(
+    const PJRT_Api* api, 
+    PJRT_Client* client,
+    PJRT_Device* device,
+    const float* ptr,
+    const int vector_size,
+    PJRT_Buffer_Type type
+) {
+    PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
+    buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+    buffer_args.type = type;
+    buffer_args.device = device;
+    buffer_args.client = client;
+    buffer_args.data = ptr;
+    // TODO: should reconsider how to set the size and dimmension for general shape
+    int64_t dims_arr[] = {vector_size};
+    buffer_args.dims = dims_arr;
+    buffer_args.num_dims = 1;
+    auto err = api -> PJRT_Client_BufferFromHostBuffer(&buffer_args);
+    if (!checkPJRTError(api, err, "Create Buffer From Host")) {
+        return nullptr;
+    }
+    return buffer_args.buffer;
+}
+
+// TODO: should have a better implementation
+size_t getSizeOf(PJRT_Buffer_Type type) {
+    switch (type) {
+        case PJRT_Buffer_Type_F32:
+            return sizeof(float);
+        default:
+            logger::Log("Unknown Type", logLevel::ERROR);
+            exit(1);
+    }
+}
+
+// TODO: using event can make this part async
+void saveBufferToHostBuffer(
+    const PJRT_Api* api, 
+    PJRT_Buffer* source,
+    float* dst,
+    const int vector_size,
+    PJRT_Buffer_Type type
+) {
+    PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
+    buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
+    buffer_args.src = source;
+    buffer_args.dst = dst;
+    buffer_args.dst_size = vector_size * getSizeOf(type); // TODO: currently I hardcode the size consider its f32
+    auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
+    checkPJRTError(api, err, "Save buffer to host");
+    return;
+}
+
 void executeKernel(
     const PJRT_Api* api, 
     PJRT_LoadedExecutable* exe,
@@ -224,43 +298,9 @@ void executeKernel(
     const float* a_ptr,
     const float* b_ptr,
     float* o_ptr,
-    long vector_size   
+    long vector_size,
+    PJRT_Buffer_Type type
 ) {
-    // TODO: OpenMP already mapping memory to device
-    auto getFromHostBuffer = [&](const float* ptr) -> PJRT_Buffer* {
-        PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
-        buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
-        buffer_args.type = PJRT_Buffer_Type_F32;
-        buffer_args.device = device;
-        buffer_args.client = client;
-        buffer_args.data = ptr;
-        int64_t dims_arr[] = {vector_size}; // TODO: ?
-        buffer_args.dims = dims_arr;
-        buffer_args.num_dims = 1;
-        auto err = api -> PJRT_Client_BufferFromHostBuffer(&buffer_args);
-        if (err) {
-            std::cerr << "[ERR] faill to create host side buffer: " << getErrMsg(api, err) << std::endl;
-            return nullptr;
-        } 
-        return buffer_args.buffer;
-    };
-
-    // TODO: using event can make this part async
-    auto saveBackToHostBuffer = [&](PJRT_Buffer* source, float* dst) -> void {
-        PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
-        buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
-        buffer_args.src = source;
-        buffer_args.dst = dst;
-        buffer_args.dst_size = vector_size * 4; // TODO: currently I hardcode the size consider its f32
-        auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
-        if (err) {
-            std::cout << "[ERR] fail to save back to the to host buffer: " << getErrMsg(api, err) << std::endl; 
-            return;
-        }
-        return;
-    };
-
-
     PJRT_LoadedExecutable_Execute_Args leeas = {};
     leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
     // function and args 
@@ -270,41 +310,37 @@ void executeKernel(
     leeas.options = &execute_options;
 
     leeas.num_devices = (size_t) 1;
-    leeas.num_args = (size_t) 2;
+    leeas.num_args = (size_t) 2; // TODO: should accept general input args num
     
-    PJRT_Buffer* input_buffers[] = {getFromHostBuffer(a_ptr), getFromHostBuffer(b_ptr)};
+    PJRT_Buffer* input_buffers[] = {
+        getBufferFromHost(api, client, device, a_ptr, vector_size, type),
+        getBufferFromHost(api, client, device, b_ptr, vector_size, type),
+    };
     PJRT_Buffer* const* device_input_list[] = {input_buffers};
     leeas.argument_lists = device_input_list;
 
     // we have one device, and the output by this device is 1.
-    PJRT_Buffer** device_0_output = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
+    int out_args_count = 1;
     PJRT_Buffer*** output_lists = (PJRT_Buffer***)malloc(1 * sizeof(PJRT_Buffer**)); // we have one device
-    output_lists[0] = device_0_output;
+    for (int i = 0; i < out_args_count; i++) {
+        PJRT_Buffer** outBuffer = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
+        output_lists[i] = outBuffer;
+    }
     leeas.output_lists = output_lists;
     leeas.execute_device = device;  
 
     auto executeErr= api->PJRT_LoadedExecutable_Execute(&leeas);
-    if (!checkPJRTError(api, executeErr, "Execute LoadedExecutable")) {
-        return;
+    if (checkPJRTError(api, executeErr, "Execute LoadedExecutable")) {
+        // TODO: actually should be able to save to multiple out
+        saveBufferToHostBuffer(api, leeas.output_lists[0][0], o_ptr, vector_size, type);
     }
-
-    saveBackToHostBuffer(leeas.output_lists[0][0], o_ptr);
 
     // TODO: Destroy memory first
-    delete device_0_output;
-    delete output_lists;
-
-
-    // TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
-    PJRT_LoadedExecutable_Destroy_Args ledargs;
-    ledargs.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE;
-    ledargs.executable = exe; 
-    auto destroyErr= api->PJRT_LoadedExecutable_Destroy(&ledargs);
-    if (!checkPJRTError(api, destroyErr, "Destroy LoadedExecutable")) {
-        return;
-    }
-
     // TODO: delete output_lists PJRT_Buffer....!!!!
+    for (int i = 0; i < out_args_count; i++) {
+        delete output_lists[i];
+    }
+    delete output_lists;
 }
 
 
@@ -314,20 +350,22 @@ void ExecuteMLIR(
     const float* a_ptr,
     const float* b_ptr,
     float* o_ptr,
-    long vector_size    
+    long vector_size,    
+    PJRT_Buffer_Type type
 ) {
-    auto checkNull = [](void* ptr) -> void {
-        if (!ptr) {
-            exit(1);
-        }
-        return;
-    };
-
     auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
         std::cerr << "error loading plugin: " << dlerror() << std::endl;
         return;
     }
+    auto checkNull = [handle_](void* ptr) -> void* {
+        if (!ptr) {
+            // don't forget to clear the handle_ before panic
+            dlclose(handle_);
+            exit(1);
+        }
+        return ptr;
+    };
     // follow the example of `man dlopen`
     auto get_api_fn = (PJRT_Api* (*)())dlsym(handle_, "GetPjrtApi");
     if (!get_api_fn) {
@@ -335,21 +373,25 @@ void ExecuteMLIR(
         return;
     }
     auto api = get_api_fn();
-    std::cout << "[LOG] the api loaded successfully!" << std::endl;
+    logger::Log("The API Loaded Successfully!", logLevel::DEBUG);
 
-    auto client = createClient(api);
-    checkNull(client);
+    auto client = (PJRT_Client*)checkNull(createClient(api));
+    auto cpu_device = (PJRT_Device*) checkNull(findDevice(api, client, "cpu"));
+    auto exe = (PJRT_LoadedExecutable*) checkNull(compileMLIR(api, client, func_code));
+    executeKernel(
+        api, 
+        exe, 
+        client, 
+        cpu_device, 
+        a_ptr,
+        b_ptr, 
+        o_ptr, 
+        vector_size,
+        type
+    );
 
-    auto cpu_device = findDevice(api, client, "cpu");
-    checkNull(client);
-
-    auto exe = compileMLIR(api, client, func_code);
-    checkNull(exe);
-
-    executeKernel(api, exe, client, cpu_device, a_ptr, b_ptr, o_ptr, vector_size);
-
-    // TODO: Check the result here
-
+    destroyLoadedExecutable(api, exe);
+    destroyClient(api, client);
     dlclose(handle_);
 
     return;
@@ -361,5 +403,5 @@ extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
     float* o_float_ptr = static_cast<float*>(out_ptr);
 
     auto op = GetVectorAdditionOp(n);
-    ExecuteMLIR(op, a_float_ptr, b_float_ptr, o_float_ptr, n);
+    ExecuteMLIR(op, a_float_ptr, b_float_ptr, o_float_ptr, n, PJRT_Buffer_Type_F32);
 }
