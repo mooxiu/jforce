@@ -293,13 +293,9 @@ void saveBufferToHostBuffer(
 void executeKernel(
     const PJRT_Api* api, 
     PJRT_LoadedExecutable* exe,
-    PJRT_Client* client,
     PJRT_Device* device,
-    const float* a_ptr,
-    const float* b_ptr,
-    float* o_ptr,
-    long vector_size,
-    PJRT_Buffer_Type type
+    PJRT_Buffer*** argLists,
+    PJRT_Buffer*** outLists 
 ) {
     PJRT_LoadedExecutable_Execute_Args leeas = {};
     leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
@@ -312,40 +308,17 @@ void executeKernel(
     leeas.num_devices = (size_t) 1;
     leeas.num_args = (size_t) 2; // TODO: should accept general input args num
     
-    PJRT_Buffer* input_buffers[] = {
-        getBufferFromHost(api, client, device, a_ptr, vector_size, type),
-        getBufferFromHost(api, client, device, b_ptr, vector_size, type),
-    };
-    PJRT_Buffer* const* device_input_list[] = {input_buffers};
-    leeas.argument_lists = device_input_list;
+    leeas.argument_lists = argLists;
 
     // we have one device, and the output by this device is 1.
-    int out_args_count = 1;
-    PJRT_Buffer*** output_lists = (PJRT_Buffer***)malloc(1 * sizeof(PJRT_Buffer**)); // we have one device
-    for (int i = 0; i < out_args_count; i++) {
-        PJRT_Buffer** outBuffer = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
-        output_lists[i] = outBuffer;
-    }
-    leeas.output_lists = output_lists;
+    leeas.output_lists = outLists;
     leeas.execute_device = device;  
 
     auto executeErr= api->PJRT_LoadedExecutable_Execute(&leeas);
-    if (checkPJRTError(api, executeErr, "Execute LoadedExecutable")) {
-        // TODO: actually should be able to save to multiple out
-        saveBufferToHostBuffer(api, leeas.output_lists[0][0], o_ptr, vector_size, type);
-    }
-
-    // TODO: Destroy memory first
-    // TODO: delete output_lists PJRT_Buffer....!!!!
-    for (int i = 0; i < out_args_count; i++) {
-        delete output_lists[i];
-    }
-    delete output_lists;
+    checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
 
-
-// TODO: argument number and vector shape (dimension) are hardcoded here, need to change later
-void ExecuteMLIR(
+void lauchKernelInternal(
     std::string func_code,
     const float* a_ptr,
     const float* b_ptr,
@@ -375,26 +348,53 @@ void ExecuteMLIR(
     auto api = get_api_fn();
     logger::Log("The API Loaded Successfully!", logLevel::DEBUG);
 
+
     auto client = (PJRT_Client*)checkNull(createClient(api));
-    auto cpu_device = (PJRT_Device*) checkNull(findDevice(api, client, "cpu"));
+    auto cpuDevice = (PJRT_Device*) checkNull(findDevice(api, client, "cpu"));
     auto exe = (PJRT_LoadedExecutable*) checkNull(compileMLIR(api, client, func_code));
-    executeKernel(
-        api, 
-        exe, 
-        client, 
-        cpu_device, 
-        a_ptr,
-        b_ptr, 
-        o_ptr, 
-        vector_size,
-        type
-    );
+
+    int in_args_count = 2;
+    const float* in_args[] = {a_ptr, b_ptr}; 
+    PJRT_Buffer* inputArgsBuffers[in_args_count];
+    for (int i = 0; i < in_args_count; i++) {
+        inputArgsBuffers[i] = getBufferFromHost(api, client, cpuDevice, in_args[i], vector_size, type);
+    }
+    PJRT_Buffer** argLists[] = {inputArgsBuffers};
+
+    int out_args_count = 1;
+    PJRT_Buffer*** outputLists = (PJRT_Buffer***)malloc(1 * sizeof(PJRT_Buffer**)); // we have one device
+    for (int i = 0; i < out_args_count; i++) {
+        PJRT_Buffer** outBuffer = (PJRT_Buffer**)malloc(1 * sizeof(PJRT_Buffer*)); // we have one output
+        outputLists[i] = outBuffer;
+    }
+
+    executeKernel(api, exe, cpuDevice, argLists, outputLists);
+    
+    // TODO: actually should be able to save to multiple out
+    saveBufferToHostBuffer(api, outputLists[0][0], o_ptr, vector_size, type);
+    
+    // Destroy Input Memory
+    for (int i = 0; i < in_args_count; i++) {
+        destroyPJRTBuffer(api, inputArgsBuffers[i]);
+    }
+
+    // Destroy Output Memory
+    for (int i = 0; i < out_args_count; i++) {
+        // TODO: which is which?
+        destroyPJRTBuffer(api, outputLists[0][i]);
+    }
+
+    for (int i = 0; i < out_args_count; i++) {
+        free(outputLists[i]);
+    }
+    free(outputLists);
 
     destroyLoadedExecutable(api, exe);
     destroyClient(api, client);
     dlclose(handle_);
 
     return;
+
 }
 
 extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
@@ -402,6 +402,8 @@ extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
     float* b_float_ptr = static_cast<float*>(b_ptr);
     float* o_float_ptr = static_cast<float*>(out_ptr);
 
+    // This is just used for this runtime testing case,
+    // will eventually be replaced by the one produced by MLIR lowering
     auto op = GetVectorAdditionOp(n);
-    ExecuteMLIR(op, a_float_ptr, b_float_ptr, o_float_ptr, n, PJRT_Buffer_Type_F32);
+    lauchKernelInternal(op, a_float_ptr, b_float_ptr, o_float_ptr, n, PJRT_Buffer_Type_F32);
 }
