@@ -47,8 +47,8 @@ std::string getErrMsg(const PJRT_Api* api, PJRT_Error* err) {
     return s;
 }
 
-bool checkPJRTError(const PJRT_Api* api, PJRT_Error* err, std::string event) {
-    auto msg = event;
+bool checkPJRTError(const PJRT_Api* api, PJRT_Error* err, const std::string& eventName) {
+    auto msg = eventName;
     if (err) {
         msg += " failed!";
         logger::Log(msg + ": " + getErrMsg(api, err), logLevel::ERROR);
@@ -93,51 +93,56 @@ PJRT_Client* createClient(const PJRT_Api* api) {
 }
 
 PJRT_LoadedExecutable* compile_mlir(
-    const PJRT_Api* api, PJRT_Client* client, const std::string& func_code) {
-    // TODO: `PJRT_Compile` or `PJRT_Client_Compile`?
+    const PJRT_Api* api, 
+    PJRT_Client* client, 
+    const std::string& func_code
+) {
+    auto setProgram = [func_code](PJRT_Program* program, const std::string& format) -> void {
+        program->struct_size = PJRT_Program_STRUCT_SIZE;
+        // We have to set as mlir here as we're passing MLIR module string rather than serialized HLOModuleProto.
+        logger::Log("The code is \n" + func_code, logLevel::DEBUG);
+        program->code = (char*) func_code.c_str();
+        program->code_size = (size_t)func_code.size();
+        program->format = format.c_str();
+        program->format_size = (size_t)format.size();
+        return;
+    };
+
+    auto getCompileOptionsProto = []() -> std::string {
+        xla::CompileOptionsProto opts = {};
+        opts.set_parameter_is_tupled_arguments(false);
+        opts.set_compile_portable_executable(false);
+        opts.set_profile_version(1);
+
+        xla::ExecutableBuildOptionsProto* build_opts =
+            opts.mutable_executable_build_options();
+        build_opts->set_num_replicas(1);
+        build_opts->set_num_partitions(1);
+
+        std::string buf;
+        // SerializeToString(): This is protobuf's method inherited by CompileOptionProto.
+        if (!opts.SerializeToString(&buf)) {
+            logger::Log("Fail to serialize CompileOptionsProto", logLevel::ERROR);
+            return nullptr;
+        }
+        return buf;
+    };
+
     // It seems PJRT_Client_Compile will also help to load the execute
     PJRT_Client_Compile_Args compile_args = {};
     compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
-
-    PJRT_Program program = {};
-    program.struct_size = PJRT_Program_STRUCT_SIZE;
-    // We have to set as mlir here as we're passing MLIR module string rather than serialized HLOModuleProto.
-    std::string format = "mlir";
-    std::cout << "[DEBUG] The code is : " << func_code << std::endl; 
-    program.code = (char*) func_code.c_str();
-    program.code_size = (size_t)func_code.size();
-    program.format = format.c_str();
-    program.format_size = (size_t)format.size();
-
     compile_args.client = client;
+    PJRT_Program program = {};
+    setProgram(&program, "mlir");
     compile_args.program = &program;
-    xla::CompileOptionsProto opts = {};
-    opts.set_parameter_is_tupled_arguments(false);
-    opts.set_compile_portable_executable(false);
-    opts.set_profile_version(1);
-
-    xla::ExecutableBuildOptionsProto* build_opts =
-        opts.mutable_executable_build_options();
-    build_opts->set_num_replicas(1);
-    build_opts->set_num_partitions(1);
-
-    std::string buf;
-    // SerializeToString(): This is protobuf's method inherited by CompileOptionProto.
-    if (!opts.SerializeToString(&buf)) {
-        std::cerr << "Faile to serialize CompileOptionsProto" << std::endl;
-        return nullptr;
-    }
+    auto buf = getCompileOptionsProto();
     compile_args.compile_options = (char *)buf.c_str();
     compile_args.compile_options_size = (size_t)buf.size();
     
-
-    PJRT_Error* error;
-    error = api->PJRT_Client_Compile(&compile_args);
-    if (error) {
-        std::cerr << "[ERR] error compiling the program: " << getErrMsg(api, error) << std::endl;
+    auto error = api->PJRT_Client_Compile(&compile_args);
+    if (!checkPJRTError(api, error, "Compile The Program")) {
         return nullptr;
     }
-    std::cout << "[LOG] program is compiled successfully" << std::endl;
     return compile_args.executable;
 }
 
