@@ -78,7 +78,7 @@ PJRT_Api* getAPI() {
         return nullptr;
     }
     auto api = get_api_fn();
-    logger::Log("The api loaded successfully!", logLevel::INFO);
+    logger::Log("The api loaded successfully!", logLevel::DEBUG);
     return api;
 }
 

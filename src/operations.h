@@ -2,7 +2,6 @@
 
 enum class logLevel {
   DEBUG, 
-  INFO, 
   ERROR
 };
 
