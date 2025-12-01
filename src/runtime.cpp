@@ -235,7 +235,7 @@ void destroyPJRTBuffer(PJRT_Api* api, PJRT_Buffer* buffer) {
 }
 
 
-// TODO: This work should be done by OpenMP runtime!
+// TODO: This work should later be done by OpenMP runtime.
 PJRT_Buffer* getBufferFromHost(
     const PJRT_Api* api, 
     PJRT_Client* client,
@@ -295,7 +295,7 @@ void executeKernel(
     PJRT_LoadedExecutable* exe,
     PJRT_Device* device,
     PJRT_Buffer*** argLists,
-    PJRT_Buffer*** outLists 
+    PJRT_Buffer*** outLists
 ) {
     PJRT_LoadedExecutable_Execute_Args leeas = {};
     leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
@@ -353,6 +353,7 @@ void lauchKernelInternal(
     auto cpuDevice = (PJRT_Device*) checkNull(findDevice(api, client, "cpu"));
     auto exe = (PJRT_LoadedExecutable*) checkNull(compileMLIR(api, client, func_code));
 
+    // Buffer from host
     int in_args_count = 2;
     const float* in_args[] = {a_ptr, b_ptr}; 
     PJRT_Buffer* inputArgsBuffers[in_args_count];
@@ -361,6 +362,8 @@ void lauchKernelInternal(
     }
     PJRT_Buffer** argLists[] = {inputArgsBuffers};
 
+
+    // Set buffer save back to host
     int out_args_count = 1;
     PJRT_Buffer*** outputLists = (PJRT_Buffer***)malloc(sizeof(PJRT_Buffer**)); // we have one device
     for (int i = 0; i < out_args_count; i++) {
@@ -368,12 +371,13 @@ void lauchKernelInternal(
         outputLists[i] = outBuffer;
     }
 
+    // Execute the kernel
     executeKernel(api, exe, cpuDevice, argLists, outputLists);
     
     // TODO: actually should be able to save to multiple out
     saveBufferToHostBuffer(api, outputLists[0][0], o_ptr, vector_size, type);
     
-    // Destroy Input Memory
+    // Destroy Input Events and Memory
     for (int i = 0; i < in_args_count; i++) {
         destroyPJRTBuffer(api, inputArgsBuffers[i]);
     }
