@@ -63,9 +63,9 @@ std::string GetTransposeOp(std::vector<int> shape) {
     std::string op = 
         R"(
             module @jit_transpose attributes {jax.uses_shape_polymorphism = false, mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
-                func.func public @main(%arg0: tensor<{SHAPE1}xi32>) -> (tensor<{SHAPE2}xi32> {jax.result_info = "result"}) {
-                    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<{SHAPE1}xi32>) -> tensor<{SHAPE2}xi32>
-                    return %0 : tensor<{SHAPE2}xi32>
+                func.func public @main(%arg0: tensor<{SHAPE1}xf32>) -> (tensor<{SHAPE2}xf32> {jax.result_info = "result"}) {
+                    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<{SHAPE1}xf32>) -> tensor<{SHAPE2}xf32>
+                    return %0 : tensor<{SHAPE2}xf32>
                 }
             }
         )";
@@ -85,9 +85,9 @@ std::string GetMatrixMultiplicationOp(std::vector<int> m1Shape, std::vector<int>
     std::string op = 
         R"(
             module @jit_matrix_multiply attributes {jax.uses_shape_polymorphism = false, mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
-                func.func public @main(%arg0: tensor<{SHAPE1}xi32>, %arg1: tensor<{SHAPE2}xi32>) -> (tensor<{SHAPE3}xi32> {jax.result_info = "result"}) {
-                    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<{SHAPE1}xi32>, tensor<{SHAPE2}xi32>) -> tensor<{SHAPE3}xi32>
-                    return %0 : tensor<{SHAPE3}xi32>
+                func.func public @main(%arg0: tensor<{SHAPE1}xf32>, %arg1: tensor<{SHAPE2}xf32>) -> (tensor<{SHAPE3}xf32> {jax.result_info = "result"}) {
+                    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<{SHAPE1}xf32>, tensor<{SHAPE2}xf32>) -> tensor<{SHAPE3}xf32>
+                    return %0 : tensor<{SHAPE3}xf32>
                 }
             }            
         )";

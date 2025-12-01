@@ -6,13 +6,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
+#include <numeric>
 #include <ostream>
 #include <string>
 #include <dlfcn.h>
+#include <vector>
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
 #include "operations.h"
+#include "kernel_pointer_interface.h"
 
 std::string getPluginPath() {
     // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -240,20 +244,22 @@ PJRT_Buffer* getBufferFromHost(
     const PJRT_Api* api, 
     PJRT_Client* client,
     PJRT_Device* device,
-    const float* ptr,
-    const int vector_size,
-    PJRT_Buffer_Type type
+    void* ptr,
+    std::vector<long> shape
 ) {
     PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
     buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
-    buffer_args.type = type;
+    buffer_args.type = PJRT_Buffer_Type_F32;
     buffer_args.device = device;
     buffer_args.client = client;
     buffer_args.data = ptr;
     // TODO: should reconsider how to set the size and dimmension for general shape
-    int64_t dims_arr[] = {vector_size};
+    buffer_args.num_dims = shape.size();
+    int64_t dims_arr[shape.size()];
+    for (int i = 0 ; i < shape.size(); i++) {
+        dims_arr[i] = shape[i];
+    }
     buffer_args.dims = dims_arr;
-    buffer_args.num_dims = 1;
     auto err = api -> PJRT_Client_BufferFromHostBuffer(&buffer_args);
     if (!checkPJRTError(api, err, "Create Buffer From Host")) {
         return nullptr;
@@ -276,15 +282,15 @@ size_t getSizeOf(PJRT_Buffer_Type type) {
 void saveBufferToHostBuffer(
     const PJRT_Api* api, 
     PJRT_Buffer* source,
-    float* dst,
-    const int vector_size,
-    PJRT_Buffer_Type type
+    void* dst,
+    std::vector<long> shape
 ) {
     PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
     buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
     buffer_args.src = source;
     buffer_args.dst = dst;
-    buffer_args.dst_size = vector_size * getSizeOf(type); // TODO: currently I hardcode the size consider its f32
+    buffer_args.dst_size = getSizeOf(PJRT_Buffer_Type_F32) * std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<long>());
+    logger::Log("The size in byte is: " + std::to_string(buffer_args.dst_size), logLevel::DEBUG);
     auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
     checkPJRTError(api, err, "Save buffer to host");
     return;
@@ -318,13 +324,20 @@ void executeKernel(
     checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
 
-void lauchKernelInternal(
-    std::string func_code,
-    const float* a_ptr,
-    const float* b_ptr,
-    float* o_ptr,
-    long vector_size,    
-    PJRT_Buffer_Type type
+std::string getFuncCode(KernelArgs* args) {
+    std::string funcCode = "";
+    switch (args->opCode) {
+        case OpType::VECTOR_ADD:
+            funcCode = GetVectorAdditionOp(getShape(args->inputArgs[0])[0]);
+        default:
+            logger::Log("Unknown opCode", logLevel::ERROR);
+            exit(EXIT_FAILURE);            
+    }
+    return funcCode;
+}
+
+void launchKernelInternal(
+    KernelArgs* offloadingArgs
 ) {
     auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
     if (!handle_) {
@@ -351,20 +364,21 @@ void lauchKernelInternal(
 
     auto client = (PJRT_Client*)checkNull(createClient(api));
     auto cpuDevice = (PJRT_Device*) checkNull(findDevice(api, client, "cpu"));
-    auto exe = (PJRT_LoadedExecutable*) checkNull(compileMLIR(api, client, func_code));
+
+
+    auto exe = (PJRT_LoadedExecutable*) checkNull(compileMLIR(api, client, getFuncCode(offloadingArgs)));
 
     // Buffer from host
-    int in_args_count = 2;
-    const float* in_args[] = {a_ptr, b_ptr}; 
+    int in_args_count = offloadingArgs->inputArgCount;
     PJRT_Buffer* inputArgsBuffers[in_args_count];
     for (int i = 0; i < in_args_count; i++) {
-        inputArgsBuffers[i] = getBufferFromHost(api, client, cpuDevice, in_args[i], vector_size, type);
+        inputArgsBuffers[i] = getBufferFromHost(api, client, cpuDevice, offloadingArgs->inputArgs[i].data, getShape(offloadingArgs->inputArgs[i]));
     }
     PJRT_Buffer** argLists[] = {inputArgsBuffers};
 
 
     // Set buffer save back to host
-    int out_args_count = 1;
+    int out_args_count = offloadingArgs->outputArgCount;
     PJRT_Buffer*** outputLists = (PJRT_Buffer***)malloc(sizeof(PJRT_Buffer**)); // we have one device
     for (int i = 0; i < out_args_count; i++) {
         PJRT_Buffer** outBuffer = (PJRT_Buffer**)malloc(sizeof(PJRT_Buffer*)); // we have one output
@@ -375,7 +389,9 @@ void lauchKernelInternal(
     executeKernel(api, exe, cpuDevice, argLists, outputLists);
     
     // TODO: actually should be able to save to multiple out
-    saveBufferToHostBuffer(api, outputLists[0][0], o_ptr, vector_size, type);
+    for (int i = 0; i < out_args_count; i++) {
+        saveBufferToHostBuffer(api, outputLists[0][i], offloadingArgs->outputArgs[i].data, getShape(offloadingArgs->outputArgs[i]));
+    }
     
     // Destroy Input Events and Memory
     for (int i = 0; i < in_args_count; i++) {
@@ -401,13 +417,8 @@ void lauchKernelInternal(
 
 }
 
-extern "C" void launch_kernel(void* a_ptr, void* b_ptr, void* out_ptr, long n) {
-    float* a_float_ptr = static_cast<float*>(a_ptr);
-    float* b_float_ptr = static_cast<float*>(b_ptr);
-    float* o_float_ptr = static_cast<float*>(out_ptr);
+extern "C" void launch_kernel(void* argsPointer) {
+    KernelArgs* kernelArgs = static_cast<KernelArgs*>(argsPointer);
 
-    // This is just used for this runtime testing case,
-    // will eventually be replaced by the one produced by MLIR lowering
-    auto op = GetVectorAdditionOp(n);
-    lauchKernelInternal(op, a_float_ptr, b_float_ptr, o_float_ptr, n, PJRT_Buffer_Type_F32);
+    launchKernelInternal(kernelArgs);
 }
