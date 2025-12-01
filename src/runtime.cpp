@@ -245,7 +245,7 @@ PJRT_Buffer* getBufferFromHost(
     PJRT_Client* client,
     PJRT_Device* device,
     void* ptr,
-    std::vector<long> shape
+    std::vector<int64_t> shape
 ) {
     PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
     buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
@@ -283,13 +283,13 @@ void saveBufferToHostBuffer(
     const PJRT_Api* api, 
     PJRT_Buffer* source,
     void* dst,
-    std::vector<long> shape
+    std::vector<int64_t> shape
 ) {
     PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
     buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
     buffer_args.src = source;
     buffer_args.dst = dst;
-    buffer_args.dst_size = getSizeOf(PJRT_Buffer_Type_F32) * std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<long>());
+    buffer_args.dst_size = getSizeOf(PJRT_Buffer_Type_F32) * std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int64_t>());
     logger::Log("The size in byte is: " + std::to_string(buffer_args.dst_size), logLevel::DEBUG);
     auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
     checkPJRTError(api, err, "Save buffer to host");
