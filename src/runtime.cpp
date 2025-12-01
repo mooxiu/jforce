@@ -329,8 +329,9 @@ std::string getFuncCode(KernelArgs* args) {
     switch (args->opCode) {
         case OpType::VECTOR_ADD:
             funcCode = GetVectorAdditionOp(getShape(args->inputArgs[0])[0]);
+            break;
         default:
-            logger::Log("Unknown opCode", logLevel::ERROR);
+            logger::Log("Unknown opCode: " + std::to_string((int32_t)args->opCode), logLevel::ERROR);
             exit(EXIT_FAILURE);            
     }
     return funcCode;

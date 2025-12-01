@@ -23,9 +23,9 @@ struct TensorDesc {
 
 struct KernelArgs {
     OpType opCode;
-    long inputArgCount;
+    int32_t inputArgCount;
     TensorDesc* inputArgs;
-    long outputArgCount;
+    int32_t outputArgCount;
     TensorDesc* outputArgs;
 };
 
