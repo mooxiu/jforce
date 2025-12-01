@@ -52,4 +52,4 @@ macro(add_xla_test TEST_NAME HOST_FILE)
 endmacro()
 
 
-add_xla_test(test_vector_add host/host.f90)
+add_xla_test(test_vector_add host/test_vector_addition.f90)

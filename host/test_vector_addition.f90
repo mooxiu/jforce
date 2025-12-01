@@ -1,4 +1,4 @@
-program host_demo 
+program vector_addition_demo
   use iso_c_binding
   use kernel_interface_mod
   implicit none
@@ -57,4 +57,4 @@ program host_demo
 
   deallocate(a, b, out)
 
-end program host_demo
+end program vector_addition_demo
