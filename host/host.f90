@@ -1,47 +1,60 @@
-module host_mod
+program host_demo 
   use iso_c_binding
+  use kernel_interface_mod
   implicit none
 
-  interface
-     subroutine launch_kernel(a, b, out, n) bind(C, name="launch_kernel")
-       use iso_c_binding
-       type(c_ptr), value :: a
-       type(c_ptr), value :: b
-       type(c_ptr), value :: out
-       integer(c_long), value :: n
-     end subroutine
-  end interface
+  integer(c_long), parameter :: n = 33
+  real(c_float), allocatable, target :: a(:), b(:), out(:)
+  integer :: i
 
-contains
+  allocate(a(n), b(n), out(n))
 
-  subroutine run_host()
-    use iso_c_binding
-    implicit none
-
-    integer(c_long), parameter :: n = 33
-    real(c_float), allocatable, target :: a(:), b(:), out(:)
-    integer :: i
-
-    allocate(a(n), b(n), out(n))
-
-    ! Initialization
-    do i = 1, n
-      a(i) = real(i, c_float)
-      b(i) = 100.0_c_float
-    end do
-
-    ! Instead of Running OpenMP, call Cpp function using ABI:
-    call launch_kernel(c_loc(a), c_loc(b), c_loc(out), n)
-
-    print *, "Result out = ", out
-
-    deallocate(a, b, out)
-  end subroutine
-
-end module
+  ! Initialization
+  do i = 1, n
+    a(i) = real(i, c_float)
+    b(i) = 100.0_c_float
+  end do
 
 
-program main
-  use host_mod
-  call run_host()
-end program
+  ! Instead of Running OpenMP, call Cpp function using ABI:
+  block
+    type(tensorDesc), target, dimension(2) :: input_descs
+    type(tensorDesc), target, dimension(1) :: output_descs
+    type(KernelArgs), target :: args
+
+    integer(c_long), target:: shape_A(1) = n
+    integer(c_long), target:: shape_B(1) = n
+    integer(c_long), target:: shape_Out(1) = n
+
+    input_descs(1)%data = c_loc(a)
+    input_descs(1)%shape = c_loc(shape_A)
+    input_descs(1)%rank = 1
+    input_descs(1)%dtype = 0
+
+    input_descs(2)%data = c_loc(b)
+    input_descs(2)%shape = c_loc(shape_B)
+    input_descs(2)%rank = 1
+    input_descs(2)%dtype = 0
+
+    output_descs(1)%data = c_loc(out)
+    output_descs(1)%shape = c_loc(shape_Out)
+    output_descs(1)%rank = 1
+    output_descs(1)%dtype = 0
+
+    args%op_type = OP_VECTOR_ADD
+    args%num_inputs = 2
+    args%inputs = c_loc(input_descs(1))
+    args%num_outputs = 1
+    args%outputs = c_loc(output_descs(1))
+
+    call launch_kernel(c_loc(args))
+  end block
+  ! End of offloading
+
+
+  ! Verification and deallocate
+  print *, "Result out = ", out
+
+  deallocate(a, b, out)
+
+end program host_demo

@@ -15,10 +15,13 @@ find_package(Protobuf REQUIRED)
 add_subdirectory(third_party/protos)
 
 add_executable("${TARGET_NAME}"
+    host/common/kernel_interface.f90
     host/host.f90
     src/runtime.cpp
     src/operations.h
     src/operations.cpp
+    src/kernel_pointer_interface.h
+    src/kernel_pointer_interface.cpp
 )
 
 
