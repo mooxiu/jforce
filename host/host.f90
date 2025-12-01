@@ -34,9 +34,9 @@ module host_mod
   input_descs(2)%rank = 1
   input_descs(2)%dtype = 0
 
-  output_descs(1)%data = c_loc(c)
-  integer(c_long), target:: shape_C(1) = n
-  output_descs(1)%shape = c_loc(shape_C)
+  output_descs(1)%data = c_loc(out)
+  integer(c_long), target:: shape_Out(1) = n
+  output_descs(1)%shape = c_loc(shape_Out)
   output_descs(1)%rank = 1
   output_descs(1)%dtype = 0
 
