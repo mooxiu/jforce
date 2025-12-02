@@ -335,6 +335,9 @@ std::string getFuncCode(KernelArgs *args) {
   case OpType::DOT_PRODUCT:
     funcCode = GetDotProductOp(getShape(inputArgs[0])[0]);
     break;
+  case OpType::MATRIX_MUL:
+    funcCode = GetMatrixMultiplicationOp(getShape(inputArgs[0]), getShape(inputArgs[1]));
+    break;
   default:
     logger::Log("Unknown opCode: " + std::to_string((int32_t)args->opCode),
                 logLevel::ERROR);
