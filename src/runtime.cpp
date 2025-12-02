@@ -332,6 +332,9 @@ std::string getFuncCode(KernelArgs *args) {
   case OpType::TRANSPOSE:
     funcCode = GetTransposeOp((getShape(inputArgs[0])));
     break;
+  case OpType::DOT_PRODUCT:
+    funcCode = GetDotProductOp(getShape(inputArgs[0])[0]);
+    break;
   default:
     logger::Log("Unknown opCode: " + std::to_string((int32_t)args->opCode),
                 logLevel::ERROR);

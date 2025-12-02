@@ -59,3 +59,4 @@ endmacro()
 # -------------------- Adding Target for Each Test Case --------------------  
 add_xla_test(test_vector_add host/test_vector_addition.f90)
 add_xla_test(test_transpose host/test_transpose.f90)
+add_xla_test(test_dot_product host/test_dot_product.f90)
