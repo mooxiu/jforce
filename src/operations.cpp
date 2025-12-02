@@ -80,25 +80,30 @@ std::string GetTransposeOp(std::vector<int64_t> shape) {
 std::string GetMatrixMultiplicationOp(std::vector<int64_t> m1Shape,
                                       std::vector<int64_t> m2Shape) {
   // Sanity check
-  if (m1Shape[1] != m2Shape[0]) {
+  if (m1Shape[0] != m2Shape[1]) {
     logger::Log("Shape not compatible!", logLevel::ERROR);
     exit(EXIT_FAILURE);
   }
+  // Notice "stablehlo.dot_general %arg1, %arg0" is reversed because Fortran's view of matrix is column based.
+  // For A x B in Fortran, we actually get A^T, B^T in C++, we need to compute B^TA^T instead of A^TB^T!
   std::string op =
       R"(
             module @jit_matrix_multiply attributes {jax.uses_shape_polymorphism = false, mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
                 func.func public @main(%arg0: tensor<{SHAPE1}xf32>, %arg1: tensor<{SHAPE2}xf32>) -> (tensor<{SHAPE3}xf32> {jax.result_info = "result"}) {
-                    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<{SHAPE1}xf32>, tensor<{SHAPE2}xf32>) -> tensor<{SHAPE3}xf32>
+                    %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0] : (tensor<{SHAPE2}xf32>, tensor<{SHAPE1}xf32>) -> tensor<{SHAPE3}xf32>
                     return %0 : tensor<{SHAPE3}xf32>
                 }
             }            
         )";
+  // X, Y -> Y, X
   std::string shape1 =
       std::to_string(m1Shape[0]) + "x" + std::to_string(m1Shape[1]);
+  // Y, Z -> Z, Y
   std::string shape2 =
       std::to_string(m2Shape[0]) + "x" + std::to_string(m2Shape[1]);
+  // compute result should be Z, X
   std::string shape3 =
-      std::to_string(m1Shape[0]) + "x" + std::to_string(m2Shape[1]);
+      std::to_string(m2Shape[0]) + "x" + std::to_string(m1Shape[1]);
   replace_all(op, "{SHAPE1}", shape1);
   replace_all(op, "{SHAPE2}", shape2);
   replace_all(op, "{SHAPE3}", shape3);

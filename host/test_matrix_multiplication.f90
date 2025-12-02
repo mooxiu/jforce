@@ -3,9 +3,9 @@ program test_matrix_multiplication
   use kernel_interface_mod
   implicit none
 
-  integer(c_long), parameter :: X = 2
-  integer(c_long), parameter :: Y = 2
-  integer(c_long), parameter :: Z = 2
+  integer(c_long), parameter :: X = 8
+  integer(c_long), parameter :: Y = 10
+  integer(c_long), parameter :: Z = 12
   real(c_float), allocatable, target :: a(:, :), b(:, :), out(:, :)
   integer :: i, j
 
@@ -52,8 +52,8 @@ program test_matrix_multiplication
     shape_B(1) = Z
     shape_B(2) = Y
 
-    shape_Out(1) = Z
-    shape_Out(2) = X
+    shape_Out(1) = X
+    shape_Out(2) = Z
 
 
     input_descs(1)%data = c_loc(a)
