@@ -3,8 +3,8 @@ program transpose_demo
   use kernel_interface_mod
   implicit none
 
-  integer(c_long), parameter :: M = 2
-  integer(c_long), parameter :: N = 3
+  integer(c_long), parameter :: M = 7
+  integer(c_long), parameter :: N = 9
   real(c_float), allocatable, target :: a(:, :), out(:, :)
   integer :: i, j
 
@@ -31,11 +31,13 @@ program transpose_demo
     integer(c_long), target :: shape_A(2)
     integer(c_long), target :: shape_Out(2)
 
-    shape_A(1) = M
-    shape_A(2) = N
+    ! Notice that in fortran, the matrix is stored by column!!!!!!!!
+    ! That's why we need to pass by column, row
+    shape_A(1) = N
+    shape_A(2) = M
 
-    shape_Out(1) = N
-    shape_Out(2) = M
+    shape_Out(1) = M
+    shape_Out(2) = N
 
 
     input_descs(1)%data = c_loc(a)
