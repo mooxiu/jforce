@@ -254,7 +254,6 @@ PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
   buffer_args.client = client;
   buffer_args.data = ptr;
   // TODO: should reconsider how to set the size and dimmension for general
-  // shape
   buffer_args.num_dims = shape.size();
   int64_t dims_arr[shape.size()];
   for (int i = 0; i < shape.size(); i++) {
@@ -296,9 +295,14 @@ void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, void *dst,
   return;
 }
 
-void executeKernel(const PJRT_Api *api, PJRT_LoadedExecutable *exe,
-                   PJRT_Device *device, PJRT_Buffer ***argLists,
-                   PJRT_Buffer ***outLists) {
+void executeKernel(
+  const PJRT_Api *api, 
+  PJRT_LoadedExecutable *exe,
+  PJRT_Device *device, 
+  PJRT_Buffer ***argLists,
+  PJRT_Buffer ***outLists,
+  const int in_args_count
+) {
   PJRT_LoadedExecutable_Execute_Args leeas = {};
   leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
   // function and args
@@ -306,12 +310,9 @@ void executeKernel(const PJRT_Api *api, PJRT_LoadedExecutable *exe,
   PJRT_ExecuteOptions execute_options = {};
   execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
   leeas.options = &execute_options;
-
   leeas.num_devices = (size_t)1;
-  leeas.num_args = (size_t)2; // TODO: should accept general input args num
-
+  leeas.num_args = (size_t)in_args_count;
   leeas.argument_lists = argLists;
-
   // we have one device, and the output by this device is 1.
   leeas.output_lists = outLists;
   leeas.execute_device = device;
@@ -322,17 +323,7 @@ void executeKernel(const PJRT_Api *api, PJRT_LoadedExecutable *exe,
 
 std::string getFuncCode(KernelArgs *args) {
   std::string funcCode = "";
-  TensorDesc* inputArgs = static_cast<TensorDesc*>(args->inputArgs);
-  TensorDesc ia0 =  inputArgs[0];
-  std::cout << "rank: " << ia0.rank << std::endl;
-  std::cout << "shape: ";
-  auto shape  = getShape(ia0);
-  std::for_each(shape.begin(), shape.end(), [](auto i) {
-    std::cout << i << ", ";
-  });
-  std::cout << std::endl;
-
-
+  TensorDesc *inputArgs = static_cast<TensorDesc *>(args->inputArgs);
 
   switch (args->opCode) {
   case OpType::VECTOR_ADD:
@@ -399,7 +390,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   }
 
   // Execute the kernel
-  executeKernel(api, exe, cpuDevice, argLists, outputLists);
+  executeKernel(api, exe, cpuDevice, argLists, outputLists, in_args_count);
 
   // TODO: actually should be able to save to multiple out
   for (int i = 0; i < out_args_count; i++) {
