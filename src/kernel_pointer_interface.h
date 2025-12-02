@@ -29,4 +29,4 @@ struct KernelArgs {
   TensorDesc *outputArgs;
 };
 
-std::vector<long> getShape(TensorDesc td);
+std::vector<int64_t> getShape(TensorDesc td);

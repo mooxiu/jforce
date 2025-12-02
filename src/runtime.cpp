@@ -322,9 +322,24 @@ void executeKernel(const PJRT_Api *api, PJRT_LoadedExecutable *exe,
 
 std::string getFuncCode(KernelArgs *args) {
   std::string funcCode = "";
+  TensorDesc* inputArgs = static_cast<TensorDesc*>(args->inputArgs);
+  TensorDesc ia0 =  inputArgs[0];
+  std::cout << "rank: " << ia0.rank << std::endl;
+  std::cout << "shape: ";
+  auto shape  = getShape(ia0);
+  std::for_each(shape.begin(), shape.end(), [](auto i) {
+    std::cout << i << ", ";
+  });
+  std::cout << std::endl;
+
+
+
   switch (args->opCode) {
   case OpType::VECTOR_ADD:
-    funcCode = GetVectorAdditionOp(getShape(args->inputArgs[0])[0]);
+    funcCode = GetVectorAdditionOp(getShape(inputArgs[0])[0]);
+    break;
+  case OpType::TRANSPOSE:
+    funcCode = GetTransposeOp((getShape(inputArgs[0])));
     break;
   default:
     logger::Log("Unknown opCode: " + std::to_string((int32_t)args->opCode),

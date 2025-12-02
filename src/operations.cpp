@@ -1,4 +1,5 @@
 #include "operations.h"
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 
@@ -25,7 +26,7 @@ void replace_all(std::string &subject, const std::string &search,
   }
 };
 
-std::string GetVectorAdditionOp(int size) {
+std::string GetVectorAdditionOp(int64_t size) {
   // StableHLO
   std::string op =
       R"(
@@ -42,7 +43,7 @@ std::string GetVectorAdditionOp(int size) {
   return op;
 };
 
-std::string GetDotProductOp(int size) {
+std::string GetDotProductOp(int64_t size) {
   std::string op =
       R"(
             module @jit_dot_product attributes {jax.uses_shape_polymorphism = false, mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
@@ -57,7 +58,7 @@ std::string GetDotProductOp(int size) {
   return op;
 }
 
-std::string GetTransposeOp(std::vector<int> shape) {
+std::string GetTransposeOp(std::vector<int64_t> shape) {
   std::string op =
       R"(
             module @jit_transpose attributes {jax.uses_shape_polymorphism = false, mhlo.num_partitions = 1 : i32, mhlo.num_replicas = 1 : i32} {
@@ -76,8 +77,8 @@ std::string GetTransposeOp(std::vector<int> shape) {
   return op;
 }
 
-std::string GetMatrixMultiplicationOp(std::vector<int> m1Shape,
-                                      std::vector<int> m2Shape) {
+std::string GetMatrixMultiplicationOp(std::vector<int64_t> m1Shape,
+                                      std::vector<int64_t> m2Shape) {
   // Sanity check
   if (m1Shape[1] != m2Shape[0]) {
     logger::Log("Shape not compatible!", logLevel::ERROR);
