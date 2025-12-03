@@ -5,3 +5,4 @@ third_party/pjrt_plugins/*.so
 third_party/protos/generated
 .cache
 leak_report.txt
+err.log

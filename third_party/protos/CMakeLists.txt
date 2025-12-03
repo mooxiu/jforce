@@ -27,8 +27,10 @@ protobuf_generate(
     LANGUAGE      cpp
     PROTOC_OUT_DIR "${PROTO_TARGET_DIR}"
     PROTOS        "${XLA_PROTO_FILES}"
-    IMPORT_DIRS   "${PROTO_SRC_DIR}"   # <<< 关键：作为 proto 的“根”
+    IMPORT_DIRS   "${PROTO_SRC_DIR}"  "${Protobuf_INCLUDE_DIRS}" # <--- 添加这个
 )
+
+target_link_libraries(xla_protos PUBLIC protobuf::libprotobuf)
 
 target_include_directories(xla_protos PUBLIC 
   "${PROTO_TARGET_DIR}"

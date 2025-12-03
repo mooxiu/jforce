@@ -9,7 +9,7 @@ set(CMAKE_Fortran_COMPILER "${LLVM_PREFIX}/bin/flang-new" CACHE FILEPATH "LLVM F
 project(xla_glue_project LANGUAGES CXX Fortran)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 
 # -------------------- Compile Fortran Kernel Interface as A library --------------------  
@@ -20,7 +20,8 @@ add_library(fortran_kernel_interface
 
 # -------------------- Compile CPP Runtime as A library --------------------  
 
-find_package(Protobuf REQUIRED)
+find_package(absl REQUIRED CONFIG)
+find_package(Protobuf REQUIRED CONFIG)
 add_subdirectory(third_party/protos)
 
 add_library(xla_glue_runtime 
@@ -35,6 +36,7 @@ target_link_libraries(xla_glue_runtime PRIVATE
   stdc++
   xla_protos
   protobuf::libprotobuf
+  ${CMAKE_DL_LIBS}
 )
 
 set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
