@@ -44,7 +44,7 @@ set(DEFAULT_PLUGIN_DIR "${THIRD_PARTY}/pjrt_plugins")
 
 target_compile_definitions(xla_glue_runtime
     PRIVATE
-    DEFAULT_PJRT_PLUGIN_PATH="${DEFAULT_PLUGIN_DIR}/pjrt_c_api_cpu_plugin.so"
+    DEFAULT_PJRT_PLUGIN_PATH="${DEFAULT_PLUGIN_DIR}/pjrt_c_api_gpu_plugin.so"
 )
 
 

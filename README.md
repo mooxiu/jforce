@@ -28,7 +28,10 @@ seems we have build by ourseleves:
 ```sh
 # under xla project
 bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
+# if build for GPU
+bazel build //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
 ```
+
 
 
 ## Compile
