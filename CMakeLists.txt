@@ -1,7 +1,9 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
-set(LLVM_PREFIX "/home/haruka/Documents/workspace/projects/llvm-project/build")
+# set(LLVM_PREFIX "/home/haruka/Documents/workspace/projects/llvm-project/build")
+set(LLVM_PREFIX "/home/muyao/projects/llvm-project/build")
+
 set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 set(CMAKE_Fortran_COMPILER "${LLVM_PREFIX}/bin/flang-new" CACHE FILEPATH "LLVM Fortran Compiler" FORCE)
 project(xla_glue_project LANGUAGES CXX Fortran)

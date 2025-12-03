@@ -19,6 +19,10 @@ to make it work, we have to copy and compile the whole tree of `.proto` files.
 
 This is done in `third_party/protos/`.
 
+Need to install protoc, or the cmake won't work.
+- Install using package manager is the simplest, just follow: https://protobuf.dev/installation/
+- If don't have the permission, need to install both the compiler and the runtime: https://github.com/protocolbuffers/protobuf/tree/main/src
+
 ## library
 seems we have build by ourseleves:
 ```sh
