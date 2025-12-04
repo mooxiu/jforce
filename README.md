@@ -42,7 +42,7 @@ mkdir build && cd build
 # this may fail if protoc not found
 cmake -G Ninja ./..
 # replace the path with the place protobuf installed
-cmake -G Ninja ./.. -DCMAKE_PREFIX_PATH=$HOME/opt/protobuf`
+cmake -G Ninja ./.. -DCMAKE_PREFIX_PATH=$HOME/opt/protobuf
 
 ninja
 ```

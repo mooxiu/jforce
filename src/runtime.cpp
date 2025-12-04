@@ -355,7 +355,8 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   auto checkNull = [handle_](void *ptr) -> void * {
     if (!ptr) {
       // don't forget to clear the handle_ before panic
-      dlclose(handle_);
+      std::cerr << "[FATAL] Initialization failed. Exiting." << std::endl;
+      // dlclose(handle_);
       exit(1);
     }
     return ptr;
@@ -370,7 +371,8 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   logger::Log("The API Loaded Successfully!", logLevel::DEBUG);
 
   auto client = (PJRT_Client *)checkNull(createClient(api));
-  auto cpuDevice = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
+  // auto cpuDevice = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
+  auto device = (PJRT_Device *)checkNull(findDevice(api, client, "gpu"));
 
   auto exe = (PJRT_LoadedExecutable *)checkNull(
       compileMLIR(api, client, getFuncCode(offloadingArgs)));
@@ -380,7 +382,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   PJRT_Buffer *inputArgsBuffers[in_args_count];
   for (int i = 0; i < in_args_count; i++) {
     inputArgsBuffers[i] = getBufferFromHost(
-        api, client, cpuDevice, offloadingArgs->inputArgs[i].data,
+        api, client, device, offloadingArgs->inputArgs[i].data,
         getShape(offloadingArgs->inputArgs[i]));
   }
   PJRT_Buffer **argLists[] = {inputArgsBuffers};
@@ -396,7 +398,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   }
 
   // Execute the kernel
-  executeKernel(api, exe, cpuDevice, argLists, outputLists, in_args_count);
+  executeKernel(api, exe, device, argLists, outputLists, in_args_count);
 
   // TODO: actually should be able to save to multiple out
   for (int i = 0; i < out_args_count; i++) {
