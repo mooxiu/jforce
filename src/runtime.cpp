@@ -352,15 +352,6 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
     std::cerr << "error loading plugin: " << dlerror() << std::endl;
     return;
   }
-  auto checkNull = [handle_](void *ptr) -> void * {
-    if (!ptr) {
-      // don't forget to clear the handle_ before panic
-      std::cerr << "[FATAL] Initialization failed. Exiting." << std::endl;
-      // dlclose(handle_);
-      exit(1);
-    }
-    return ptr;
-  };
   // follow the example of `man dlopen`
   auto get_api_fn = (PJRT_Api * (*)()) dlsym(handle_, "GetPjrtApi");
   if (!get_api_fn) {
@@ -369,6 +360,21 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   }
   auto api = get_api_fn();
   logger::Log("The API Loaded Successfully!", logLevel::DEBUG);
+
+  auto checkNull = [handle_](void *ptr) -> void * {
+    if (!ptr) {
+      // don't forget to clear the handle_ before panic
+      std::cerr << "[FATAL] Pointer not supposed to be null is null!! Exiting." << std::endl;
+      // dlclose(handle_);
+      exit(1);
+    }
+    return ptr;
+  };
+
+  PJRT_Plugin_Initialize_Args initArgs = {};
+  initArgs.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
+  auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
+  checkPJRTError(api, initErr, "Init Plugins");
 
   auto client = (PJRT_Client *)checkNull(createClient(api));
   // auto cpuDevice = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
