@@ -3,9 +3,9 @@ program test_matrix_multiplication
   use kernel_interface_mod
   implicit none
 
-  integer(c_long), parameter :: X = 8
-  integer(c_long), parameter :: Y = 10
-  integer(c_long), parameter :: Z = 12
+  integer(c_long), parameter :: X = 20
+  integer(c_long), parameter :: Y = 30
+  integer(c_long), parameter :: Z = 40
   real(c_float), allocatable, target :: a(:, :), b(:, :), out(:, :)
   integer :: i, j
 

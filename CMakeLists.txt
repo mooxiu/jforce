@@ -58,11 +58,6 @@ macro(add_xla_test TEST_NAME HOST_FILE)
     fortran_kernel_interface
     xla_glue_runtime
   )
-
-  # shared library for runtime, can use by "export LD_LIBRARY_PATH=LIB:$LD_LIBRARY_PATH"
-  set_target_properties("${TEST_NAME}" PROPERTIES 
-    BUILD_RPATH "${THIRD_PARTY}/libs"
-  )
 endmacro()
 
 

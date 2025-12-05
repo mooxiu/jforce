@@ -133,7 +133,7 @@ PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
     // TODO: this might make compiled code slower!!!
-    // build_opts->mutable_debug_options()->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
+    build_opts->mutable_debug_options()->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
 
     std::string buf;
     // SerializeToString(): This is protobuf's method inherited by
@@ -292,11 +292,25 @@ void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, void *dst,
   buffer_args.dst_size = getSizeOf(PJRT_Buffer_Type_F32) *
                          std::accumulate(shape.begin(), shape.end(), 1,
                                          std::multiplies<int64_t>());
+  buffer_args.event = nullptr;
+
   logger::Log("The size in byte is: " + std::to_string(buffer_args.dst_size),
               logLevel::DEBUG);
   auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
-  checkPJRTError(api, err, "Save buffer to host");
-  return;
+  if (!checkPJRTError(api, err, "Save buffer to host")){
+    return;
+  }
+  if (buffer_args.event!= nullptr) {
+    PJRT_Event_Await_Args await_args = {};
+    await_args.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
+    await_args.event = buffer_args.event;
+    checkPJRTError(api, api->PJRT_Event_Await(&await_args), "Waiting for host buffer copy");
+
+    PJRT_Event_Destroy_Args destroy_args = {};
+    destroy_args.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE;
+    destroy_args.event = buffer_args.event;
+    api->PJRT_Event_Destroy(&destroy_args);
+  }
 }
 
 void executeKernel(
