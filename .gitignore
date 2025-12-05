@@ -2,6 +2,7 @@
 *.venv
 build
 third_party/pjrt_plugins/*.so
+third_party/libs
 third_party/protos/generated
 .cache
 leak_report.txt

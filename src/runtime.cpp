@@ -132,6 +132,8 @@ PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
         opts.mutable_executable_build_options();
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
+    // TODO: this might make compiled code slower!!!
+    // build_opts->mutable_debug_options()->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
 
     std::string buf;
     // SerializeToString(): This is protobuf's method inherited by
@@ -228,6 +230,8 @@ PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
     return nullptr;
   }
 
+  // TODO: Delete this after testing
+  // chosen_device_idx = 2;
   logger::Log("Have chosen device id: " + std::to_string(chosen_device_idx) +
                   " , desc: " + desc,
               logLevel::DEBUG);
@@ -347,7 +351,8 @@ std::string getFuncCode(KernelArgs *args) {
 }
 
 void launchKernelInternal(KernelArgs *offloadingArgs) {
-  auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
+  auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+  // auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW|RTLD_GLOBAL);
   if (!handle_) {
     std::cerr << "error loading plugin: " << dlerror() << std::endl;
     return;
@@ -378,7 +383,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
 
   auto client = (PJRT_Client *)checkNull(createClient(api));
   // auto cpuDevice = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
-  auto device = (PJRT_Device *)checkNull(findDevice(api, client, "gpu"));
+  auto device = (PJRT_Device *)checkNull(findDevice(api, client, "cuda"));
 
   auto exe = (PJRT_LoadedExecutable *)checkNull(
       compileMLIR(api, client, getFuncCode(offloadingArgs)));

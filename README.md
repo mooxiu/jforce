@@ -28,11 +28,17 @@ seems we have build by ourseleves:
 ```sh
 # under xla project
 bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
+
 # if build for GPU
-bazel build //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
+python3.11 ./configure.py --backend CUDA
+# output be something like:
+# INFO:root:Trying to find path to nvidia-smi...
+# INFO:root:Found path to nvidia-smi at /usr/bin/nvidia-smi
+# INFO:root:Found CUDA compute capabilities: ['8.0']
+# INFO:root:Writing bazelrc to /home/muyao/projects/xla/xla_configure.bazelrc...
+
+bazel build --config=cuda -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
 ```
-
-
 
 ## Compile
 
@@ -47,9 +53,11 @@ cmake -G Ninja ./.. -DCMAKE_PREFIX_PATH=$HOME/opt/protobuf
 ninja
 ```
 
-
-
 ## Runtime
+
+When running in GPU, there might be some libraries could not be found.
+Need to find those in the `external` library of `bazel-out` of XLA when compiling plugin shared library.
+I copied them to `third_party_libs`.
 
 Runtime will do following this:
 - Compile the StableHLO to executable (PJRT)

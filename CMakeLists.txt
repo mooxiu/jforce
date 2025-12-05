@@ -20,6 +20,8 @@ add_library(fortran_kernel_interface
 
 # -------------------- Compile CPP Runtime as A library --------------------  
 
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/opt/protobuf/include/absl")
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/opt/protobuf")
 find_package(absl REQUIRED CONFIG)
 find_package(Protobuf REQUIRED CONFIG)
 add_subdirectory(third_party/protos)
@@ -36,15 +38,14 @@ target_link_libraries(xla_glue_runtime PRIVATE
   stdc++
   xla_protos
   protobuf::libprotobuf
-  ${CMAKE_DL_LIBS}
+  ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
 )
 
 set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-set(DEFAULT_PLUGIN_DIR "${THIRD_PARTY}/pjrt_plugins")
 
 target_compile_definitions(xla_glue_runtime
     PRIVATE
-    DEFAULT_PJRT_PLUGIN_PATH="${DEFAULT_PLUGIN_DIR}/pjrt_c_api_gpu_plugin.so"
+    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_gpu_plugin.so"
 )
 
 
@@ -56,6 +57,11 @@ macro(add_xla_test TEST_NAME HOST_FILE)
   target_link_libraries("${TEST_NAME}" PRIVATE
     fortran_kernel_interface
     xla_glue_runtime
+  )
+
+  # shared library for runtime, can use by "export LD_LIBRARY_PATH=LIB:$LD_LIBRARY_PATH"
+  set_target_properties("${TEST_NAME}" PROPERTIES 
+    BUILD_RPATH "${THIRD_PARTY}/libs"
   )
 endmacro()
 
