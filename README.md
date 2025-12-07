@@ -3,7 +3,8 @@
 ## Dependencies
 ## compile time
 ```sh
-cp ${XLA}/xla/pjrt/c/*.h ./third_party/headers/
+export XLA_PATH="/home/muyao/projects/xla"
+cp ${XLA_PATH}/xla/pjrt/c/pjrt_c_api.h ./third_party/headers/
 ```
 But I think most header files are not needed, only `pjrt_c_api.h` is the single most important one.
 
@@ -17,7 +18,19 @@ Which means we have to copy it from XLA project and configure protobuf to compil
 To make it worse, the `.proto` file also depends on others,
 to make it work, we have to copy and compile the whole tree of `.proto` files.
 
-This is done in `third_party/protos/`.
+In total, here are the protos I copied to `./third_party/protos/xla`:
+```
+./pjrt/proto/compile_options.proto
+./service/hlo.proto
+./service/metrics.proto
+./tsl/protobuf/dnn.proto
+./stream_executor/cuda/cuda_compute_capability.proto
+./stream_executor/device_description.proto
+./autotune_results.proto
+./autotuning.proto
+./xla.proto
+./xla_data.proto
+```
 
 Need to install protoc, or the cmake won't work.
 - Install using package manager is the simplest, just follow: https://protobuf.dev/installation/
@@ -57,7 +70,32 @@ ninja
 
 When running in GPU, there might be some libraries could not be found.
 Need to find those in the `external` library of `bazel-out` of XLA when compiling plugin shared library.
-I copied them to `third_party_libs`.
+
+Note that this is also because of lack of library:
+```sh
+[muyao@memkf03 xla_glue]$ ./build/test_dot_product
+error loading plugin: /home/muyao/projects/xla_glue/third_party/pjrt_plugins/pjrt_c_api_gpu_plugin.so: undefined symbol: ncclMemAlloc
+```
+In my case, I need `libnccl.so.2`.
+
+In total, here are the libs I manually copied:
+```
+libnvshmem_host.so.3
+nvshmem_bootstrap_uid.so.3
+nvshmem_transport_ibrc.so.3
+libcudnn_engines_precompiled.so.9
+libcudnn_ops.so.9
+libcudnn_graph.so.9
+libcudnn_cnn.so.9
+libcudnn_adv.so.9
+libcudnn_engines_runtime_compiled.so.9
+libcudnn_heuristic.so.9
+libnvrtc-builtins.so.12.9
+libcudnn.so.9
+libnccl.so.2
+```
+
+
 
 Runtime will do following this:
 - Compile the StableHLO to executable (PJRT)
