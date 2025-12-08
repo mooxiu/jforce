@@ -133,7 +133,14 @@ PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
     // TODO: this might make compiled code slower!!!
-    build_opts->mutable_debug_options()->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
+    auto debugOptions = build_opts->mutable_debug_options();
+    debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
+    if (const char* cuda_path_env = std::getenv("MY_CUDA_PATH")) {
+      debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
+      logger::Log("Setting cuda_data_dir to: " + std::string(cuda_path_env), logLevel::DEBUG);
+    } else {
+      // DO NOTHING, this might cause warning
+    } 
 
     std::string buf;
     // SerializeToString(): This is protobuf's method inherited by

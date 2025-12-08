@@ -78,7 +78,7 @@ error loading plugin: /home/muyao/projects/xla_glue/third_party/pjrt_plugins/pjr
 ```
 In my case, I need `libnccl.so.2`.
 
-In total, here are the libs I manually copied:
+In total, here are the libs I manually copied to `./third_party/libs`:
 ```
 libnvshmem_host.so.3
 nvshmem_bootstrap_uid.so.3
@@ -93,6 +93,12 @@ libcudnn_heuristic.so.9
 libnvrtc-builtins.so.12.9
 libcudnn.so.9
 libnccl.so.2
+```
+
+When run the programs, need to:
+```sh
+export LD_LIBRARY_PATH="$HOME/projects/xla_glue/third_party/libs:$LD_LIBRARY_PATH"
+export MY_CUDA_PATH="/usr/lib/cuda" # based on the specific CUDA location
 ```
 
 
