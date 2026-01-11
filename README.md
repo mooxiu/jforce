@@ -1,15 +1,21 @@
 # XLA_GLUE
 
-## Dependencies
-## compile time
+## Preparation 1: XLA Related
+### Copy PJRT API 
 ```sh
 export XLA_PATH="/home/muyao/projects/xla"
 cp ${XLA_PATH}/xla/pjrt/c/pjrt_c_api.h ./third_party/headers/
 ```
 But I think most header files are not needed, only `pjrt_c_api.h` is the single most important one.
 
-### Compile Option 
-To compile MLIR, we need to set compile option.
+### Copy Protos and Compile Them
+
+> Prerequest: need to have `protoc`
+> - Install using package manager is the simplest, just follow: https://protobuf.dev/installation/
+> - If don't have the permission, need to install both the compiler and the runtime: https://github.com/protocolbuffers/protobuf/tree/main/src
+
+
+To compile stablehlo, we need to set compile option.
 But in the `pjrt_c_api.h`, we have to set a "Serialized CompileOptionsProto". 
 
 CompileOptionsProto is a `struct` produced by `xla/pjrt/proto/compile_options.proto`.
@@ -32,11 +38,8 @@ In total, here are the protos I copied to `./third_party/protos/xla`:
 ./xla_data.proto
 ```
 
-Need to install protoc, or the cmake won't work.
-- Install using package manager is the simplest, just follow: https://protobuf.dev/installation/
-- If don't have the permission, need to install both the compiler and the runtime: https://github.com/protocolbuffers/protobuf/tree/main/src
 
-## library
+### library
 seems we have build by ourseleves:
 ```sh
 # under xla project
@@ -53,6 +56,16 @@ python3.11 ./configure.py --backend CUDA
 bazel build --config=cuda -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
 ```
 
+### Other things
+- `absl` is required by protobuf files
+
+
+## Preparation 2: LLVM, StableHLO and Others 
+
+- Need to build compile LLVM and MLIR
+- Need to build StableHLO based on MLIR
+
+
 ## Compile
 
 ```sh
@@ -66,7 +79,7 @@ cmake -G Ninja ./.. -DCMAKE_PREFIX_PATH=$HOME/opt/protobuf
 ninja
 ```
 
-## Runtime
+## Run on GPU 
 
 When running in GPU, there might be some libraries could not be found.
 Need to find those in the `external` library of `bazel-out` of XLA when compiling plugin shared library.
