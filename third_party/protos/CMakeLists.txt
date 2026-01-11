@@ -1,6 +1,3 @@
-# Should install protobuf first: https://protobuf.dev/installation/
-message(STATUS "Found Protobuf: ${PROTOBUF_LIBRARY} (Version ${PROTOBUF_VERSION})")
-
 set(PROTO_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(XLA_PROTO_FILES 
@@ -27,10 +24,12 @@ protobuf_generate(
     LANGUAGE      cpp
     PROTOC_OUT_DIR "${PROTO_TARGET_DIR}"
     PROTOS        "${XLA_PROTO_FILES}"
-    IMPORT_DIRS   "${PROTO_SRC_DIR}"  "${Protobuf_INCLUDE_DIRS}" # <--- 添加这个
+    IMPORT_DIRS   
+      "${PROTO_SRC_DIR}"   
+      "${protobuf_SOURCE_DIR}/src"
 )
 
-target_link_libraries(xla_protos PUBLIC protobuf::libprotobuf)
+target_link_libraries(xla_protos PUBLIC libprotobuf)
 
 target_include_directories(xla_protos PUBLIC 
   "${PROTO_TARGET_DIR}"
