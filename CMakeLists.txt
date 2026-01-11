@@ -47,6 +47,7 @@ add_library(xla_glue_runtime
 target_link_libraries(xla_glue_runtime PRIVATE 
   stdc++
   xla_protos
+  protobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
 )
 
@@ -54,7 +55,7 @@ set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
 target_compile_definitions(xla_glue_runtime
     PRIVATE
-    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_gpu_plugin.so"
+    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
 )
 
 
