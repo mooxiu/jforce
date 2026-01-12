@@ -1,7 +1,7 @@
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
 #include "kernel_pointer_interface.h"
-#include "operations.h"
+#include "utilities.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
