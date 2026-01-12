@@ -15,9 +15,22 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 set(CMAKE_CXX_STANDARD 17)
 
-
+# -------------------- Find MLIR, LLVM, Clang, Flang --------------------  
 list(APPEND CMAKE_PREFIX_PATH ${InstallPath})
 find_package(MLIR REQUIRED CONFIG)
+find_package(LLVM REQUIRED CONFIG)
+find_package(Clang REQUIRED CONFIG)
+find_package(Flang REQUIRED CONFIG)
+
+# -------------------- Find StableHLO --------------------  
+set(STABLEHLO_PROJECT "/home/haruka/Documents/workspace/projects/stablehlo")
+# set(STABLEHLO_SRC_PATH "${STABLEHLO_PROJECT}/stablehlo")
+set(STABLEHLO_BUILD_PATH "${STABLEHLO_PROJECT}/build")
+set(STABLEHLO_STATIC_LIBS "${STABLEHLO_BUILD_PATH}/lib")
+message(STATUS "[DEBUG] THE stablehlo project: ${STABLEHLO_PROJECT}")
+message(STATUS "[DEBUG] THE stablehlo build: ${STABLEHLO_BUILD_PATH}")
+file(GLOB stablehlo_all_libs ${STABLEHLO_STATIC_LIBS}/lib*.a)
+message(STATUS "StableHLO All Libs: " ${stablehlo_all_libs})
 
 
 # -------------------- Compile CPP Runtime as A library --------------------  
@@ -53,10 +66,18 @@ add_library(jit-code-executor SHARED
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
-message("MLIR_ALL_LIBS: " ${MLIR_LIBS})
+get_property(LLVM_LIBS GLOBAL PROPERTY LLVM_ALL_LIBS)
+get_property(FLANG_LIBS GLOBAL PROPERTY FLANG_ALL_LIBS)
+message(STATUS "Flang LIBS: " ${FLANG_LIBS})
+message(STATUS "Flang_INCLUDE_DIRS: " ${FLANG_INCLUDE_DIRS})
+
 
 target_include_directories(jit-code-executor PRIVATE
   ${MLIR_INCLUDE_DIRS}
+  ${LLVM_INCLUDE_DIRS}
+  ${FLANG_INCLUDE_DIRS}
+  ${STABLEHLO_PROJECT}
+  ${STABLEHLO_BUILD_PATH} # Important for generated .td files
 )
 
 target_link_libraries(jit-code-executor PRIVATE 
@@ -64,7 +85,11 @@ target_link_libraries(jit-code-executor PRIVATE
   xla_protos
   libprotobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
-  ${MLIR_LIBS}
+  ${MLIR_LIBS} # TODO: Trim linked MLIR libs to save compile time, same for LLVM and Flang
+  ${LLVM_LIBS}
+  FIRDialect
+  HLFIRDialect
+  StablehloOps.a
 )
 
 set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")

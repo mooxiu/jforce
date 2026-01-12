@@ -1,11 +1,341 @@
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/AsmState.h"
-#include <string>
+#include "flang/Optimizer/Dialect/FIRDialect.h"
+#include "flang/Optimizer/Dialect/FIROps.h"
+#include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "flang/Optimizer/Transforms/Passes.h"
+#include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/Value.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "mlir/Parser/Parser.h"
-#include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cassert>
+#include <cstdlib>
+#include <mlir/Dialect/Affine/Passes.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/LLVMIR/LLVMTypes.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
+#include <mlir/IR/AsmState.h>
+#include <mlir/IR/Attributes.h>
+#include <mlir/IR/BlockSupport.h>
+#include "mlir/IR/Builders.h"
+#include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/DialectRegistry.h>
+#include <mlir/IR/IRMapping.h>
+#include <mlir/IR/MLIRContext.h>
+#include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/Operation.h>
+#include <mlir/IR/OperationSupport.h>
+#include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/TypeRange.h>
+#include <mlir/IR/Types.h>
+#include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/SideEffectInterfaces.h>
+#include <mlir/Support/LLVM.h>
+#include <mlir/Tools/mlir-opt/MlirOptMain.h>
+#include <omp.h>
+#include <string>
 
 using namespace mlir;
+
+static void debugPrint(mlir::ModuleOp moduleOp, std::string text) {
+  llvm::dbgs() << "\n>>>--------------------" << text
+               << "--------------------\n";
+  moduleOp.print(llvm::dbgs());
+  llvm::dbgs() << "\n<<<--------------------" << text
+               << "--------------------\n";
+}
+
+/**
+ * valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning 
+ * - valueMap: tracking the each operand of FIR pointing to the value of each operand in Stablehlo function
+ * - argsTrackingMap: tracking the current value of arguments of stablehlo pointing to, practically a reverse map of `valueMap`
+*/
+struct TrackingInfo {
+public:
+  mlir::IRMapping valueMap;
+  mlir::IRMapping argsTrackingMap;
+};
+
+/**
+  Example of source type:
+  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
+  "!fir.ref<f32>": convert to "tensor<f32>"
+ */
+static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
+  // If it's already a tensor type, then no need to convert
+  if (llvm::isa<RankedTensorType>(srcTy)) {
+    return llvm::dyn_cast<RankedTensorType>(srcTy);
+  }
+
+  if (auto refType = mlir::dyn_cast<fir::ReferenceType>(srcTy)) {
+    srcTy = refType.getEleTy();
+  }
+  auto seqTy = mlir::dyn_cast<fir::SequenceType>(srcTy);
+  if (!seqTy) {
+    // this is a scalar
+    auto scalarTensorType = RankedTensorType::get({}, srcTy);
+    return scalarTensorType;
+  }
+  auto arrTensorType = RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
+  return arrTensorType;
+}
+
+/**
+  We're dealing with TargetOp like following:
+  > omp.target map_entries(%141 -> %arg0, %142 -> %arg1, %145 -> %arg2 :
+  !fir.ref<!fir.array<10xf32>>, !fir.ref<f32>, !fir.ref<!fir.array<10xf32>>) {
+
+  In which, "%141, %142, %145" is out values, they will be used when get the
+  value and call stablehlo function;
+  "%arg0, %arg1, %arg2" are the values we need to track.
+ */
+static func::FuncOp createFunction(mlir::MLIRContext &context,
+                                   TrackingInfo &tracking,
+                                   const omp::TargetOp& targetOp) {
+  auto &firstRegion = targetOp->getRegion(0);
+  auto &block = firstRegion.getBlocks().front();
+  llvm::dbgs() << "\n BlockArgs of function: \n";
+
+  mlir::SmallVector<Type> inputTypes, outputTypes;
+  for (auto arg : block.getArguments()) {
+    arg.printAsOperand(llvm::dbgs(), {}); // -> arg0
+    llvm::dbgs() << "\n and the type is: " << arg.getType();
+    inputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
+    outputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
+  }
+
+  auto funcType = mlir::FunctionType::get(&context, inputTypes, outputTypes);
+  auto funcOp =
+      func::FuncOp::create(targetOp->getLoc(), "stablehloFunc", funcType, {});
+  // we need to update the valueMap!
+  funcOp.addEntryBlock();
+
+  llvm::dbgs() << "\n >>> adding function arguments to mapping: \n";
+  for (unsigned int i = 0; i < block.getNumArguments(); i++) {
+    Value oldArgOperand = block.getArgument(i);
+    Value newArgOperand = funcOp.getArgument(i);
+    tracking.valueMap.map(oldArgOperand, newArgOperand); 
+    tracking.argsTrackingMap.map(newArgOperand, oldArgOperand);
+  }
+  llvm::dbgs() << "\n <<< finish adding function arguments to mapping.\n";
+  return funcOp;
+}
+
+
+/**
+* Only support increase one dimension right now, for example:
+* - tensor<f32> -> tensor<10xf32>
+* - tensor<10xf32> -> tensor<10x10xf32>
+* 
+* Ref: https://openxla.org/stablehlo/spec#broadcast_in_dim
+*/
+static void handleArithBinaryOp(TrackingInfo& tracking, 
+                                OpBuilder &opBuilder, 
+                                func::FuncOp& funcOp, 
+                                Operation* arithOp) {
+  assert(arithOp->hasTrait<mlir::OpTrait::OneResult>());
+  assert(arithOp->hasTrait<mlir::OpTrait::NOperands<2>::Impl>());
+  Value operand1 = arithOp->getOperand(0);
+  Value operand2 = arithOp->getOperand(1);
+  Value result = arithOp->getResult(0);
+
+  Value operand1Src = tracking.valueMap.lookup(operand1);
+  Value operand2Src = tracking.valueMap.lookup(operand2);
+
+
+  RankedTensorType o1Type = convertBufferTyToTensorTy(operand1Src.getType()); 
+  RankedTensorType o2Type = convertBufferTyToTensorTy(operand2Src.getType()); 
+  assert(o1Type.hasRank() && o2Type.hasRank());
+
+  Value largerOperand, smallerOperand; 
+  if (o1Type.getRank() >= o2Type.getRank()) {
+    largerOperand = operand1Src;
+    smallerOperand = operand2Src;
+  } else {
+    largerOperand = operand2Src;
+    smallerOperand = operand1Src;
+  }
+  RankedTensorType targetType = convertBufferTyToTensorTy(largerOperand.getType());
+
+  // insert the broadcast
+  if (o1Type.getRank() != o2Type.getRank()) {
+    DenseI64ArrayAttr diaa = opBuilder.getDenseI64ArrayAttr({});
+    auto broadcastInDimOp = stablehlo::BroadcastInDimOp::create(opBuilder, funcOp.getLoc(), targetType, smallerOperand, diaa);
+    smallerOperand = broadcastInDimOp.getResult();
+  }
+
+  // insert the arith operation
+  Value stablehloRes;
+  llvm::TypeSwitch<Operation *>(arithOp)
+    .Case<arith::AddFOp>([&](arith::AddFOp addOp){
+      auto stablehloAddOp = stablehlo::AddOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        targetType, 
+        largerOperand,
+        smallerOperand
+      );
+      stablehloRes = stablehloAddOp.getResult();
+          })
+    .Case<arith::MulFOp>([&](arith::MulFOp){
+      auto stablehloMulOp = stablehlo::MulOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        targetType, 
+        largerOperand, 
+        smallerOperand
+      );
+      stablehloRes = stablehloMulOp.getResult();
+    })
+  .Default([](auto){
+      llvm::errs() << "Unknown arith operation! \n";
+      return;
+    });
+
+  tracking.valueMap.map(result, stablehloRes);
+  tracking.argsTrackingMap.map(stablehloRes, result);
+  return;
+}
+
+static void handleBuiltinOperators(TrackingInfo& tracking,
+                                   OpBuilder& opBuilder,
+                                   func::FuncOp& funcOp,
+                                   Operation* op) {
+  llvm::TypeSwitch<Operation*>(op)
+    .Case<hlfir::DotProductOp>([&](hlfir::DotProductOp dpOp){
+      // example: %151 = hlfir.dot_product %148#0 %150#0 
+      // TODO: only support 1d arrays dot product
+      assert(dpOp.getNumOperands() == 2 && "Failure of expecting dot product op has 2 operands!\n");
+      auto lhs = tracking.valueMap.lookup(dpOp.getOperand(0));
+      auto rhs = tracking.valueMap.lookup(dpOp.getOperand(1));
+      
+      auto lhsTy = llvm::dyn_cast<RankedTensorType>(lhs.getType());
+      if (!lhsTy) {
+        llvm::errs() << "Unexpected lhs type!\n";
+        exit(1);
+      }
+      auto scalarType = RankedTensorType::get({}, lhsTy.getElementType());
+      stablehlo::DotDimensionNumbersAttr attr = {};
+      ArrayAttr precisionConfig = {};
+      stablehlo::DotAlgorithmAttr algoAttr = {};
+      auto stablehloDotProductOp = stablehlo::DotGeneralOp::create(opBuilder, funcOp->getLoc(), scalarType, lhs, rhs, attr, precisionConfig, algoAttr);
+      tracking.valueMap.map(dpOp.getResult(), stablehloDotProductOp.getResult());
+    })
+    .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp mmOp){})
+    .Default([](auto){
+      llvm::errs() << "Not Supported Builtin Operators!\n";
+      return;
+    });
+}
+
+static void scanOperationsAndInserts(TrackingInfo& tracking,
+                                     OpBuilder &opBuilder, 
+                                     func::FuncOp& funcOp,
+                                     Operation *op) {
+  llvm::TypeSwitch<Operation *>(op)
+      .Case<hlfir::YieldElementOp>([&](hlfir::YieldElementOp yeOp){
+        // Should find the corresponding the elementalOp and establish the mapping between the yield value and the result of elementalOp
+        assert(yeOp->getNumOperands() == 1 && "Fail to assert YeOP has 1 operand!");
+        auto yieldOperand = yeOp->getOperand(0); 
+
+        auto parentOp = yeOp.getParentOp();
+        assert(llvm::isa<hlfir::ElementalOp>(parentOp) && "Fail to assert the parentOP of YeOP is elementalOp!");
+        auto parentOpResult = parentOp.getResult();
+
+        auto stablehloArg = tracking.valueMap.lookup(yieldOperand);
+        tracking.valueMap.map(parentOpResult, stablehloArg);
+        tracking.argsTrackingMap.map(stablehloArg, parentOpResult);
+      })
+      .Case<hlfir::AssignOp>([&](hlfir::AssignOp assignOp) {
+        // example: hlfir.assign %155 to %150#0 
+        // Assign A to B
+        assert(assignOp.getNumOperands() == 2 && "Fail to assert assignOp has 2 Operands!");
+        auto assignFromOperand = assignOp.getOperand(0); 
+        auto assignToOperand = assignOp.getOperand(1); 
+
+        llvm::dbgs() << "\n operand from: ";
+        assignFromOperand.printAsOperand(llvm::dbgs(), {});
+        llvm::dbgs() << " to: ";
+        assignToOperand.printAsOperand(llvm::dbgs(), {});
+        llvm::dbgs() << "\n";
+         
+        // value: B should tracking the same value as A
+        tracking.valueMap.map(assignToOperand, tracking.valueMap.lookup(assignFromOperand));  
+
+        // argsTrackingMap: the arg which is tracking B now should tracking A?
+        tracking.argsTrackingMap.map(tracking.valueMap.lookup(assignToOperand), assignFromOperand);
+      })
+      .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
+        auto declaredOprand = declareOp.getOperand(0);
+        for (unsigned int i = 0; i < declareOp->getNumResults(); i++) {
+          tracking.valueMap.map(declareOp->getOpResult(i), tracking.valueMap.lookup(declaredOprand));
+        }
+        tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
+      })
+      .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
+        // example: %451 = "hlfir.designate"(%447#0, %arg9) 
+        auto resultOperand = designateOp->getOpResult(0);
+
+        auto refArr = designateOp.getMemref();
+
+        tracking.valueMap.map(resultOperand, 
+                              tracking.valueMap.lookup(refArr));
+      })
+      .Case<hlfir::ApplyOp>([&](hlfir::ApplyOp applyOp){
+        // example: %445 = "hlfir.apply"(%443, %arg9)  
+        auto resultOperand = applyOp->getOpResult(0);
+        auto refArr = applyOp.getOperand(0);
+        tracking.valueMap.map(resultOperand, 
+                              tracking.valueMap.lookup(refArr));
+      })
+      .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
+        tracking.valueMap.map(loadOp->getResult(0), tracking.valueMap.lookup(loadOp->getOperand(0)));
+      })
+      .Case<arith::AddFOp>([&](arith::AddFOp addFOp) {
+        handleArithBinaryOp(tracking, opBuilder, funcOp, addFOp);
+      })
+      .Case<arith::MulFOp>([&](arith::MulFOp mulFOp){
+        handleArithBinaryOp(tracking, opBuilder, funcOp, mulFOp);
+      })
+      .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
+        handleBuiltinOperators(tracking, opBuilder, funcOp, matmulOp);
+      })
+      .Case<hlfir::DotProductOp>([&](hlfir::DotProductOp dotProductOp){
+        handleBuiltinOperators(tracking, opBuilder, funcOp, dotProductOp);
+      })
+      // TODO: including other cases!
+      .Default([](auto) {});
+}
+
+
+static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder, func::FuncOp& funcOp) {
+  auto argNum = funcOp.getNumArguments();
+  mlir::SmallVector<Value> returnValues;
+  returnValues.reserve(argNum);
+  for (unsigned int i = 0; i < funcOp.getNumArguments(); i ++) {
+    auto currArg = funcOp.getArgument(i);
+    auto trackedVal = tracking.valueMap.lookup(tracking.argsTrackingMap.lookup(currArg));
+    returnValues.push_back(trackedVal);
+  }
+  llvm::dbgs() << "\n Finish all the mapping \n";
+
+  // find the end of the last block
+  auto loc = funcOp.getLoc();
+  opBuilder.setInsertionPointToEnd(&funcOp.front());
+  func::ReturnOp::create(opBuilder, loc, returnValues);
+}
 
 std::string workdistributeToStableHLO(const std::string& rawIRStr) {
   // TODO: parse the string into moduleOp and lowering
@@ -15,7 +345,18 @@ std::string workdistributeToStableHLO(const std::string& rawIRStr) {
   
   mlir::ParserConfig parserConfig(&context);
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(rawIRStr, parserConfig);
-
   auto moduleOp = module.get();
+  OpBuilder opBuilder(&context);
+  TrackingInfo trackingInfo;
+
+  moduleOp->walk([&](mlir::omp::TargetOp targetOp) {
+    auto funcOp = createFunction(context, trackingInfo, targetOp);
+    opBuilder.setInsertionPointToStart(&funcOp.front());
+    targetOp->walk([&](Operation *op) {
+      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op);
+    });
+    terminateFunction(trackingInfo, opBuilder, funcOp);
+  });
+
   return rawIRStr;
 }
