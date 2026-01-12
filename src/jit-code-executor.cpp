@@ -17,6 +17,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   std::cerr << "Got a jit call with " << NumArgs << " args into:\n"
             << JitCodeC << "\n";
 
+  std::string stableHLOKernelFunc = workdistributeToStableHLO(JitCodeC);
+
+
+
 
 #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
 #define h(A) std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"

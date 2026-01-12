@@ -11,7 +11,7 @@ extern "C" int64_t (*JitCodeExecutor)(void *JitCode, int64_t NumArgs,
                                       void *DeviceArgs, int64_t NumHostArgs,
                                       void **ArgBasePtrs, void **ArgPtrs,
                                       int64_t *ArgSizes, int64_t *ArgTypes,
-                                      void **ArgNames);
+                                      void **ArgNames) = nullptr;
 
 
 int main(int argc, char** args) {

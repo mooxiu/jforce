@@ -2,13 +2,6 @@
 #include <cstdint>
 #include <vector>
 
-enum class OpType : int32_t {
-  VECTOR_ADD = 0,
-  DOT_PRODUCT = 1,
-  TRANSPOSE = 2,
-  MATRIX_MUL = 3
-};
-
 // TODO: all the tests are using f32 for now
 enum class DType : int32_t {
   F32 = 0,
@@ -22,7 +15,6 @@ struct TensorDesc {
 };
 
 struct KernelArgs {
-  OpType opCode;
   int32_t inputArgCount;
   TensorDesc *inputArgs;
   int32_t outputArgCount;

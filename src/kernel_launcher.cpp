@@ -11,12 +11,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
-#include <functional>
 #include <iostream>
 #include <numeric>
 #include <ostream>
-#include <string>
-#include <vector>
 
 std::string getPluginPath() {
 // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -346,32 +343,7 @@ void executeKernel(
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
 
-std::string getFuncCode(KernelArgs *args) {
-  std::string funcCode = "";
-  TensorDesc *inputArgs = static_cast<TensorDesc *>(args->inputArgs);
-
-  switch (args->opCode) {
-  case OpType::VECTOR_ADD:
-    funcCode = GetVectorAdditionOp(getShape(inputArgs[0])[0]);
-    break;
-  case OpType::TRANSPOSE:
-    funcCode = GetTransposeOp((getShape(inputArgs[0])));
-    break;
-  case OpType::DOT_PRODUCT:
-    funcCode = GetDotProductOp(getShape(inputArgs[0])[0]);
-    break;
-  case OpType::MATRIX_MUL:
-    funcCode = GetMatrixMultiplicationOp(getShape(inputArgs[0]), getShape(inputArgs[1]));
-    break;
-  default:
-    logger::Log("Unknown opCode: " + std::to_string((int32_t)args->opCode),
-                logLevel::ERROR);
-    exit(EXIT_FAILURE);
-  }
-  return funcCode;
-}
-
-void launchKernelInternal(KernelArgs *offloadingArgs) {
+void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& kernelFuncStr) {
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
   // auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW|RTLD_GLOBAL);
   if (!handle_) {
@@ -407,7 +379,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   auto device = (PJRT_Device *)checkNull(findDevice(api, client, "cuda"));
 
   auto exe = (PJRT_LoadedExecutable *)checkNull(
-      compileMLIR(api, client, getFuncCode(offloadingArgs)));
+      compileMLIR(api, client, kernelFuncStr));
 
   // Buffer from host
   int in_args_count = offloadingArgs->inputArgCount;
@@ -461,8 +433,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   return;
 }
 
-extern "C" void launch_kernel(void *argsPointer) {
+void launch_kernel(void *argsPointer, const std::string& kernelFuncStr) {
   KernelArgs *kernelArgs = static_cast<KernelArgs *>(argsPointer);
-
-  launchKernelInternal(kernelArgs);
+  launchKernelInternal(kernelArgs, kernelFuncStr);
 }

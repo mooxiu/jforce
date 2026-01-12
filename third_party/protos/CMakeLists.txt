@@ -16,6 +16,7 @@ set(XLA_PROTO_FILES
 set(PROTO_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 
 add_library(xla_protos STATIC "")
+set_target_properties(xla_protos PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # https://cmake.org/cmake/help/latest/module/FindProtobuf.html#command:protobuf_generate
 # protobuf_generate_cpp will be deprecated: https://cmake.org/cmake/help/latest/module/FindProtobuf.html#command:protobuf_generate_cpp

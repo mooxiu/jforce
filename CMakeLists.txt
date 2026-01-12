@@ -10,6 +10,7 @@ set(LLVM_PREFIX ${InstallPath})
 set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 
 project(xla_glue_project LANGUAGES CXX Fortran)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 set(CMAKE_CXX_STANDARD 17)
@@ -46,10 +47,13 @@ add_subdirectory(third_party/protos)
 add_library(jit-code-executor SHARED 
   src/jit-code-executor.cpp
   src/workdistribute-to-stablehlo.cpp
+  src/kernel_launcher.cpp
+  src/kernel_pointer_interface.cpp
+  src/operations.cpp
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
-message("MLIR_ALL_LIBS: " ${MLIR_ALL_LIBS})
+message("MLIR_ALL_LIBS: " ${MLIR_LIBS})
 
 target_include_directories(jit-code-executor PRIVATE
   ${MLIR_INCLUDE_DIRS}
@@ -60,7 +64,7 @@ target_link_libraries(jit-code-executor PRIVATE
   xla_protos
   libprotobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
-  ${MLIR_ALL_LIBS}
+  ${MLIR_LIBS}
 )
 
 set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
