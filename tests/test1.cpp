@@ -25,9 +25,10 @@ int main(int argc, char** args) {
 
   std::stringstream buffer;
   buffer << file.rdbuf();
+  // std::cout << "File Content: " << buffer.str() << std::endl;
 
   
-  auto handle_ = dlopen("jit-code-executor", RTLD_LAZY | RTLD_LOCAL);
+  auto handle_ = dlopen("libjit-code-executor.so", RTLD_LAZY | RTLD_LOCAL);
   if (!handle_) {
     std::cerr << "Can not find the .so and open it!" << std::endl;
     std::exit(EXIT_FAILURE);

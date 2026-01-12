@@ -14,10 +14,11 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgNames) {
 
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  std::cerr << "Got a jit call with " << NumArgs << " args into:\n"
-            << JitCodeC << "\n";
+  // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
 
+  // JitCodeC is supposed to be a targetOp
   std::string stableHLOKernelFunc = workdistributeToStableHLO(JitCodeC);
+  return 0;
 
 
 

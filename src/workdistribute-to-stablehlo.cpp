@@ -1,6 +1,7 @@
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -17,6 +18,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
+#include <iostream>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -49,13 +51,6 @@
 
 using namespace mlir;
 
-static void debugPrint(mlir::ModuleOp moduleOp, std::string text) {
-  llvm::dbgs() << "\n>>>--------------------" << text
-               << "--------------------\n";
-  moduleOp.print(llvm::dbgs());
-  llvm::dbgs() << "\n<<<--------------------" << text
-               << "--------------------\n";
-}
 
 /**
  * valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning 
@@ -337,26 +332,51 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
   func::ReturnOp::create(opBuilder, loc, returnValues);
 }
 
-std::string workdistributeToStableHLO(const std::string& rawIRStr) {
-  // TODO: parse the string into moduleOp and lowering
+static std::string getFuncOpAsString(func::FuncOp funcOp) {
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  funcOp.print(os);
+  return output;
+}
 
+// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
+// but should also be compatible with following code.
+std::string workdistributeToStableHLO(const std::string& rawIRStr) {
   mlir::MLIRContext context;
-  context.loadDialect<func::FuncDialect>();
+
+  context.loadDialect<
+    func::FuncDialect, 
+    omp::OpenMPDialect, 
+    fir::FIROpsDialect, 
+    hlfir::hlfirDialect, 
+    arith::ArithDialect, 
+    stablehlo::StablehloDialect>();
   
   mlir::ParserConfig parserConfig(&context);
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(rawIRStr, parserConfig);
+  if (!module) {
+    std::cerr << "Module not extracted!" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
   auto moduleOp = module.get();
   OpBuilder opBuilder(&context);
   TrackingInfo trackingInfo;
 
+  std::string funcOpStr;
+  int targetOpCount = 0;
+
   moduleOp->walk([&](mlir::omp::TargetOp targetOp) {
+    targetOpCount += 1;
     auto funcOp = createFunction(context, trackingInfo, targetOp);
     opBuilder.setInsertionPointToStart(&funcOp.front());
     targetOp->walk([&](Operation *op) {
       scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op);
     });
     terminateFunction(trackingInfo, opBuilder, funcOp);
+    funcOpStr = getFuncOpAsString(funcOp);
   });
 
-  return rawIRStr;
+  assert(targetOpCount == 0 && "More that 1 TargetOp in the module, unexpected!\n");
+  return funcOpStr; 
 }
