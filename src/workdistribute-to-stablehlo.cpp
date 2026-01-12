@@ -98,33 +98,28 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
  */
 static func::FuncOp createFunction(mlir::MLIRContext &context,
                                    TrackingInfo &tracking,
-                                   const omp::TargetOp& targetOp) {
-  auto &firstRegion = targetOp->getRegion(0);
+                                   const func::FuncOp& inputOp) {
+  auto &firstRegion = inputOp->getRegion(0);
   auto &block = firstRegion.getBlocks().front();
-  llvm::dbgs() << "\n BlockArgs of function: \n";
 
   mlir::SmallVector<Type> inputTypes, outputTypes;
   for (auto arg : block.getArguments()) {
-    arg.printAsOperand(llvm::dbgs(), {}); // -> arg0
-    llvm::dbgs() << "\n and the type is: " << arg.getType();
     inputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
     outputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
   }
 
   auto funcType = mlir::FunctionType::get(&context, inputTypes, outputTypes);
   auto funcOp =
-      func::FuncOp::create(targetOp->getLoc(), "stablehloFunc", funcType, {});
+      func::FuncOp::create(inputOp->getLoc(), "kernel", funcType, {});
   // we need to update the valueMap!
   funcOp.addEntryBlock();
 
-  llvm::dbgs() << "\n >>> adding function arguments to mapping: \n";
   for (unsigned int i = 0; i < block.getNumArguments(); i++) {
     Value oldArgOperand = block.getArgument(i);
     Value newArgOperand = funcOp.getArgument(i);
     tracking.valueMap.map(oldArgOperand, newArgOperand); 
     tracking.argsTrackingMap.map(newArgOperand, oldArgOperand);
   }
-  llvm::dbgs() << "\n <<< finish adding function arguments to mapping.\n";
   return funcOp;
 }
 
@@ -260,12 +255,6 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         auto assignFromOperand = assignOp.getOperand(0); 
         auto assignToOperand = assignOp.getOperand(1); 
 
-        llvm::dbgs() << "\n operand from: ";
-        assignFromOperand.printAsOperand(llvm::dbgs(), {});
-        llvm::dbgs() << " to: ";
-        assignToOperand.printAsOperand(llvm::dbgs(), {});
-        llvm::dbgs() << "\n";
-         
         // value: B should tracking the same value as A
         tracking.valueMap.map(assignToOperand, tracking.valueMap.lookup(assignFromOperand));  
 
@@ -324,7 +313,6 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
     auto trackedVal = tracking.valueMap.lookup(tracking.argsTrackingMap.lookup(currArg));
     returnValues.push_back(trackedVal);
   }
-  llvm::dbgs() << "\n Finish all the mapping \n";
 
   // find the end of the last block
   auto loc = funcOp.getLoc();
@@ -366,17 +354,17 @@ std::string workdistributeToStableHLO(const std::string& rawIRStr) {
   std::string funcOpStr;
   int targetOpCount = 0;
 
-  moduleOp->walk([&](mlir::omp::TargetOp targetOp) {
+  moduleOp->walk([&](func::FuncOp inputOp) {
     targetOpCount += 1;
-    auto funcOp = createFunction(context, trackingInfo, targetOp);
+    auto funcOp = createFunction(context, trackingInfo, inputOp);
     opBuilder.setInsertionPointToStart(&funcOp.front());
-    targetOp->walk([&](Operation *op) {
+    inputOp->walk([&](Operation *op) {
       scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op);
     });
     terminateFunction(trackingInfo, opBuilder, funcOp);
     funcOpStr = getFuncOpAsString(funcOp);
   });
 
-  assert(targetOpCount == 0 && "More that 1 TargetOp in the module, unexpected!\n");
+  assert(targetOpCount == 1 && "More that 1 TargetOp in the module, unexpected!\n");
   return funcOpStr; 
 }

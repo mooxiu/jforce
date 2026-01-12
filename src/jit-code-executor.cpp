@@ -18,9 +18,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   // JitCodeC is supposed to be a targetOp
   std::string stableHLOKernelFunc = workdistributeToStableHLO(JitCodeC);
+  std::cout << "Function to JIT: \n" << stableHLOKernelFunc << std::endl;
   return 0;
-
-
 
 
 #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
