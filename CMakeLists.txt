@@ -43,12 +43,13 @@ endif()
 
 add_subdirectory(third_party/protos)
 
-add_library(jit-code-executor 
+add_library(jit-code-executor SHARED 
   src/jit-code-executor.cpp
   src/workdistribute-to-stablehlo.cpp
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
+message("MLIR_ALL_LIBS: " ${MLIR_ALL_LIBS})
 
 target_include_directories(jit-code-executor PRIVATE
   ${MLIR_INCLUDE_DIRS}
@@ -69,3 +70,11 @@ target_compile_definitions(jit-code-executor
     DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
 )
 
+# -------------------- Macro for compiling tests --------------------  
+macro(add_test TEST_NAME SRC_FILE)
+  add_executable(${TEST_NAME} ${SRC_FILE})
+  target_link_libraries(${TEST_NAME} PRIVATE jit-code-executor)
+endmacro()
+
+
+add_test(test_1_dummy tests/test1.cpp)
