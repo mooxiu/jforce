@@ -14,8 +14,12 @@ enum class TargetDevice : int32_t {
 };
 
 /**
- * Here, `rank` means the dimension of the data; shape is a vector of size of each dimension of the data.
- * For example, a <3x2 f32> matrix has rank = 2 and shape = {3, 2}.
+ *
+ * data: Pointer to the beginning of the data,
+ * shape: An array recording the size of each dimension of the data. For example, a <3x2 f32> matrix has shape = {3, 2},
+ * rank: The dimension count of the data. For example, a <3x2 f32> matrix has rank = 2.
+ * dtype: Data Type. An instance of enum DType.
+ *
 */
 struct TensorDesc {
   void *data;

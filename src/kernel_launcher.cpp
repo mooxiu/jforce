@@ -339,7 +339,7 @@ static void executeKernel(
   leeas.options = &execute_options;
   leeas.num_devices = (size_t)1;
   leeas.num_args = (size_t)in_args_count;
-  leeas.argument_lists = argLists;
+  leeas.argument_lists = argLists; // [deviceCount][argCount]
   // we have one device, and the output by this device is 1.
   leeas.output_lists = outLists;
   leeas.execute_device = device;
@@ -395,6 +395,7 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
       compileMLIR(api, client, kernelFuncStr, offloadingArgs));
 
   // Buffer from host
+  // TODO: should reuse the buffers which are already been allocated
   int in_args_count = offloadingArgs->inputArgCount;
   PJRT_Buffer *inputArgsBuffers[in_args_count];
   for (int i = 0; i < in_args_count; i++) {
