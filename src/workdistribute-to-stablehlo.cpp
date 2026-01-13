@@ -110,7 +110,7 @@ static func::FuncOp createFunction(mlir::MLIRContext &context,
 
   auto funcType = mlir::FunctionType::get(&context, inputTypes, outputTypes);
   auto funcOp =
-      func::FuncOp::create(inputOp->getLoc(), "kernel", funcType, {});
+      func::FuncOp::create(inputOp->getLoc(), "main", funcType, {});
   // we need to update the valueMap!
   funcOp.addEntryBlock();
 

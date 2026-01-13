@@ -1,10 +1,16 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // TODO: all the tests are using f32 for now.
 enum class DType : int32_t {
   F32 = 0,
+};
+
+enum class TargetDevice : int32_t {
+  CPU = 0,
+  CUDA = 1,
 };
 
 /**
@@ -23,6 +29,7 @@ struct KernelArgs {
   TensorDesc *inputArgs;
   int32_t outputArgCount;
   TensorDesc *outputArgs;
+  TargetDevice targetDevice;
 };
 
 // TODO: WTF is this function? Shouldn't `td.shape` can get the shape??????

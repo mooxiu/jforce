@@ -1,9 +1,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
-
+#include "kernel_pointer_interface.h"
 
 std::string workdistributeToStableHLO(const std::string& rawIRStr);
+
+void launch_kernel(KernelArgs *argsPointer, const std::string& kernelFuncStr);
 
 
 extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
@@ -19,6 +21,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // JitCodeC is supposed to be a targetOp
   std::string stableHLOKernelFunc = workdistributeToStableHLO(JitCodeC);
   std::cout << "Function to JIT: \n" << stableHLOKernelFunc << std::endl;
+
+  
+  KernelArgs args;
+  args.targetDevice = TargetDevice::CPU;
+  launch_kernel(&args, stableHLOKernelFunc);
+
   return 0;
 
 
