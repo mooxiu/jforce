@@ -23,7 +23,7 @@ enum class TargetDevice : int32_t {
 */
 struct TensorDesc {
   void *data;
-  int64_t *shape;
+  const int64_t *shape;
   int32_t rank;
   DType dtype;
 };

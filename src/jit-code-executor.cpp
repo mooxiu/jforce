@@ -1,5 +1,6 @@
 #include "../third_party/headers/pjrt_c_api.h"
 #include "kernel_pointer_interface.h"
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -79,6 +80,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgNames) {
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
+  
 
   // Parse JitCode to ModuleOp
   mlir::MLIRContext context;
@@ -96,16 +98,33 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     exit(EXIT_FAILURE);
   }
   auto moduleOp = module.get();
+  std::cout << "JIT Code: \n" << JitCodeC << std::endl;
 
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
   std::string kernelFuncLiteral = getFuncOpAsString(kernelFunc);
-  std::cout << "Function to JIT: \n" << kernelFuncLiteral << std::endl;
+  std::cout << "Function lowered from JIT Code: \n" << kernelFuncLiteral << std::endl;
 
-  
-  // Execute Kernel 
+  // Fill the kernel args
   KernelArgs args;
   args.targetDevice = TargetDevice::CPU;
-  launch_kernel(&args, kernelFuncLiteral);
+  // NumArgs -> device args
+  auto inputArgsTypes = kernelFunc.getFunctionType().getInputs(); 
+  assert(inputArgsTypes.size() == NumArgs && "Function Input Args have different size with NumArgs");
+  TensorDesc inputArgs[NumArgs];
+  // FIXME: NumArgs may contains constants, which is not in target
+  for (unsigned i = 0; i < NumArgs; i++) {
+    auto thisTy = inputArgsTypes[i]; 
+    assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
+    auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
+    inputArgs[i].data = TgtArgs[i];
+    inputArgs[i].shape = rtType.getShape().data();
+    inputArgs[i].rank = rtType.getRank();
+    inputArgs[i].dtype = DType::F32;
+  }
+  args.inputArgs = inputArgs;
+  args.inputArgCount = NumArgs;
+  args.outputArgs = inputArgs; // Suppose output args are the same with input args, if works, should trim this
+  args.outputArgCount = NumArgs;
 
 
 #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
@@ -127,5 +146,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 #undef p
 #undef h
 
+
+  launch_kernel(&args, kernelFuncLiteral);
   return 0;
 }
