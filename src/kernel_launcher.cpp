@@ -462,27 +462,28 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
 
   // After Execution, the data may not be updated in-place!!!!!
   for (int i = 0; i < argsBuffers.size(); i++) {
-    PJRT_Buffer_UnsafePointer_Args upArgs = {};
-    upArgs.struct_size = PJRT_Buffer_UnsafePointer_Args_STRUCT_SIZE;
-    upArgs.buffer = argsBuffersList[0][i];
-    api->PJRT_Buffer_UnsafePointer(&upArgs);
+    // PJRT_Buffer_UnsafePointer_Args upArgs = {};
+    // upArgs.struct_size = PJRT_Buffer_UnsafePointer_Args_STRUCT_SIZE;
+    // upArgs.buffer = argsBuffersList[0][i];
+    // api->PJRT_Buffer_UnsafePointer(&upArgs);
+    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {};
+    odmdpArgs.struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE;
+    odmdpArgs.buffer = argsBuffersList[0][i];
+    api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
+
+    void* afterPtr = odmdpArgs.device_memory_ptr;
 
     //--- print the comparsion of original pointers and new pointers
     std::cout << "Before Mem: " << offloadingArgs->inputArgs[i].data << std::endl;
-    std::cout << "After Mem: " << reinterpret_cast<void*>(upArgs.buffer_pointer) << std::endl;
-    auto out = (float_t*)upArgs.buffer_pointer;
-    size_t inputArgSize = offloadingArgs->inputArgs[i].getEleSize();
-    for (int i = 0; i < inputArgSize; i++) {
-      std::cout << "The " << i << "th element is: " << out[i] << std::endl;
-    }
+    std::cout << "After Mem: " << afterPtr << std::endl;
     //---
 
-    if (reinterpret_cast<void*>(upArgs.buffer_pointer) != offloadingArgs->inputArgs[i].data) {
+    if (afterPtr != offloadingArgs->inputArgs[i].data) {
       logger::Log("Different Memory Address", logLevel::DEBUG);
       // TODO: what if this is in CUDA???????
       cpyMemOnDevice(offloadingArgs->outputArgs[i].data, 
-                  (void*)upArgs.buffer_pointer, 
-                  sizeof(float_t) * inputArgSize,
+                  afterPtr, 
+                  sizeof(float_t) * offloadingArgs->inputArgs[i].getEleSize(),
                   offloadingArgs->targetDevice);
     }
   }

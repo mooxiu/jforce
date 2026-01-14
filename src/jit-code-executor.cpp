@@ -189,6 +189,5 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 #undef p
 #undef h
 
-
   return 0;
 }
