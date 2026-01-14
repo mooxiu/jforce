@@ -18,6 +18,7 @@
 #include <iterator>
 #include <numeric>
 #include <ostream>
+#include <string>
 
 std::string getPluginPath() {
 // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -332,6 +333,7 @@ static void createViewBuffers(
   const TensorDesc* inputArgs,
   const int32_t inputArgCount,
   std::vector<PJRT_Buffer*>& buffers) {
+
   logger::Log("Start to create buffer", logLevel::DEBUG);
   buffers.resize(inputArgCount);
   for (int i = 0; i < inputArgCount; i++) {
@@ -377,6 +379,17 @@ static void executeKernel(
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
 
+static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetDevice deviceTy) {
+  if (deviceTy == TargetDevice::CPU) {
+    std::memcpy(dstPtr, srcPrt, byteCount);
+  } else if (deviceTy == TargetDevice::CUDA) {
+    // TODO: insert cudamemd2d 
+  } else {
+    logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(deviceTy)), logLevel::ERROR);
+    exit(EXIT_FAILURE);
+  }
+}
+
 
 static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& kernelFuncStr) {
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
@@ -396,9 +409,7 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
 
   auto checkNull = [handle_](void *ptr) -> void * {
     if (!ptr) {
-      // don't forget to clear the handle_ before panic
       std::cerr << "[FATAL] Pointer not supposed to be null is null!! Exiting." << std::endl;
-      // dlclose(handle_);
       exit(1);
     }
     return ptr;
@@ -421,61 +432,57 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
     std::exit(EXIT_FAILURE);
   }
 
-  auto exe = (PJRT_LoadedExecutable *)checkNull(
-      compileMLIR(api, client, kernelFuncStr, offloadingArgs));
+  auto exe = (PJRT_LoadedExecutable *)checkNull(compileMLIR(api, client, kernelFuncStr, offloadingArgs));
 
-  std::vector<PJRT_Buffer*> inputArgsBuffers;
-  createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputArgsBuffers);
-
-  std::cout << "Buffers Created\n";
-  PJRT_Buffer** inputArgsBuffersList[] = {inputArgsBuffers.data()};
+  std::vector<PJRT_Buffer*> argsBuffers;
+  createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers);
+  PJRT_Buffer** argsBuffersList[] = {argsBuffers.data()};
 
 
   // Execute the kernel
-  executeKernel(api, exe, device, inputArgsBuffersList, inputArgsBuffersList, offloadingArgs->inputArgCount);
+  executeKernel(api, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
 
+  PJRT_Buffer_ReadyEvent_Args eventArgs[offloadingArgs->inputArgCount];
   for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
-    PJRT_Buffer_ReadyEvent_Args event_args = {};
-    event_args.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
-    event_args.buffer = inputArgsBuffersList[0][i];
-    api->PJRT_Buffer_ReadyEvent(&event_args);
+    PJRT_Buffer_ReadyEvent_Args eventArg= eventArgs[i];
+    eventArg.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
+    eventArg.buffer = argsBuffersList[0][i];
+    api->PJRT_Buffer_ReadyEvent(&eventArg);
+  }
     
+  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
     // Wait for the event to complete
     PJRT_Event_Await_Args waitArgs = {};
     waitArgs.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
-    waitArgs.event = event_args.event;
+    waitArgs.event = eventArgs[i].event;
     api->PJRT_Event_Await(&waitArgs); 
   }
 
-  auto calcSize = [](const int64_t* shape, int64_t rank) -> size_t {
-    size_t acc = 1;
-    for (int i = 0; i < rank; i++) {
-      acc *= shape[i];
-    }
-    return acc;
-  };
-  for (int i = 0; i < inputArgsBuffers.size(); i++) {
-    PJRT_Buffer_Memory_Args bmArgs = {};
-    bmArgs.struct_size =  PJRT_Buffer_Memory_Args_STRUCT_SIZE;
-    bmArgs.buffer = inputArgsBuffersList[0][i];
-    api->PJRT_Buffer_Memory(&bmArgs);
 
+  // After Execution, the data may not be updated in-place!!!!!
+  for (int i = 0; i < argsBuffers.size(); i++) {
+    PJRT_Buffer_UnsafePointer_Args upArgs = {};
+    upArgs.struct_size = PJRT_Buffer_UnsafePointer_Args_STRUCT_SIZE;
+    upArgs.buffer = argsBuffersList[0][i];
+    api->PJRT_Buffer_UnsafePointer(&upArgs);
+
+    //--- print the comparsion of original pointers and new pointers
     std::cout << "Before Mem: " << offloadingArgs->inputArgs[i].data << std::endl;
-    std::cout << "After Mem: " << bmArgs.memory << std::endl;
-
-    auto out = (float_t*)bmArgs.memory;
-    size_t inputArgSize = calcSize(offloadingArgs->inputArgs[i].shape, offloadingArgs->inputArgs[i].rank);
+    std::cout << "After Mem: " << reinterpret_cast<void*>(upArgs.buffer_pointer) << std::endl;
+    auto out = (float_t*)upArgs.buffer_pointer;
+    size_t inputArgSize = offloadingArgs->inputArgs[i].getEleSize();
     for (int i = 0; i < inputArgSize; i++) {
       std::cout << "The " << i << "th element is: " << out[i] << std::endl;
     }
+    //---
 
-    if (bmArgs.memory != offloadingArgs->inputArgs[i].data) {
+    if (reinterpret_cast<void*>(upArgs.buffer_pointer) != offloadingArgs->inputArgs[i].data) {
       logger::Log("Different Memory Address", logLevel::DEBUG);
       // TODO: what if this is in CUDA???????
-      
-      std::memcpy(offloadingArgs->outputArgs[i].data, 
-                  bmArgs.memory, 
-                  sizeof(float_t) * calcSize(offloadingArgs->inputArgs[i].shape, offloadingArgs->inputArgs[i].rank));
+      cpyMemOnDevice(offloadingArgs->outputArgs[i].data, 
+                  (void*)upArgs.buffer_pointer, 
+                  sizeof(float_t) * inputArgSize,
+                  offloadingArgs->targetDevice);
     }
   }
 
