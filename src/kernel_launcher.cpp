@@ -327,12 +327,13 @@ static void createViewBuffers(
   const PJRT_Api *api,
   PJRT_Client* client,
   PJRT_Device* device,
-  const KernelArgs* offloadingArgs,
+  const TensorDesc* inputArgs,
+  const int32_t inputArgCount,
   std::vector<PJRT_Buffer*>& buffers) {
   logger::Log("Start to create buffer", logLevel::DEBUG);
-  buffers.resize(offloadingArgs->inputArgCount);
-  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
-    auto inputArg = offloadingArgs->inputArgs[i];
+  buffers.resize(inputArgCount);
+  for (int i = 0; i < inputArgCount; i++) {
+    auto inputArg = inputArgs[i];
     PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
     cvodbArg.client = client;
     cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
@@ -420,12 +421,16 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
   auto exe = (PJRT_LoadedExecutable *)checkNull(
       compileMLIR(api, client, kernelFuncStr, offloadingArgs));
 
-  std::vector<PJRT_Buffer*> buffers;
-  createViewBuffers(api, client, device, offloadingArgs, buffers);
+  std::vector<PJRT_Buffer*> inputArgsBuffers;
+  std::vector<PJRT_Buffer*> outputArgsBuffers;
+  createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputArgsBuffers);
+  createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, outputArgsBuffers);
+
   std::cout << "Buffers Created\n";
-  PJRT_Buffer** argLists[] = {buffers.data()};
+  PJRT_Buffer** inputArgsBuffersList[] = {inputArgsBuffers.data()};
+  PJRT_Buffer** outputArgsBuffersList[] = {outputArgsBuffers.data()};
   // Execute the kernel
-  executeKernel(api, exe, device, argLists, argLists, offloadingArgs->inputArgCount);
+  executeKernel(api, exe, device, inputArgsBuffersList, outputArgsBuffersList, offloadingArgs->inputArgCount);
 
   // TODO: Still need to destroy PJRT_Buffers?
 

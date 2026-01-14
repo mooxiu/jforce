@@ -1,5 +1,6 @@
 #include "../third_party/headers/pjrt_c_api.h"
 #include "kernel_pointer_interface.h"
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +50,8 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
+#include <utility>
+#include <vector>
 
 using namespace mlir;
 
@@ -66,6 +69,29 @@ static std::string getFuncOpAsString(func::FuncOp funcOp) {
   llvm::raw_string_ostream os(output);
   funcOp.print(os);
   return output;
+}
+
+static std::pair<std::vector<int>, std::vector<int>> filterInputAndOutputIndices(func::FuncOp funcOp) {
+  std::vector<Value> inputs;
+  inputs.reserve(funcOp.getNumArguments());
+  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+    inputs.push_back(funcOp.getArgument(i));
+  }
+  std::vector<int> inputArgs;
+  std::vector<int> outputArgs;
+  funcOp.walk([&](mlir::func::ReturnOp rop){
+    for (unsigned i = 0; i < rop.getNumOperands(); i++) {
+      if (inputs[i] != rop.getOperand(i)) {
+        outputArgs.push_back(i);
+      } else {
+        inputArgs.push_back(i);
+      }
+    };
+  });
+  std::pair<std::vector<int>, std::vector<int>> indices;
+  indices.first = inputArgs;
+  indices.second = outputArgs;
+  return indices;
 }
 
 /**
@@ -107,25 +133,40 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // Fill the kernel args
   KernelArgs args;
   args.targetDevice = TargetDevice::CPU;
-  // NumArgs -> device args
-  auto inputArgsTypes = kernelFunc.getFunctionType().getInputs(); 
-  // assert(inputArgsTypes.size() == NumArgs && "Function Input Args have different size with NumArgs");
-  TensorDesc inputArgs[NumArgs];
+  auto argTypes = kernelFunc.getFunctionType().getInputs(); 
+  auto indices = filterInputAndOutputIndices(kernelFunc);
+  TensorDesc inputArgs[indices.first.size()];
+  unsigned inputArgIdx = 0;
+  TensorDesc outputArgs[indices.second.size()];
+  unsigned outputArgIdx = 0; 
+
   // FIXME: NumArgs may contains constants, which is not in target
   for (unsigned i = 0; i < NumArgs; i++) {
-    auto thisTy = inputArgsTypes[i]; 
+    auto thisTy = argTypes[i]; 
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
-    inputArgs[i].data = TgtArgs[i];
-    inputArgs[i].shape = rtType.getShape().data();
-    inputArgs[i].rank = rtType.getRank();
-    inputArgs[i].dtype = DType::F32;
+    if (std::find(indices.first.begin(), indices.first.end(), i) != indices.first.end()) {
+      // This is input
+      inputArgs[inputArgIdx].data = TgtArgs[i];
+      inputArgs[inputArgIdx].shape = rtType.getShape().data();
+      inputArgs[inputArgIdx].rank = rtType.getRank();
+      inputArgs[inputArgIdx].dtype = DType::F32;
+      inputArgIdx += 1;
+    } else {
+      // This is output
+      outputArgs[outputArgIdx].data = TgtArgs[i];
+      outputArgs[outputArgIdx].shape = rtType.getShape().data();
+      outputArgs[outputArgIdx].rank = rtType.getRank();
+      outputArgs[outputArgIdx].dtype = DType::F32;
+      outputArgIdx += 1;
+    }
   }
   args.inputArgs = inputArgs;
-  args.inputArgCount = NumArgs;
-  args.outputArgs = inputArgs; // Suppose output args are the same with input args, if works, should trim this
-  args.outputArgCount = NumArgs;
+  args.inputArgCount = inputArgIdx;
+  args.outputArgs = outputArgs; 
+  args.outputArgCount = outputArgIdx;
 
+  args.formatPrint();
 
   launch_kernel(&args, kernelFuncLiteral);
   return 0;
