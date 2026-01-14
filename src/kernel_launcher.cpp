@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -375,6 +376,7 @@ static void executeKernel(
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
 
+
 static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& kernelFuncStr) {
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
   // auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW|RTLD_GLOBAL);
@@ -422,18 +424,53 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
       compileMLIR(api, client, kernelFuncStr, offloadingArgs));
 
   std::vector<PJRT_Buffer*> inputArgsBuffers;
-  std::vector<PJRT_Buffer*> outputArgsBuffers;
   createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputArgsBuffers);
-  createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, outputArgsBuffers);
 
   std::cout << "Buffers Created\n";
   PJRT_Buffer** inputArgsBuffersList[] = {inputArgsBuffers.data()};
-  PJRT_Buffer** outputArgsBuffersList[] = {outputArgsBuffers.data()};
+
+
   // Execute the kernel
-  executeKernel(api, exe, device, inputArgsBuffersList, outputArgsBuffersList, offloadingArgs->inputArgCount);
+  executeKernel(api, exe, device, inputArgsBuffersList, inputArgsBuffersList, offloadingArgs->inputArgCount);
 
-  // TODO: Still need to destroy PJRT_Buffers?
+  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
+    PJRT_Buffer_ReadyEvent_Args event_args = {};
+    event_args.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
+    event_args.buffer = inputArgsBuffersList[0][i];
+    api->PJRT_Buffer_ReadyEvent(&event_args);
+    
+    // Wait for the event to complete
+    PJRT_Event_Await_Args waitArgs = {};
+    waitArgs.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
+    waitArgs.event = event_args.event;
+    api->PJRT_Event_Await(&waitArgs); 
+  }
 
+  for (int i = 0; i < inputArgsBuffers.size(); i++) {
+    PJRT_Buffer_Memory_Args bmArgs = {};
+    bmArgs.struct_size =  PJRT_Buffer_Memory_Args_STRUCT_SIZE;
+    bmArgs.buffer = inputArgsBuffersList[0][i];
+    api->PJRT_Buffer_Memory(&bmArgs);
+
+    std::cout << "Before Mem: " << offloadingArgs->inputArgs[i].data << std::endl;
+    std::cout << "After Mem: " << bmArgs.memory << std::endl;
+    if (bmArgs.memory != offloadingArgs->inputArgs[i].data) {
+      logger::Log("Different Memory Address", logLevel::DEBUG);
+      // TODO: what if this is in CUDA???????
+      auto calcSize = [](const int64_t* shape, int64_t rank){
+        size_t acc = sizeof(float_t);
+        for (int i = 0; i < rank; i++) {
+          acc *= shape[i];
+        }
+        std::cout << "Copying size: " << acc << std::endl;
+        return acc;
+      };
+      std::memcpy(offloadingArgs->outputArgs[i].data, bmArgs.memory, calcSize(offloadingArgs->inputArgs[i].shape, offloadingArgs->inputArgs[i].rank));
+    }
+  }
+
+
+  // TODO: Still need to destroy PJRT_Buffers!!!!!!!
   destroyLoadedExecutable(api, exe);
   destroyClient(api, client);
   dlclose(handle_);

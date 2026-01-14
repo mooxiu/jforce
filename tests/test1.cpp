@@ -77,8 +77,8 @@ int main(int argc, char** args) {
   }
 
   for (int i = 0; i < 10; i++) {
-    printf("vec1[i]: %f\n", vec1[i]);
-    printf("vec2[i]: %f\n", vec2[i]);
+    printf("vec1[i]: %f\n", ((float_t*)vec1)[i]);
+    printf("vec2[i]: %f\n", ((float_t*)vec2)[i]);
   }
 
   std::free(vec1);

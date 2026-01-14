@@ -13,6 +13,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -71,27 +72,35 @@ static std::string getFuncOpAsString(func::FuncOp funcOp) {
   return output;
 }
 
-static std::pair<std::vector<int>, std::vector<int>> filterInputAndOutputIndices(func::FuncOp funcOp) {
-  std::vector<Value> inputs;
-  inputs.reserve(funcOp.getNumArguments());
-  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    inputs.push_back(funcOp.getArgument(i));
-  }
-  std::vector<int> inputArgs;
+// XLA cannot update input buffers in-place, we have to distinguish input and output
+// Return value is a vector of output indices
+static std::vector<int> optimizeSignature(MLIRContext* context, func::FuncOp& funcOp) {
+  auto& body = funcOp.getFunctionBody();
+  auto returnOp = llvm::cast<func::ReturnOp>(body.back().getTerminator());
+  // Before optimization, the input args should be the same size of returned
   std::vector<int> outputArgs;
+  std::vector<Value> outputValues;
+  std::vector<Type> outputTypes;
   funcOp.walk([&](mlir::func::ReturnOp rop){
     for (unsigned i = 0; i < rop.getNumOperands(); i++) {
-      if (inputs[i] != rop.getOperand(i)) {
+      if (funcOp.getArgument(i) != rop.getOperand(i)) {
         outputArgs.push_back(i);
-      } else {
-        inputArgs.push_back(i);
+        outputValues.push_back(rop.getOperand(i));
+        outputTypes.push_back(rop.getOperand(i).getType());
       }
     };
   });
-  std::pair<std::vector<int>, std::vector<int>> indices;
-  indices.first = inputArgs;
-  indices.second = outputArgs;
-  return indices;
+  // update return values
+  OpBuilder opBuilder(context);
+  opBuilder.setInsertionPoint(returnOp);
+  func::ReturnOp::create(opBuilder, returnOp.getLoc(), outputValues);
+  returnOp.erase();
+
+  // update the function signature
+  auto revisedFuncType = FunctionType::get(context, funcOp.getArgumentTypes(), outputTypes);
+  funcOp.setFunctionType(revisedFuncType);
+
+  return outputArgs;
 }
 
 /**
@@ -127,6 +136,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   std::cout << "JIT Code: \n" << JitCodeC << std::endl;
 
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
+  // auto realReturnedIndices = optimizeSignature(&context, kernelFunc);
   std::string kernelFuncLiteral = getFuncOpAsString(kernelFunc);
   std::cout << "Function lowered from JIT Code: \n" << kernelFuncLiteral << std::endl;
 
@@ -134,37 +144,25 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   KernelArgs args;
   args.targetDevice = TargetDevice::CPU;
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
-  auto indices = filterInputAndOutputIndices(kernelFunc);
-  TensorDesc inputArgs[indices.first.size()];
-  unsigned inputArgIdx = 0;
-  TensorDesc outputArgs[indices.second.size()];
-  unsigned outputArgIdx = 0; 
+  TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
+  TensorDesc outputArgs[kernelFunc.getNumArguments()];
 
+  assert(kernelFunc.getNumArguments() == NumArgs && "Fail to assert kernelFun Args Count = NumArgs");
   // FIXME: NumArgs may contains constants, which is not in target
   for (unsigned i = 0; i < NumArgs; i++) {
     auto thisTy = argTypes[i]; 
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
-    if (std::find(indices.first.begin(), indices.first.end(), i) != indices.first.end()) {
-      // This is input
-      inputArgs[inputArgIdx].data = TgtArgs[i];
-      inputArgs[inputArgIdx].shape = rtType.getShape().data();
-      inputArgs[inputArgIdx].rank = rtType.getRank();
-      inputArgs[inputArgIdx].dtype = DType::F32;
-      inputArgIdx += 1;
-    } else {
-      // This is output
-      outputArgs[outputArgIdx].data = TgtArgs[i];
-      outputArgs[outputArgIdx].shape = rtType.getShape().data();
-      outputArgs[outputArgIdx].rank = rtType.getRank();
-      outputArgs[outputArgIdx].dtype = DType::F32;
-      outputArgIdx += 1;
-    }
+
+    inputArgs[i].data = TgtArgs[i];
+    inputArgs[i].shape = rtType.getShape().data();
+    inputArgs[i].rank = rtType.getRank();
+    inputArgs[i].dtype = DType::F32;
   }
   args.inputArgs = inputArgs;
-  args.inputArgCount = inputArgIdx;
-  args.outputArgs = outputArgs; 
-  args.outputArgCount = outputArgIdx;
+  args.inputArgCount = NumArgs;
+  args.outputArgs = inputArgs; 
+  args.outputArgCount = NumArgs;
 
   args.formatPrint();
 
