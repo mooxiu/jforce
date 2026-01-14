@@ -1,5 +1,6 @@
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
+#include "flang/Common/leading-zero-bit-count.h"
 #include "kernel_pointer_interface.h"
 #include "utilities.h"
 #include "xla/xla.pb.h"
@@ -322,6 +323,31 @@ static void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, voi
   }
 }
 
+static void createViewBuffers(
+  const PJRT_Api *api,
+  PJRT_Client* client,
+  PJRT_Device* device,
+  const KernelArgs* offloadingArgs,
+  std::vector<PJRT_Buffer*>& buffers) {
+  logger::Log("Start to create buffer", logLevel::DEBUG);
+  buffers.resize(offloadingArgs->inputArgCount);
+  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
+    auto inputArg = offloadingArgs->inputArgs[i];
+    PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
+    cvodbArg.client = client;
+    cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
+    cvodbArg.element_type = PJRT_Buffer_Type_F32;
+    // TODO: use memory instead of device
+    cvodbArg.device = device;
+    cvodbArg.device_buffer_ptr = inputArg.data;
+    cvodbArg.num_dims= inputArg.rank;
+    cvodbArg.dims = inputArg.shape;
+    checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer");
+    buffers[i] = cvodbArg.buffer;
+  }
+  return;
+}
+
 static void executeKernel(
   const PJRT_Api *api, 
   PJRT_LoadedExecutable *exe,
@@ -394,51 +420,14 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
   auto exe = (PJRT_LoadedExecutable *)checkNull(
       compileMLIR(api, client, kernelFuncStr, offloadingArgs));
 
-  // Buffer from host
-  // TODO: should reuse the buffers which are already been allocated
-  int in_args_count = offloadingArgs->inputArgCount;
-  PJRT_Buffer *inputArgsBuffers[in_args_count];
-  for (int i = 0; i < in_args_count; i++) {
-    inputArgsBuffers[i] = getBufferFromHost(
-        api, client, device, offloadingArgs->inputArgs[i].data,
-        getShape(offloadingArgs->inputArgs[i]));
-  }
-  PJRT_Buffer **argLists[] = {inputArgsBuffers};
-
-  // Set buffer save back to host
-  int out_args_count = offloadingArgs->outputArgCount;
-  PJRT_Buffer ***outputLists =
-      (PJRT_Buffer ***)malloc(sizeof(PJRT_Buffer **)); // we have one device
-  for (int i = 0; i < out_args_count; i++) {
-    PJRT_Buffer **outBuffer =
-        (PJRT_Buffer **)malloc(sizeof(PJRT_Buffer *)); // we have one output
-    outputLists[i] = outBuffer;
-  }
-
+  std::vector<PJRT_Buffer*> buffers;
+  createViewBuffers(api, client, device, offloadingArgs, buffers);
+  std::cout << "Buffers Created\n";
+  PJRT_Buffer** argLists[] = {buffers.data()};
   // Execute the kernel
-  executeKernel(api, exe, device, argLists, outputLists, in_args_count);
+  executeKernel(api, exe, device, argLists, argLists, offloadingArgs->inputArgCount);
 
-  // TODO: actually should be able to save to multiple out
-  for (int i = 0; i < out_args_count; i++) {
-    saveBufferToHostBuffer(api, outputLists[0][i],
-                           offloadingArgs->outputArgs[i].data,
-                           getShape(offloadingArgs->outputArgs[i]));
-  }
-
-  // Destroy Input Events and Memory
-  for (int i = 0; i < in_args_count; i++) {
-    destroyPJRTBuffer(api, inputArgsBuffers[i]);
-  }
-
-  // Destroy Output Memory
-  for (int i = 0; i < out_args_count; i++) {
-    destroyPJRTBuffer(api, outputLists[0][i]);
-  }
-
-  for (int i = 0; i < out_args_count; i++) {
-    free(outputLists[i]);
-  }
-  free(outputLists);
+  // TODO: Still need to destroy PJRT_Buffers?
 
   destroyLoadedExecutable(api, exe);
   destroyClient(api, client);

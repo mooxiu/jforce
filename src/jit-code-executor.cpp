@@ -109,7 +109,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   args.targetDevice = TargetDevice::CPU;
   // NumArgs -> device args
   auto inputArgsTypes = kernelFunc.getFunctionType().getInputs(); 
-  assert(inputArgsTypes.size() == NumArgs && "Function Input Args have different size with NumArgs");
+  // assert(inputArgsTypes.size() == NumArgs && "Function Input Args have different size with NumArgs");
   TensorDesc inputArgs[NumArgs];
   // FIXME: NumArgs may contains constants, which is not in target
   for (unsigned i = 0; i < NumArgs; i++) {
@@ -125,6 +125,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   args.inputArgCount = NumArgs;
   args.outputArgs = inputArgs; // Suppose output args are the same with input args, if works, should trim this
   args.outputArgCount = NumArgs;
+
+
+  launch_kernel(&args, kernelFuncLiteral);
+  return 0;
 
 
 #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
@@ -147,6 +151,5 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 #undef h
 
 
-  launch_kernel(&args, kernelFuncLiteral);
   return 0;
 }
