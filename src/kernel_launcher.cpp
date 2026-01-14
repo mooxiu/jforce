@@ -15,6 +15,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <iostream>
+#include <iterator>
 #include <numeric>
 #include <ostream>
 
@@ -446,6 +447,13 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
     api->PJRT_Event_Await(&waitArgs); 
   }
 
+  auto calcSize = [](const int64_t* shape, int64_t rank) -> size_t {
+    size_t acc = 1;
+    for (int i = 0; i < rank; i++) {
+      acc *= shape[i];
+    }
+    return acc;
+  };
   for (int i = 0; i < inputArgsBuffers.size(); i++) {
     PJRT_Buffer_Memory_Args bmArgs = {};
     bmArgs.struct_size =  PJRT_Buffer_Memory_Args_STRUCT_SIZE;
@@ -454,18 +462,20 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
 
     std::cout << "Before Mem: " << offloadingArgs->inputArgs[i].data << std::endl;
     std::cout << "After Mem: " << bmArgs.memory << std::endl;
+
+    auto out = (float_t*)bmArgs.memory;
+    size_t inputArgSize = calcSize(offloadingArgs->inputArgs[i].shape, offloadingArgs->inputArgs[i].rank);
+    for (int i = 0; i < inputArgSize; i++) {
+      std::cout << "The " << i << "th element is: " << out[i] << std::endl;
+    }
+
     if (bmArgs.memory != offloadingArgs->inputArgs[i].data) {
       logger::Log("Different Memory Address", logLevel::DEBUG);
       // TODO: what if this is in CUDA???????
-      auto calcSize = [](const int64_t* shape, int64_t rank){
-        size_t acc = sizeof(float_t);
-        for (int i = 0; i < rank; i++) {
-          acc *= shape[i];
-        }
-        std::cout << "Copying size: " << acc << std::endl;
-        return acc;
-      };
-      std::memcpy(offloadingArgs->outputArgs[i].data, bmArgs.memory, calcSize(offloadingArgs->inputArgs[i].shape, offloadingArgs->inputArgs[i].rank));
+      
+      std::memcpy(offloadingArgs->outputArgs[i].data, 
+                  bmArgs.memory, 
+                  sizeof(float_t) * calcSize(offloadingArgs->inputArgs[i].shape, offloadingArgs->inputArgs[i].rank));
     }
   }
 
