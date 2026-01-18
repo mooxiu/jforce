@@ -316,7 +316,7 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 
 // Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 // but should also be compatible with following code.
-func::FuncOp workdistributeToStableHLO(MLIRContext& context, const ModuleOp& moduleOp) {
+func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp) {
   OpBuilder opBuilder(&context);
   TrackingInfo trackingInfo;
   func::FuncOp stableHLOFuncOp;

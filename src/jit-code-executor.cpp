@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
@@ -54,15 +55,14 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
-#include <sstream>
-#include <utility>
 #include <vector>
 
 using namespace mlir;
 
-func::FuncOp workdistributeToStableHLO(MLIRContext& context, const ModuleOp& moduleOp);
+func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp);
 
 void launch_kernel(KernelArgs *argsPointer, const std::string& kernelFuncStr);
+
 
 // TODO: Adding verifications for the input moduleOp
 static bool verifyJitCode(const ModuleOp& moduleOp) {
@@ -148,9 +148,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     std::cerr << "Module not extracted!" << std::endl;
     exit(EXIT_FAILURE);
   }
-  auto moduleOp = module.get();
   std::cout << "JIT Code: \n" << JitCodeC << std::endl;
+  auto moduleOp = module.get();
 
+  // shapeInference(moduleOp);
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
   // auto realReturnedIndices = optimizeSignature(&context, kernelFunc);
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
