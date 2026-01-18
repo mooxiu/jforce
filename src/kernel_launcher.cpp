@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <numeric>
@@ -347,6 +348,10 @@ static void createViewBuffers(
     cvodbArg.device_buffer_ptr = inputArg.data;
     cvodbArg.num_dims= inputArg.rank;
     cvodbArg.dims = inputArg.shape;
+    auto doNothingCallback = [](void* a, void* b){
+      std::cout << "Suprise..." << std::endl;
+    };
+    cvodbArg.on_delete_callback = doNothingCallback;
     checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer");
     buffers[i] = cvodbArg.buffer;
   }
@@ -367,6 +372,8 @@ static void executeKernel(
   leeas.executable = exe;
   PJRT_ExecuteOptions execute_options = {};
   execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
+
+
   leeas.options = &execute_options;
   leeas.num_devices = (size_t)1;
   leeas.num_args = (size_t)in_args_count;
@@ -432,8 +439,10 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
     std::exit(EXIT_FAILURE);
   }
 
+  // Compile StableHLO to XLA kernel
   auto exe = (PJRT_LoadedExecutable *)checkNull(compileMLIR(api, client, kernelFuncStr, offloadingArgs));
 
+  // Create Buffer with memory managed by OpenMP
   std::vector<PJRT_Buffer*> argsBuffers;
   createViewBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers);
   PJRT_Buffer** argsBuffersList[] = {argsBuffers.data()};

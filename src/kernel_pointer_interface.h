@@ -1,8 +1,6 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
-#include <string>
 #include <vector>
 #include <iostream>
 
@@ -30,13 +28,6 @@ struct TensorDesc {
   int32_t rank;
   DType dtype;
   
-  void formatPrint() {
-    std::cout << "Data starts in: " << data;
-    std::cout << ", Shape: " << shape;
-    std::cout << ", rnak: " << rank;
-    std::cout << ", type: " << (int32_t)dtype << std::endl;
-  }
-
   // Return total elements of this tensor
   size_t getEleSize() {
     size_t acc = 1;
@@ -45,6 +36,17 @@ struct TensorDesc {
     }
     return acc;
   }
+
+  void formatPrint() {
+    std::cout << "Data starts in: " << data;
+    std::cout << ", Shape: ";
+    for (int i = 0; i < rank; i++){
+      std::cout << " " << (int64_t)shape[i];
+    }
+    std::cout << ", rank: " << rank;
+    std::cout << ", type: " << (int32_t)dtype << std::endl;
+  }
+
 };
 
 struct KernelArgs {

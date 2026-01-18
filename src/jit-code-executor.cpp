@@ -1,4 +1,6 @@
 #include "../third_party/headers/pjrt_c_api.h"
+#include "absl/strings/internal/str_format/extension.h"
+#include "flang/Support/Fortran.h"
 #include "kernel_pointer_interface.h"
 #include <algorithm>
 #include <cassert>
@@ -12,6 +14,7 @@
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Parser/Parser.h"
@@ -51,6 +54,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -71,6 +75,18 @@ static std::string getFuncOpAsString(func::FuncOp funcOp) {
   funcOp.print(os);
   return output;
 }
+
+// Ref: https://openxla.org/xla/aliasing
+// XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
+// function: `ConvertToHloModule::RunOnFunction`
+static void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
+  OpBuilder opBuilder(context);
+  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+    funcOp.setArgAttr(i, "tf.aliasing_output", opBuilder.getI64IntegerAttr(i));
+  }
+  return;
+}
+
 
 // XLA cannot update input buffers in-place, we have to distinguish input and output
 // Return value is a vector of output indices
@@ -137,9 +153,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
   // auto realReturnedIndices = optimizeSignature(&context, kernelFunc);
+  optimizeSignatureForXLAAliasing(&context, kernelFunc);
   std::string kernelFuncLiteral = getFuncOpAsString(kernelFunc);
   std::cout << "Function lowered from JIT Code: \n" << kernelFuncLiteral << std::endl;
 
+
+  //********************Execution********************
   // Fill the kernel args
   KernelArgs args;
   args.targetDevice = TargetDevice::CPU;
