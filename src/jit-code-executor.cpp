@@ -21,11 +21,13 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <memory>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -62,6 +64,8 @@ using namespace mlir;
 func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp);
 
 void launch_kernel(KernelArgs *argsPointer, const std::string& kernelFuncStr);
+
+void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
 
 
 // TODO: Adding verifications for the input moduleOp
@@ -119,6 +123,28 @@ static std::vector<int> optimizeSignature(MLIRContext* context, func::FuncOp& fu
   return outputArgs;
 }
 
+// TODO: 
+// - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
+// - Suppose ArgSizes 4 is shape constant
+static void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
+  // Is Immediate value, the pointer addr is the value of the constant
+  auto isImm = [](int64_t ty) -> bool {
+    // 0x100 means `mapping is literal`
+    // ref: `offload/include/omptarget.h`
+    // TODO: include header file instead of using the number directly
+    return ty&0x100;
+  };
+  
+  for (unsigned i = 0; i < NumHostArgs; i++) {
+    auto ty = ArgTypes[i];
+    if (isImm(ty)) {
+      int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
+      shapeConstMap.insert(std::pair(i, constVal));
+    };
+  }    
+  return;
+}
+
 /**
   * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp inside.
   *
@@ -151,7 +177,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   std::cout << "JIT Code: \n" << JitCodeC << std::endl;
   auto moduleOp = module.get();
 
-  // shapeInference(moduleOp);
+
+  llvm::DenseMap<int, int> constShapeMap; // key: arg index; value: integer literal value 
+  getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
+  runShapeInference(context, moduleOp, constShapeMap);
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
   // auto realReturnedIndices = optimizeSignature(&context, kernelFunc);
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
@@ -186,8 +215,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   args.formatPrint();
 
-  launch_kernel(&args, kernelFuncLiteral);
-  return 0;
 
 
 #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
@@ -208,6 +235,9 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
 #undef p
 #undef h
+
+
+  launch_kernel(&args, kernelFuncLiteral);
 
   return 0;
 }
