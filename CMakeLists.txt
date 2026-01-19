@@ -64,6 +64,7 @@ add_library(jit-code-executor SHARED
   src/jit-code-executor.cpp
   src/workdistribute-to-stablehlo.cpp
   src/workdistribute-shape-inference.cpp
+  src/shape-rewrite-pass.cpp
   src/kernel_launcher.cpp
   src/kernel_pointer_interface.cpp
   src/utilities.cpp
