@@ -1,3 +1,4 @@
+#include "absl/strings/internal/str_format/extension.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -76,12 +77,21 @@ static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func
 
 
 static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
+  llvm::dbgs() << "\n>>>>>>>>>>>>>>>>>>Before Shape inference: \n";
+  funcOp.print(llvm::dbgs());
+  llvm::dbgs() << "\n<<<<<<<<<<<<<<<<<<After Shape inference.";
+
   // mapping from value to shape (a vector of each dimension)
   llvm::DenseMap<Value, llvm::SmallVector<int64_t>> shapeMap;
   // tracking shape constant
   llvm::DenseMap<Value, int64_t> constTrackingMap;
 
   funcOp.walk([&](Operation* op){
+    llvm::dbgs() << "\n now dealing with=============\n";
+    op->print(llvm::dbgs());
+    llvm::dbgs() << "===================\n";
+
+
     llvm::TypeSwitch<Operation*>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp cop){
         auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(cop.getValue());
@@ -103,51 +113,113 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop){
         // Example: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<?x?xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<?x?xf64>>, !fir.ref<!fir.array<?x?xf64>>)
         // Objective: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<1000x1000xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<1000x1000xf64>>, !fir.ref<!fir.array<1000x1000xf64>>)
-        llvm::dbgs() << "\n DeclareOp: \n";
-        for (unsigned i = 0; i < dop.getNumResults(); i++) {
-          llvm::dbgs() << "\n Result" << i << ": ";
-          dop.getResult(i).printAsOperand(llvm::dbgs(), {});
-          llvm::dbgs() << "\n";
-        }
-        assert(shapeMap.contains(dop.getShape()) && "Expect the shape of the decalreOp already known!");
-        auto newShape = shapeMap.at(dop.getShape());
-        opBuilder.setInsertionPoint(dop);
+        llvm::dbgs() << "The first Result is: ";
+        dop.getResult(0).printAsOperand(llvm::dbgs(), {});
+        llvm::dbgs() << " , the shape of it is: ";
+        dop.getResult(0).getType().print(llvm::dbgs());
+        llvm::dbgs() << ", is it dynamic: " << isDynamicShape(dop.getResult(0).getType()) << "\n";
+        
+        if (isDynamicShape(dop.getResult(0).getType())) {
+          auto staticShape = shapeMap.at(dop.getShape());
 
-        auto ndop = hlfir::DeclareOp::create(
-            opBuilder,
-            dop.getLoc(),           
-            convertToStaticShape(dop.getResult(0).getType(), newShape),
-            convertToStaticShape(dop.getResult(1).getType(), newShape), 
-            dop.getMemref(),        
-            dop.getShape(),         
-            dop.getTypeparams(),    
-            dop.getDummyScope(),    
-            dop.getStorage(),       
-            dop.getStorageOffsetAttr(), 
-            dop.getUniqNameAttr(),      
-            dop.getFortranAttrsAttr(),  
-            dop.getDataAttrAttr(),      
-            nullptr,
-            dop.getDummyArgNoAttr()     
-        );
-          // auto ndop = hlfir::DeclareOp::create(opBuilder, funcOp.getLoc(), newBoxType, dop.getMemref(), dop.getShape(), dop.getTypeparams(), dop.getDummyScope(), dop.getStorage(), dop.getStorageOffsetAttr(), dop.getUniqNameAttr(), dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), dop.getDummyArgNoAttr());
-        llvm::dbgs() << "\n Updated DeclaredOP: \n";
-        ndop.print(llvm::dbgs(), {});
-        llvm::dbgs() << "\n";
-        dop.replaceAllUsesWith(ndop.getResults());
-        dop.erase();
+          // propagate the shape of the results
+          for (unsigned i = 0; i < dop.getNumResults(); i++) {
+            shapeMap.insert(std::pair(dop.getResult(i), staticShape));
+          }
+          shapeMap.insert(std::pair(dop.getMemref(), staticShape));
+
+          // Insert the new declareOp
+          opBuilder.setInsertionPoint(dop);
+          auto ndop = hlfir::DeclareOp::create(
+              opBuilder,
+              dop.getLoc(),           
+              convertToStaticShape(dop.getResult(0).getType(), staticShape),
+              convertToStaticShape(dop.getResult(1).getType(), staticShape), 
+              dop.getMemref(),        
+              dop.getShape(),         
+              dop.getTypeparams(),    
+              dop.getDummyScope(),    
+              dop.getStorage(),       
+              dop.getStorageOffsetAttr(), 
+              dop.getUniqNameAttr(),      
+              dop.getFortranAttrsAttr(),  
+              dop.getDataAttrAttr(),      
+              nullptr,
+              dop.getDummyArgNoAttr()     
+          );
+            // auto ndop = hlfir::DeclareOp::create(opBuilder, funcOp.getLoc(), newBoxType, dop.getMemref(), dop.getShape(), dop.getTypeparams(), dop.getDummyScope(), dop.getStorage(), dop.getStorageOffsetAttr(), dop.getUniqNameAttr(), dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), dop.getDummyArgNoAttr());
+          llvm::dbgs() << "\n Updated DeclaredOP: \n";
+          ndop.print(llvm::dbgs(), {});
+          llvm::dbgs() << "\n";
+          dop.replaceAllUsesWith(ndop.getResults());
+          dop.erase();
+        }
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp dop){
         // Example: %8 = hlfir.designate %2#0 (%arg10, %arg11)  : (!fir.box<!fir.array<?x?xf64>>, index, index) -> !fir.ref<f64>
+        if (!shapeMap.contains(dop.getMemref())) {
+          dop.getMemref().printAsOperand(llvm::dbgs(), {});
+          llvm::dbgs() << " does not have static shape!";
+        } else {
+          auto staticShape = shapeMap.at(dop.getMemref()); 
+          // hlfir::DesignateOp::create(
+          //   opBuilder,
+          //   funcOp.getLoc(),
+          //   funcOp.getResultTypes();
+          // );        
+
+          // static DesignateOp create(::mlir::OpBuilder &builder, ::mlir::Location location, mlir::Type result_type, mlir::Value memref, llvm::StringRef component, mlir::Value component_shape, llvm::ArrayRef<std::variant<mlir::Value, std::tuple<mlir::Value, mlir::Value, mlir::Value>>> subscripts, mlir::ValueRange substring = {}, std::optional<bool> complex_part = {}, mlir::Value shape = {}, mlir::ValueRange typeparams = {}, fir::FortranVariableFlagsAttr fortran_attrs = {});
+        }
       })
       .Case<hlfir::ElementalOp>([&](hlfir::ElementalOp eop){
         // Example: %6 = hlfir.elemental %0 unordered : (!fir.shape<2>) -> !hlfir.expr<?x?xf64> {
+        // static ElementalOp create(::mlir::OpBuilder &builder, ::mlir::Location location, mlir::Type result_type, mlir::Value shape, mlir::Value mold = {}, mlir::ValueRange typeparams = {}, bool isUnordered = false);
+        if (isDynamicShape(eop.getResult().getType()) && !isDynamicShape(eop.getShape().getType())) {
+          assert(shapeMap.contains(eop.getShape()) && "The shape of the elementalOp should be known");
+          auto oldResType = eop.getResult().getType();
+          auto newResType = convertToStaticShape(oldResType, shapeMap.at(eop.getShape()));
+          shapeMap.insert(std::pair(eop.getResult(), shapeMap.at(eop.getShape())));
+          opBuilder.setInsertionPoint(eop);
+          auto neop = hlfir::ElementalOp::create(
+            opBuilder,
+            funcOp.getLoc(),
+            newResType,
+            eop.getShape(),
+            eop.getMold(),
+            eop.getTypeparams(),
+            eop.isOrdered()
+          );
+          neop.getRegion().takeBody(eop.getRegion());
+          eop.replaceAllUsesWith(neop.getResult()); 
+          eop.erase();
+        }
       })
       .Case<hlfir::AssignOp>([&](hlfir::AssignOp aop){
         // Example: hlfir.assign %7 to %1#0 : !hlfir.expr<?x?xf64>, !fir.box<!fir.array<?x?xf64>>
       })
       .Case<hlfir::DestroyOp>([&](hlfir::DestroyOp dop){
         // Example: hlfir.destroy %7 : !hlfir.expr<?x?xf64>
+      })
+      .Case<func::FuncOp>([&](func::FuncOp fop){
+        llvm::dbgs() << "\n updating signature! \n"; 
+
+        auto funcType = funcOp.getFunctionType();
+        auto inputTypes = llvm::to_vector(funcType.getInputs());
+        auto oldRes = funcType.getResults();
+
+        Block &entryBlock = fop.front();
+        for (unsigned i = 0; i < entryBlock.getNumArguments(); i++) {
+          auto arg = entryBlock.getArgument(i);
+          if (isDynamicShape(arg.getType())) {
+            arg.printAsOperand(llvm::dbgs(), {});
+            assert(shapeMap.contains(arg) && "Arg Shape should be known!");
+            auto staticShape = shapeMap.at(arg); 
+            arg.setType(convertToStaticShape(arg.getType(), staticShape));
+            inputTypes[i] = convertToStaticShape(inputTypes[i], staticShape);
+          }
+        }
+        auto newFuncType = FunctionType::get(funcOp.getContext(), inputTypes, oldRes);
+        funcOp.setType(newFuncType);
       })
       .Default([](auto){});
   }); 
@@ -160,12 +232,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
 
 // ShapeInference by tracking constant number
 void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap){
-  std::cout << "--------------ConstShapeMap: \n";
-  std::for_each(constShapeMap.begin(), constShapeMap.end(), [](std::pair<int, int> p){
-      std::cout << "key: " << p.first << "; value: " << p.second << "\n";
-  });
-  std::cout << "\n--------------ConstShapeMap. \n";
-
   mlir::PassManager pm(&context);
   OpBuilder opBuilder(&context);
 
