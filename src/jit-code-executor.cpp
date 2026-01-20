@@ -191,7 +191,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   //********************Execution********************
   // Fill the kernel args
   KernelArgs args;
-  args.targetDevice = TargetDevice::CPU;
+  args.targetDevice = TargetDevice::CUDA;
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
   TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
   TensorDesc outputArgs[kernelFunc.getNumArguments()];

@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
-set(InstallPath "/home/haruka/opt/llvm-project/release/install")
+set(HOME $ENV{HOME})
+set(InstallPath "${HOME}/opt/llvm-project/release/install")
 # set(LLVM_PREFIX "/home/muyao/projects/llvm-project/build")
 set(LLVM_PREFIX ${InstallPath})
 # StableHLO does not have *Config.cmake, so we cannot do in that way
@@ -9,7 +10,8 @@ set(LLVM_PREFIX ${InstallPath})
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
 set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 
-project(xla_glue_project LANGUAGES CXX Fortran)
+# project(xla_glue_project LANGUAGES CXX Fortran)
+project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
@@ -23,7 +25,7 @@ find_package(Clang REQUIRED CONFIG)
 find_package(Flang REQUIRED CONFIG)
 
 # -------------------- Find StableHLO --------------------  
-set(STABLEHLO_PROJECT "/home/haruka/Documents/workspace/projects/stablehlo")
+set(STABLEHLO_PROJECT "${HOME}/projects/stablehlo")
 # set(STABLEHLO_SRC_PATH "${STABLEHLO_PROJECT}/stablehlo")
 set(STABLEHLO_BUILD_PATH "${STABLEHLO_PROJECT}/build")
 set(STABLEHLO_STATIC_LIBS "${STABLEHLO_BUILD_PATH}/lib")
@@ -99,14 +101,15 @@ set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
 target_compile_definitions(jit-code-executor
     PRIVATE
-    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
+    # DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
+    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_gpu_plugin.so"
 )
 
 # -------------------- Macro for compiling tests --------------------  
-macro(add_test TEST_NAME SRC_FILE)
-  add_executable(${TEST_NAME} ${SRC_FILE})
-  target_link_libraries(${TEST_NAME} PRIVATE jit-code-executor)
-endmacro()
-
-
-add_test(test_1_dummy tests/test1.cpp)
+# macro(add_test TEST_NAME SRC_FILE)
+#   add_executable(${TEST_NAME} ${SRC_FILE})
+#   target_link_libraries(${TEST_NAME} PRIVATE jit-code-executor)
+# endmacro()
+#
+#
+# add_test(test_1_dummy tests/test1.cpp)
