@@ -7,6 +7,7 @@
 // TODO: all the tests are using f32 for now.
 enum class DType : int32_t {
   F32 = 0,
+  F64 = 1,
 };
 
 enum class TargetDevice : int32_t {

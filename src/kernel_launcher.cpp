@@ -289,7 +289,9 @@ static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
 static size_t getSizeOf(PJRT_Buffer_Type type) {
   switch (type) {
   case PJRT_Buffer_Type_F32:
-    return sizeof(float);
+    return size_t(4);
+  case PJRT_Buffer_Type_F64:
+    return size_t(8);
   default:
     logger::Log("Unknown Type", logLevel::ERROR);
     exit(1);
@@ -297,6 +299,7 @@ static size_t getSizeOf(PJRT_Buffer_Type type) {
 }
 
 // TODO: need to fix because OpenMP will manage the memory location of the host and device
+[[deprecated("OpenMP will in charge of the memory")]]
 static void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, void *dst,
                             std::vector<int64_t> shape) {
   PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
@@ -342,7 +345,17 @@ static void createViewBuffers(
     PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
     cvodbArg.client = client;
     cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
-    cvodbArg.element_type = PJRT_Buffer_Type_F32;
+    cvodbArg.element_type = [&](){
+      switch (inputArg.dtype) {
+        case DType::F32:
+          return PJRT_Buffer_Type_F32;
+        case DType::F64:
+          return PJRT_Buffer_Type_F64;
+        default:
+          logger::Log("Unexpected data type", logLevel::ERROR);
+          exit(EXIT_FAILURE);
+      }
+    }();
     // TODO: use memory instead of device
     cvodbArg.device = device;
     cvodbArg.device_buffer_ptr = inputArg.data;
