@@ -1,10 +1,13 @@
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
+#include "flang/Common/leading-zero-bit-count.h"
 #include "kernel_pointer_interface.h"
-#include "operations.h"
+#include "utilities.h"
+#include "xla/xla.pb.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -13,10 +16,10 @@
 #include <dlfcn.h>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <numeric>
 #include <ostream>
 #include <string>
-#include <vector>
 
 std::string getPluginPath() {
 // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
@@ -31,7 +34,7 @@ std::string getPluginPath() {
 /**
 -------------------- Tool Functions --------------------
  */
-std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
+static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   PJRT_Error_GetCode_Args code_args = {};
   code_args.struct_size = PJRT_Error_GetCode_Args_STRUCT_SIZE;
   code_args.error = err;
@@ -52,7 +55,7 @@ std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   return s;
 }
 
-bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
+static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
                     const std::string &eventName) {
   auto msg = eventName;
   if (err) {
@@ -70,7 +73,7 @@ bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
 -------------------- End Tool Functions --------------------
  */
 
-PJRT_Api *getAPI() {
+static PJRT_Api *getAPI() {
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
   if (!handle_) {
     logger::Log("Error loading plugin: " + std::string(dlerror()),
@@ -89,7 +92,7 @@ PJRT_Api *getAPI() {
   return api;
 }
 
-PJRT_Client *createClient(const PJRT_Api *api) {
+static PJRT_Client *createClient(const PJRT_Api *api) {
   PJRT_Client_Create_Args args = {};
   args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
   auto error = api->PJRT_Client_Create(&args);
@@ -99,7 +102,7 @@ PJRT_Client *createClient(const PJRT_Api *api) {
   return args.client;
 }
 
-void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
+static void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
   PJRT_Client_Destroy_Args client_destroy_args = {};
   client_destroy_args.struct_size = PJRT_Client_Destroy_Args_STRUCT_SIZE;
   client_destroy_args.client = client;
@@ -107,8 +110,8 @@ void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
   return;
 }
 
-PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
-                                   const std::string &func_code) {
+static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
+                                   const std::string &func_code, KernelArgs* offloadingArgs) {
   auto setProgram = [func_code](PJRT_Program *program,
                                 const std::string &format) -> void {
     program->struct_size = PJRT_Program_STRUCT_SIZE;
@@ -122,29 +125,31 @@ PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
     return;
   };
 
-  auto getCompileOptionsProto = []() -> std::string {
+  auto getCompileOptionsProto = [&]() -> std::string {
     xla::CompileOptionsProto opts = {};
     opts.set_parameter_is_tupled_arguments(false);
     opts.set_compile_portable_executable(false);
     opts.set_profile_version(1);
 
-    xla::ExecutableBuildOptionsProto *build_opts =
-        opts.mutable_executable_build_options();
+    xla::ExecutableBuildOptionsProto *build_opts = opts.mutable_executable_build_options();
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
-    // TODO: this might make compiled code slower!!!
-    auto debugOptions = build_opts->mutable_debug_options();
-    debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
-    if (const char* cuda_path_env = std::getenv("MY_CUDA_PATH")) {
-      debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
-      logger::Log("Setting cuda_data_dir to: " + std::string(cuda_path_env), logLevel::DEBUG);
-    } else {
-      // DO NOTHING, this might cause warning
-    } 
+
+    // Special option for CUDA
+    if (offloadingArgs->targetDevice == TargetDevice::CUDA) {
+      // TODO: this might make compiled code slower!!!
+      auto debugOptions = build_opts->mutable_debug_options();
+      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
+      if (const char* cuda_path_env = std::getenv("MY_CUDA_PATH")) {
+        debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
+        logger::Log("Setting cuda_data_dir to: " + std::string(cuda_path_env), logLevel::DEBUG);
+      } else {
+        // DO NOTHING, this might cause warning
+      } 
+    }    
 
     std::string buf;
-    // SerializeToString(): This is protobuf's method inherited by
-    // CompileOptionProto.
+    // SerializeToString(): This is protobuf's method inherited by `CompileOptionProto`.
     if (!opts.SerializeToString(&buf)) {
       logger::Log("Fail to serialize CompileOptionsProto", logLevel::ERROR);
       return nullptr;
@@ -170,8 +175,7 @@ PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
   return compile_args.executable;
 }
 
-// TODO: which one should I use? PJRT_LoadedExecutable_Delete or this?
-void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *exe) {
+static void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *exe) {
   PJRT_LoadedExecutable_Destroy_Args ledargs;
   ledargs.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE;
   ledargs.executable = exe;
@@ -180,7 +184,8 @@ void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *exe) {
   return;
 }
 
-std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device) {
+// For filtering out the target device.
+static std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device) {
   PJRT_Device_GetDescription_Args args = {};
   args.struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE;
   args.device = device;
@@ -203,7 +208,8 @@ std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device) {
   return ts_args.to_string;
 }
 
-PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
+// Get the target device handle
+static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
                         const std::string &deviceDescKeyword) {
   PJRT_Client_AddressableDevices_Args device_args = {};
   device_args.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE;
@@ -245,7 +251,7 @@ PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
   return device_args.addressable_devices[chosen_device_idx];
 }
 
-void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
+static void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
   PJRT_Buffer_Destroy_Args args = {};
   args.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE;
   args.buffer = buffer;
@@ -255,7 +261,8 @@ void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
 }
 
 // TODO: This work should later be done by OpenMP runtime.
-PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
+[[deprecated("Handled by OpenMP runtime, don't need to assign the buffer by ourseleves")]]
+static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
                                PJRT_Device *device, void *ptr,
                                std::vector<int64_t> shape) {
   PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
@@ -279,18 +286,21 @@ PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
 }
 
 // TODO: should have a better implementation
-size_t getSizeOf(PJRT_Buffer_Type type) {
+static size_t getSizeOf(PJRT_Buffer_Type type) {
   switch (type) {
   case PJRT_Buffer_Type_F32:
-    return sizeof(float);
+    return size_t(4);
+  case PJRT_Buffer_Type_F64:
+    return size_t(8);
   default:
     logger::Log("Unknown Type", logLevel::ERROR);
     exit(1);
   }
 }
 
-// TODO: using event can make this part async
-void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, void *dst,
+// TODO: need to fix because OpenMP will manage the memory location of the host and device
+[[deprecated("OpenMP will in charge of the memory")]]
+static void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, void *dst,
                             std::vector<int64_t> shape) {
   PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
   buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
@@ -320,7 +330,124 @@ void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, void *dst,
   }
 }
 
-void executeKernel(
+static PJRT_Buffer* createViewBuffers(
+  const PJRT_Api *api,
+  PJRT_Client* client,
+  PJRT_Device* device,
+  const TensorDesc inputArg
+) {
+
+  logger::Log("Start to create buffer", logLevel::DEBUG);
+  PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
+  cvodbArg.client = client;
+  cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
+  cvodbArg.element_type = [&](){
+    switch (inputArg.dtype) {
+      case DType::F32:
+        return PJRT_Buffer_Type_F32;
+      case DType::F64:
+        return PJRT_Buffer_Type_F64;
+      default:
+        logger::Log("Unexpected data type", logLevel::ERROR);
+        exit(EXIT_FAILURE);
+    }
+  }();
+  // TODO: use memory instead of device
+  cvodbArg.device = device;
+  cvodbArg.device_buffer_ptr = inputArg.data;
+  cvodbArg.num_dims= inputArg.rank;
+  cvodbArg.dims = inputArg.shape;
+  auto doNothingCallback = [](void* a, void* b){
+    std::cout << "Call onDeleteCallBack on ViewOfDeviceBuffer" << std::endl;
+  };
+  cvodbArg.on_delete_callback = doNothingCallback;
+  checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer");
+  return cvodbArg.buffer;
+}
+
+// Creating Buffer for single number is not recommended, but preprocessing (folding) it in stableHLO!
+static PJRT_Buffer *createLiteralBuffers(
+  const PJRT_Api *api, 
+  PJRT_Client *client,
+  PJRT_Device *device, 
+  const TensorDesc inputArg
+) {
+  
+  void* getLiteralData = [&]() -> void*{
+    auto raw = reinterpret_cast<uintptr_t>(inputArg.data);
+    switch (inputArg.dtype) {
+      case DType::I32: {
+        int32_t* dataptrI32 = (int32_t*)malloc(sizeof(int) * 1);
+        int32_t val = static_cast<int32_t>(raw);
+        *dataptrI32 = val;
+        return (void*)dataptrI32; 
+      }
+      case DType::F64: {
+        double_t* dataptrF64 = (double_t*)malloc(sizeof(double) * 1);
+        memcpy(dataptrF64, &raw, sizeof(double));
+        return (void*)dataptrF64;
+      }
+      case DType::F32: {
+        uint32_t low_bits = static_cast<uint32_t>(raw);
+        float_t* dataptrF32 = (float_t*)malloc(sizeof(float) * 1);
+        memcpy(dataptrF32, &low_bits, sizeof(float));
+        return (void*)dataptrF32;
+      }
+      default:
+        return nullptr;
+    }
+  }();
+
+  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
+  buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+  buffer_args.type = [&](){
+    if (inputArg.dtype == DType::F32){
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_F32;
+    } else if (inputArg.dtype == DType::F64) {
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_F64;
+    } else if (inputArg.dtype == DType::I32) {
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_S32;
+    } else {
+      std::cerr << "Unknown Buffer Types!\n";
+      std::exit(EXIT_FAILURE);
+    }
+  }();
+  buffer_args.device = device;
+  buffer_args.client = client;
+  buffer_args.data = getLiteralData;
+  // TODO: should reconsider how to set the size and dimmension for general
+  buffer_args.num_dims = 0;
+  int64_t dims[1] = {};
+  buffer_args.dims = dims;
+  auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
+  if (!checkPJRTError(api, err, "Create Buffer From Host")) {
+    return nullptr;
+  }
+  free(getLiteralData);
+  return buffer_args.buffer;
+}
+
+static void manageInputBuffers(
+  const PJRT_Api *api,
+  PJRT_Client* client,
+  PJRT_Device* device,
+  const TensorDesc* inputArgs,
+  const int32_t inputArgCount,
+  std::vector<PJRT_Buffer*>& buffers,
+  const std::vector<int32_t>& literalTypeArgsIndices) {
+
+  buffers.resize(inputArgCount);
+  for (int i = 0; i < inputArgCount; i++) {
+    if (inputArgs[i].isLiteral){
+      buffers[i] = createLiteralBuffers(api, client, device, inputArgs[i]);  
+    } else {
+      buffers[i] = createViewBuffers(api, client, device, inputArgs[i]);
+    }
+  }
+  return;
+}
+
+static void executeKernel(
   const PJRT_Api *api, 
   PJRT_LoadedExecutable *exe,
   PJRT_Device *device, 
@@ -334,10 +461,12 @@ void executeKernel(
   leeas.executable = exe;
   PJRT_ExecuteOptions execute_options = {};
   execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
+
+
   leeas.options = &execute_options;
   leeas.num_devices = (size_t)1;
   leeas.num_args = (size_t)in_args_count;
-  leeas.argument_lists = argLists;
+  leeas.argument_lists = argLists; // [deviceCount][argCount]
   // we have one device, and the output by this device is 1.
   leeas.output_lists = outLists;
   leeas.execute_device = device;
@@ -346,32 +475,19 @@ void executeKernel(
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
 
-std::string getFuncCode(KernelArgs *args) {
-  std::string funcCode = "";
-  TensorDesc *inputArgs = static_cast<TensorDesc *>(args->inputArgs);
-
-  switch (args->opCode) {
-  case OpType::VECTOR_ADD:
-    funcCode = GetVectorAdditionOp(getShape(inputArgs[0])[0]);
-    break;
-  case OpType::TRANSPOSE:
-    funcCode = GetTransposeOp((getShape(inputArgs[0])));
-    break;
-  case OpType::DOT_PRODUCT:
-    funcCode = GetDotProductOp(getShape(inputArgs[0])[0]);
-    break;
-  case OpType::MATRIX_MUL:
-    funcCode = GetMatrixMultiplicationOp(getShape(inputArgs[0]), getShape(inputArgs[1]));
-    break;
-  default:
-    logger::Log("Unknown opCode: " + std::to_string((int32_t)args->opCode),
-                logLevel::ERROR);
+static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetDevice deviceTy) {
+  if (deviceTy == TargetDevice::CPU) {
+    std::memcpy(dstPtr, srcPrt, byteCount);
+  } else if (deviceTy == TargetDevice::CUDA) {
+    // TODO: insert cudamemd2d 
+  } else {
+    logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(deviceTy)), logLevel::ERROR);
     exit(EXIT_FAILURE);
   }
-  return funcCode;
 }
 
-void launchKernelInternal(KernelArgs *offloadingArgs) {
+
+static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& kernelFuncStr) {
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
   // auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW|RTLD_GLOBAL);
   if (!handle_) {
@@ -389,9 +505,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
 
   auto checkNull = [handle_](void *ptr) -> void * {
     if (!ptr) {
-      // don't forget to clear the handle_ before panic
       std::cerr << "[FATAL] Pointer not supposed to be null is null!! Exiting." << std::endl;
-      // dlclose(handle_);
       exit(1);
     }
     return ptr;
@@ -403,57 +517,85 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   checkPJRTError(api, initErr, "Init Plugins");
 
   auto client = (PJRT_Client *)checkNull(createClient(api));
-  // auto cpuDevice = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
-  auto device = (PJRT_Device *)checkNull(findDevice(api, client, "cuda"));
-
-  auto exe = (PJRT_LoadedExecutable *)checkNull(
-      compileMLIR(api, client, getFuncCode(offloadingArgs)));
-
-  // Buffer from host
-  int in_args_count = offloadingArgs->inputArgCount;
-  PJRT_Buffer *inputArgsBuffers[in_args_count];
-  for (int i = 0; i < in_args_count; i++) {
-    inputArgsBuffers[i] = getBufferFromHost(
-        api, client, device, offloadingArgs->inputArgs[i].data,
-        getShape(offloadingArgs->inputArgs[i]));
+  
+  PJRT_Device* device;
+  if (offloadingArgs->targetDevice == TargetDevice::CPU) {
+    device = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
+  } else if (offloadingArgs->targetDevice == TargetDevice::CUDA){
+    device = (PJRT_Device *)checkNull(findDevice(api, client, "cuda"));
+  } else {
+    std::cerr << "Unsupported Device Type!" << std::endl;
+    std::exit(EXIT_FAILURE);
   }
-  PJRT_Buffer **argLists[] = {inputArgsBuffers};
 
-  // Set buffer save back to host
-  int out_args_count = offloadingArgs->outputArgCount;
-  PJRT_Buffer ***outputLists =
-      (PJRT_Buffer ***)malloc(sizeof(PJRT_Buffer **)); // we have one device
-  for (int i = 0; i < out_args_count; i++) {
-    PJRT_Buffer **outBuffer =
-        (PJRT_Buffer **)malloc(sizeof(PJRT_Buffer *)); // we have one output
-    outputLists[i] = outBuffer;
+  // Compile StableHLO to XLA kernel
+  auto exe = (PJRT_LoadedExecutable *)checkNull(compileMLIR(api, client, kernelFuncStr, offloadingArgs));
+
+  // Create Buffer with memory managed by OpenMP
+  // For literal MapType, there's no memory been allocated, we have to allocate the memory and buffer by ourselves!!!! 
+  std::vector<PJRT_Buffer*> argsBuffers;
+  std::vector<int> literalTypeArgsIndices;
+  literalTypeArgsIndices.reserve(offloadingArgs->inputArgCount);
+  for (int32_t i = 0; i < offloadingArgs->inputArgCount; i++) {
+    if (offloadingArgs->inputArgs[i].isLiteral) {
+      literalTypeArgsIndices.push_back(i);
+    }
   }
+  manageInputBuffers(api, client, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers, literalTypeArgsIndices);
+  PJRT_Buffer** argsBuffersList[] = {argsBuffers.data()};
+
 
   // Execute the kernel
-  executeKernel(api, exe, device, argLists, outputLists, in_args_count);
+  executeKernel(api, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
 
-  // TODO: actually should be able to save to multiple out
-  for (int i = 0; i < out_args_count; i++) {
-    saveBufferToHostBuffer(api, outputLists[0][i],
-                           offloadingArgs->outputArgs[i].data,
-                           getShape(offloadingArgs->outputArgs[i]));
+  PJRT_Buffer_ReadyEvent_Args* eventArgs[offloadingArgs->inputArgCount];
+  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
+    PJRT_Buffer_ReadyEvent_Args eventArg = {};
+    eventArgs[i] = &eventArg;
+    eventArg.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
+    eventArg.buffer = argsBuffersList[0][i];
+    api->PJRT_Buffer_ReadyEvent(&eventArg);
+  }
+    
+  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
+    // Wait for the event to complete
+    PJRT_Event_Await_Args waitArgs = {};
+    waitArgs.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
+    waitArgs.event = eventArgs[i]->event;
+    api->PJRT_Event_Await(&waitArgs); 
   }
 
-  // Destroy Input Events and Memory
-  for (int i = 0; i < in_args_count; i++) {
-    destroyPJRTBuffer(api, inputArgsBuffers[i]);
+
+  // After Execution, the data may not be updated in-place!!!!!
+  for (int i = 0; i < argsBuffers.size(); i++) {
+    // PJRT_Buffer_UnsafePointer_Args upArgs = {};
+    // upArgs.struct_size = PJRT_Buffer_UnsafePointer_Args_STRUCT_SIZE;
+    // upArgs.buffer = argsBuffersList[0][i];
+    // api->PJRT_Buffer_UnsafePointer(&upArgs);
+    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {};
+    odmdpArgs.struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE;
+    odmdpArgs.buffer = argsBuffersList[0][i];
+    api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
+
+    void* afterPtr = odmdpArgs.device_memory_ptr;
+
+    //--- print the comparsion of original pointers and new pointers
+    std::cout << "Before Mem: " << offloadingArgs->inputArgs[i].data << std::endl;
+    std::cout << "After Mem: " << afterPtr << std::endl;
+    //---
+
+    if (afterPtr != offloadingArgs->inputArgs[i].data) {
+      logger::Log("Different Memory Address", logLevel::DEBUG);
+      // TODO: what if this is in CUDA???????
+      cpyMemOnDevice(offloadingArgs->outputArgs[i].data, 
+                  afterPtr, 
+                  sizeof(float_t) * offloadingArgs->inputArgs[i].getEleSize(),
+                  offloadingArgs->targetDevice);
+    }
   }
 
-  // Destroy Output Memory
-  for (int i = 0; i < out_args_count; i++) {
-    destroyPJRTBuffer(api, outputLists[0][i]);
-  }
 
-  for (int i = 0; i < out_args_count; i++) {
-    free(outputLists[i]);
-  }
-  free(outputLists);
-
+  // TODO: Still need to destroy PJRT_Buffers!!!!!!!
   destroyLoadedExecutable(api, exe);
   destroyClient(api, client);
   dlclose(handle_);
@@ -461,8 +603,7 @@ void launchKernelInternal(KernelArgs *offloadingArgs) {
   return;
 }
 
-extern "C" void launch_kernel(void *argsPointer) {
-  KernelArgs *kernelArgs = static_cast<KernelArgs *>(argsPointer);
-
-  launchKernelInternal(kernelArgs);
+void launch_kernel(KernelArgs* kernelArgs, const std::string& kernelFuncStr) {
+  launchKernelInternal(kernelArgs, kernelFuncStr);
 }
+
