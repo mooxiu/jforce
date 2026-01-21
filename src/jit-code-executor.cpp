@@ -57,6 +57,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
+#include <system_error>
 #include <vector>
 
 using namespace mlir;
@@ -206,7 +207,17 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     inputArgs[i].data = TgtArgs[i];
     inputArgs[i].shape = rtType.getShape().data();
     inputArgs[i].rank = rtType.getRank();
-    inputArgs[i].dtype = DType::F32;
+    inputArgs[i].dtype = [&](){
+      auto eleType = rtType.getElementType();
+      if (eleType.isF32()){
+        return DType::F32;
+      } else if (eleType.isF64()){
+        return DType::F64;
+      } else {
+        std::cerr << "Unknown input type!\n";
+        exit(EXIT_FAILURE);
+      }
+    }();
   }
   args.inputArgs = inputArgs;
   args.inputArgCount = NumArgs;
