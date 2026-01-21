@@ -362,7 +362,7 @@ static void createViewBuffers(
     cvodbArg.num_dims= inputArg.rank;
     cvodbArg.dims = inputArg.shape;
     auto doNothingCallback = [](void* a, void* b){
-      std::cout << "Suprise..." << std::endl;
+      std::cout << "Call onDeleteCallBack on ViewOfDeviceBuffer" << std::endl;
     };
     cvodbArg.on_delete_callback = doNothingCallback;
     checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer");
