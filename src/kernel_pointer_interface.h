@@ -8,6 +8,7 @@
 enum class DType : int32_t {
   F32 = 0,
   F64 = 1,
+  I32 = 2,
 };
 
 enum class TargetDevice : int32_t {
@@ -28,6 +29,7 @@ struct TensorDesc {
   const int64_t *shape;
   int32_t rank;
   DType dtype;
+  bool isLiteral;
   
   // Return total elements of this tensor
   size_t getEleSize() {

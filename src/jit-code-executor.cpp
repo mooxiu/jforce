@@ -213,11 +213,14 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
         return DType::F32;
       } else if (eleType.isF64()){
         return DType::F64;
-      } else {
+      } else if (eleType.isInteger(32)) {
+        return DType::I32;
+      }else {
         std::cerr << "Unknown input type!\n";
         exit(EXIT_FAILURE);
       }
     }();
+    inputArgs[i].isLiteral = (ArgTypes[i] & 0x100);
   }
   args.inputArgs = inputArgs;
   args.inputArgCount = NumArgs;
