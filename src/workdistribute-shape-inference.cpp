@@ -1,4 +1,3 @@
-#include "absl/strings/internal/str_format/extension.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -20,12 +19,10 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
-#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <vector>
 
 using namespace mlir;
 
@@ -74,24 +71,14 @@ static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func
   return;
 }
 
-
-
+// Not a roboust transformation but works for now.
 static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
-  llvm::dbgs() << "\n>>>>>>>>>>>>>>>>>>Before Shape inference: \n";
-  funcOp.print(llvm::dbgs());
-  llvm::dbgs() << "\n<<<<<<<<<<<<<<<<<<After Shape inference.";
-
-  // mapping from value to shape (a vector of each dimension)
+   // mapping from value to shape (a vector of each dimension)
   llvm::DenseMap<Value, llvm::SmallVector<int64_t>> shapeMap;
   // tracking shape constant
   llvm::DenseMap<Value, int64_t> constTrackingMap;
 
   funcOp.walk([&](Operation* op){
-    llvm::dbgs() << "\n now dealing with=============\n";
-    op->print(llvm::dbgs());
-    llvm::dbgs() << "===================\n";
-
-
     llvm::TypeSwitch<Operation*>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp cop){
         auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(cop.getValue());
@@ -155,22 +142,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
           dop.erase();
         }
       })
-      .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp dop){
-        // Example: %8 = hlfir.designate %2#0 (%arg10, %arg11)  : (!fir.box<!fir.array<?x?xf64>>, index, index) -> !fir.ref<f64>
-        if (!shapeMap.contains(dop.getMemref())) {
-          dop.getMemref().printAsOperand(llvm::dbgs(), {});
-          llvm::dbgs() << " does not have static shape!";
-        } else {
-          auto staticShape = shapeMap.at(dop.getMemref()); 
-          // hlfir::DesignateOp::create(
-          //   opBuilder,
-          //   funcOp.getLoc(),
-          //   funcOp.getResultTypes();
-          // );        
-
-          // static DesignateOp create(::mlir::OpBuilder &builder, ::mlir::Location location, mlir::Type result_type, mlir::Value memref, llvm::StringRef component, mlir::Value component_shape, llvm::ArrayRef<std::variant<mlir::Value, std::tuple<mlir::Value, mlir::Value, mlir::Value>>> subscripts, mlir::ValueRange substring = {}, std::optional<bool> complex_part = {}, mlir::Value shape = {}, mlir::ValueRange typeparams = {}, fir::FortranVariableFlagsAttr fortran_attrs = {});
-        }
-      })
       .Case<hlfir::ElementalOp>([&](hlfir::ElementalOp eop){
         // Example: %6 = hlfir.elemental %0 unordered : (!fir.shape<2>) -> !hlfir.expr<?x?xf64> {
         // static ElementalOp create(::mlir::OpBuilder &builder, ::mlir::Location location, mlir::Type result_type, mlir::Value shape, mlir::Value mold = {}, mlir::ValueRange typeparams = {}, bool isUnordered = false);
@@ -193,12 +164,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
           eop.replaceAllUsesWith(neop.getResult()); 
           eop.erase();
         }
-      })
-      .Case<hlfir::AssignOp>([&](hlfir::AssignOp aop){
-        // Example: hlfir.assign %7 to %1#0 : !hlfir.expr<?x?xf64>, !fir.box<!fir.array<?x?xf64>>
-      })
-      .Case<hlfir::DestroyOp>([&](hlfir::DestroyOp dop){
-        // Example: hlfir.destroy %7 : !hlfir.expr<?x?xf64>
       })
       .Case<func::FuncOp>([&](func::FuncOp fop){
         llvm::dbgs() << "\n updating signature! \n"; 
@@ -223,8 +188,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
       })
       .Default([](auto){});
   }); 
-  // TODO: Update the function arguments signature 
-  //
   return;
 }
 
