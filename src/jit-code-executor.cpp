@@ -22,12 +22,12 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include <memory>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -57,7 +57,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
-#include <vector>
+#include <ostream>
 
 using namespace mlir;
 
@@ -91,38 +91,6 @@ static void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& 
   return;
 }
 
-
-// XLA cannot update input buffers in-place, we have to distinguish input and output
-// Return value is a vector of output indices
-static std::vector<int> optimizeSignature(MLIRContext* context, func::FuncOp& funcOp) {
-  auto& body = funcOp.getFunctionBody();
-  auto returnOp = llvm::cast<func::ReturnOp>(body.back().getTerminator());
-  // Before optimization, the input args should be the same size of returned
-  std::vector<int> outputArgs;
-  std::vector<Value> outputValues;
-  std::vector<Type> outputTypes;
-  funcOp.walk([&](mlir::func::ReturnOp rop){
-    for (unsigned i = 0; i < rop.getNumOperands(); i++) {
-      if (funcOp.getArgument(i) != rop.getOperand(i)) {
-        outputArgs.push_back(i);
-        outputValues.push_back(rop.getOperand(i));
-        outputTypes.push_back(rop.getOperand(i).getType());
-      }
-    };
-  });
-  // update return values
-  OpBuilder opBuilder(context);
-  opBuilder.setInsertionPoint(returnOp);
-  func::ReturnOp::create(opBuilder, returnOp.getLoc(), outputValues);
-  returnOp.erase();
-
-  // update the function signature
-  auto revisedFuncType = FunctionType::get(context, funcOp.getArgumentTypes(), outputTypes);
-  funcOp.setFunctionType(revisedFuncType);
-
-  return outputArgs;
-}
-
 // TODO: 
 // - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
 // - Suppose ArgSizes 4 is shape constant
@@ -144,6 +112,76 @@ static void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t
   }    
   return;
 }
+
+// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
+// Return a map mapping original Index -> new Index;
+static llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes) {
+  llvm::DenseSet<Value> nonShapeArgs;
+  funcOp.walk([&](Operation* op){
+    if (llvm::isa<func::FuncOp>(op) || llvm::isa<func::ReturnOp>(op)){
+      // SKIP
+    } else {
+      auto operands = op->getOperands();
+      std::for_each(operands.begin(), operands.end(), [&](Value operand){
+        if (!nonShapeArgs.contains(operand)) {
+          nonShapeArgs.insert(operand);
+        }
+      });
+    };
+  });
+
+  llvm::DenseSet<unsigned> toKeepIndices;
+  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+    if ((ArgTypes[i]&0x100) == 0 || nonShapeArgs.contains(funcOp.getArgument(i))) {
+      toKeepIndices.insert(i);
+    };
+  }
+
+  // Revise the signature and return value
+  llvm::DenseMap<unsigned, unsigned> mappingTable;
+  OpBuilder opBuilder(context);
+  funcOp.walk([&](Operation * op){
+    if (llvm::isa<func::FuncOp>(op)){
+      auto funcType = funcOp.getFunctionType();
+      auto oldArgsTypes = llvm::to_vector(funcType.getInputs());
+      llvm::SmallVector<Type> newArgsTypes;
+
+      unsigned j = 0;
+      for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+        if (toKeepIndices.contains(i)) {
+          newArgsTypes.push_back(oldArgsTypes[i]); 
+          mappingTable[i] = j;
+          j += 1;
+        }      
+      }
+
+      Block &entryBlock = funcOp.front();
+      for (int i = entryBlock.getNumArguments() - 1; i >= 0; --i) {
+        if (!mappingTable.contains(i)) {
+          entryBlock.eraseArgument(i);
+        }
+      }
+      auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes);
+      funcOp.setType(newFuncType);
+    } else if (auto retOp = llvm::dyn_cast<func::ReturnOp>(op)) {
+      opBuilder.setInsertionPoint(retOp);
+
+      llvm::SmallVector<Value> retOperands; 
+      for (unsigned i = 0; i < retOp.getNumOperands(); i++) {
+        if (toKeepIndices.contains(i)) {
+          retOperands.push_back(retOp.getOperand(i));
+        }
+      }
+      func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
+      retOp.erase();   
+    } else {
+      // DO NOTHING
+    };
+  });
+  
+  return mappingTable;  
+}
+
 
 /**
   * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp inside.
@@ -182,8 +220,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
   runShapeInference(context, moduleOp, constShapeMap);
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
-  // auto realReturnedIndices = optimizeSignature(&context, kernelFunc);
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
+  llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
   std::string kernelFuncLiteral = getFuncOpAsString(kernelFunc);
   std::cout << "Function lowered from JIT Code: \n" << kernelFuncLiteral << std::endl;
 
@@ -196,17 +234,17 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
   TensorDesc outputArgs[kernelFunc.getNumArguments()];
 
-  assert(kernelFunc.getNumArguments() == NumArgs && "Fail to assert kernelFun Args Count = NumArgs");
-  // FIXME: NumArgs may contains constants, which is not in target
-  for (unsigned i = 0; i < NumArgs; i++) {
-    auto thisTy = argTypes[i]; 
+  // TODO: using NumHostArgs may not be very robostic, here i means the index in the function arguments beform trimming.
+  for (unsigned i = 0; i < NumHostArgs && mappingTable.contains(i); i++){
+    auto newIdx = mappingTable.at(i);
+    auto thisTy = argTypes[newIdx]; 
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
 
-    inputArgs[i].data = TgtArgs[i];
-    inputArgs[i].shape = rtType.getShape().data();
-    inputArgs[i].rank = rtType.getRank();
-    inputArgs[i].dtype = [&](){
+    inputArgs[newIdx].data = TgtArgs[i];
+    inputArgs[newIdx].shape = rtType.getShape().data();
+    inputArgs[newIdx].rank = rtType.getRank();
+    inputArgs[newIdx].dtype = [&](){
       auto eleType = rtType.getElementType();
       if (eleType.isF32()){
         return DType::F32;
@@ -219,12 +257,13 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
         exit(EXIT_FAILURE);
       }
     }();
-    inputArgs[i].isLiteral = (ArgTypes[i] & 0x100);
+    inputArgs[newIdx].isLiteral = (ArgTypes[i] & 0x100);
   }
+
   args.inputArgs = inputArgs;
-  args.inputArgCount = NumArgs;
+  args.inputArgCount = mappingTable.size();
   args.outputArgs = inputArgs; 
-  args.outputArgCount = NumArgs;
+  args.outputArgCount = mappingTable.size();
 
   args.formatPrint();
 
