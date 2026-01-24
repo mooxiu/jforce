@@ -223,8 +223,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
       })
       .Default([](auto){});
   }); 
-  
-
   // TODO: Update the function arguments signature 
   //
   return;
