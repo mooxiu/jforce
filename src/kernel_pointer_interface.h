@@ -1,8 +1,10 @@
 #pragma once
+#include "llvm/Support/Debug.h"
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <iostream>
+#include "llvm/Support/raw_ostream.h"
 
 // TODO: all the tests are using f32 for now.
 enum class DType : int32_t {
@@ -41,13 +43,11 @@ struct TensorDesc {
   }
 
   void formatPrint() {
-    std::cout << "Data starts in: " << data;
-    std::cout << ", Shape: ";
+    llvm::dbgs() << "Data starts in: " << data << ", Shape: ";
     for (int i = 0; i < rank; i++){
-      std::cout << " " << (int64_t)shape[i];
+      llvm::dbgs() << " " << (int64_t)shape[i];
     }
-    std::cout << ", rank: " << rank;
-    std::cout << ", type: " << (int32_t)dtype << std::endl;
+    llvm::dbgs() << ", rank: " << rank << ", type: " << (int32_t)dtype << "\n";
   }
 
 };
@@ -60,12 +60,12 @@ struct KernelArgs {
   TargetDevice targetDevice;
 
   void formatPrint() {
-    std::cout << "The Target Device is: " << (int32_t)targetDevice << std::endl;
-    std::cout << "We have " << inputArgCount << " inputs: \n";
+    llvm::dbgs() << "The Target Device is: " << (int32_t)targetDevice << "\n"
+      << "We have " << inputArgCount << " inputs: \n";
     for (int i = 0; i < inputArgCount; i++) {
       inputArgs[i].formatPrint();
     }
-    std::cout << "We have " << outputArgCount << " outputs: \n";
+    llvm::dbgs() << "We have " << outputArgCount << " outputs: \n";
     for (int i = 0; i < outputArgCount; i++) {
       outputArgs[i].formatPrint();
     }

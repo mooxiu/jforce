@@ -18,7 +18,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -52,7 +51,6 @@ static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func
     if (getSolidVal(lop.getOperand()) > 0) {
       auto resValue = lop.getResult();
       arith::ConstantIntOp cop = arith::ConstantIntOp::create(opBuilder, funcOp.getLoc(), resValue.getType(), getSolidVal(lop.getOperand()));
-      cop.print(llvm::dbgs());
       lop.replaceAllUsesWith(cop.getResult());
       assert(lop.use_empty() && "Still been used!");
       lop.erase();
@@ -100,12 +98,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop){
         // Example: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<?x?xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<?x?xf64>>, !fir.ref<!fir.array<?x?xf64>>)
         // Objective: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<1000x1000xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<1000x1000xf64>>, !fir.ref<!fir.array<1000x1000xf64>>)
-        llvm::dbgs() << "The first Result is: ";
-        dop.getResult(0).printAsOperand(llvm::dbgs(), {});
-        llvm::dbgs() << " , the shape of it is: ";
-        dop.getResult(0).getType().print(llvm::dbgs());
-        llvm::dbgs() << ", is it dynamic: " << isDynamicShape(dop.getResult(0).getType()) << "\n";
-        
         if (isDynamicShape(dop.getResult(0).getType())) {
           auto staticShape = shapeMap.at(dop.getShape());
 
@@ -135,9 +127,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
               dop.getDummyArgNoAttr()     
           );
             // auto ndop = hlfir::DeclareOp::create(opBuilder, funcOp.getLoc(), newBoxType, dop.getMemref(), dop.getShape(), dop.getTypeparams(), dop.getDummyScope(), dop.getStorage(), dop.getStorageOffsetAttr(), dop.getUniqNameAttr(), dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), dop.getDummyArgNoAttr());
-          llvm::dbgs() << "\n Updated DeclaredOP: \n";
-          ndop.print(llvm::dbgs(), {});
-          llvm::dbgs() << "\n";
           dop.replaceAllUsesWith(ndop.getResults());
           dop.erase();
         }
@@ -166,8 +155,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
         }
       })
       .Case<func::FuncOp>([&](func::FuncOp fop){
-        llvm::dbgs() << "\n updating signature! \n"; 
-
         auto funcType = funcOp.getFunctionType();
         auto inputTypes = llvm::to_vector(funcType.getInputs());
         auto oldRes = funcType.getResults();
@@ -176,7 +163,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
         for (unsigned i = 0; i < entryBlock.getNumArguments(); i++) {
           auto arg = entryBlock.getArgument(i);
           if (isDynamicShape(arg.getType())) {
-            arg.printAsOperand(llvm::dbgs(), {});
             assert(shapeMap.contains(arg) && "Arg Shape should be known!");
             auto staticShape = shapeMap.at(arg); 
             arg.setType(convertToStaticShape(arg.getType(), staticShape));
@@ -203,16 +189,8 @@ void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::Dens
       }
     }
     preprocWithExistingPasses(opBuilder, pm, funcOp, constShapeMap);
-
-    std::cout << "\n--------------ShapeInferenceInternal Log:\n";
     shapeInferenceInternal(opBuilder, funcOp);
-    std::cout << "\n--------------ShapeInferenceInternal Log:\n";
   });
-
-  std::cout << "--------------After shape inference:\n";
-  moduleOp.print(llvm::dbgs());
-  std::cout << "\n--------------After shape inference.\n";
-
   return;
 }
 
