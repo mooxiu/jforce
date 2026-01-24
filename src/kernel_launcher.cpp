@@ -63,8 +63,6 @@ static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
     logger::Log(msg + ": " + getErrMsg(api, err), logLevel::ERROR);
     return false;
   } else {
-    msg += " succeeded!";
-    logger::Log(msg, logLevel::DEBUG);
     return true;
   }
 }
@@ -117,7 +115,6 @@ static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *clie
     program->struct_size = PJRT_Program_STRUCT_SIZE;
     // We have to set as mlir here as we're passing MLIR module string rather
     // than serialized HLOModuleProto.
-    logger::Log("The code is \n" + func_code, logLevel::DEBUG);
     program->code = (char *)func_code.c_str();
     program->code_size = (size_t)func_code.size();
     program->format = format.c_str();
@@ -142,7 +139,6 @@ static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *clie
       debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
       if (const char* cuda_path_env = std::getenv("MY_CUDA_PATH")) {
         debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
-        logger::Log("Setting cuda_data_dir to: " + std::string(cuda_path_env), logLevel::DEBUG);
       } else {
         // DO NOTHING, this might cause warning
       } 
@@ -311,8 +307,6 @@ static void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, voi
                                          std::multiplies<int64_t>());
   buffer_args.event = nullptr;
 
-  logger::Log("The size in byte is: " + std::to_string(buffer_args.dst_size),
-              logLevel::DEBUG);
   auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
   if (!checkPJRTError(api, err, "Save buffer to host")){
     return;
@@ -337,7 +331,6 @@ static PJRT_Buffer* createViewBuffers(
   const TensorDesc inputArg
 ) {
 
-  logger::Log("Start to create buffer", logLevel::DEBUG);
   PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
   cvodbArg.client = client;
   cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
@@ -357,9 +350,7 @@ static PJRT_Buffer* createViewBuffers(
   cvodbArg.device_buffer_ptr = inputArg.data;
   cvodbArg.num_dims= inputArg.rank;
   cvodbArg.dims = inputArg.shape;
-  auto doNothingCallback = [](void* a, void* b){
-    std::cout << "Call onDeleteCallBack on ViewOfDeviceBuffer" << std::endl;
-  };
+  auto doNothingCallback = [](void* a, void* b){};
   cvodbArg.on_delete_callback = doNothingCallback;
   checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer");
   return cvodbArg.buffer;
@@ -501,7 +492,6 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
     return;
   }
   auto api = get_api_fn();
-  logger::Log("The API Loaded Successfully!", logLevel::DEBUG);
 
   auto checkNull = [handle_](void *ptr) -> void * {
     if (!ptr) {
@@ -579,14 +569,7 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
 
     void* afterPtr = odmdpArgs.device_memory_ptr;
 
-    //--- print the comparsion of original pointers and new pointers
-    std::cout << "Before Mem: " << offloadingArgs->inputArgs[i].data << std::endl;
-    std::cout << "After Mem: " << afterPtr << std::endl;
-    //---
-
     if (afterPtr != offloadingArgs->inputArgs[i].data) {
-      logger::Log("Different Memory Address", logLevel::DEBUG);
-      // TODO: what if this is in CUDA???????
       cpyMemOnDevice(offloadingArgs->outputArgs[i].data, 
                   afterPtr, 
                   sizeof(float_t) * offloadingArgs->inputArgs[i].getEleSize(),

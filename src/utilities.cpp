@@ -6,6 +6,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include <cstdlib>
 #include <iostream>
 #include <utility>
@@ -13,10 +14,10 @@
 void logger::Log(std::string msg, logLevel level) {
   switch (level) {
   case logLevel::DEBUG:
-    std::cout << "[DEBUG] " << msg << std::endl;
+    llvm::dbgs() << "[DEBUG] " << msg << "\n";
     break;
   case logLevel::ERROR:
-    std::cerr << "[ERROR] " << msg << std::endl;
+    llvm::dbgs() << "[ERROR] " << msg << "\n";
     break;
   }
 }

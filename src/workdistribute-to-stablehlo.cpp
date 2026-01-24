@@ -11,8 +11,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
 #include <mlir/Dialect/Affine/Passes.h>
