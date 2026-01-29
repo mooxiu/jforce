@@ -173,7 +173,6 @@ static llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, fu
   return mappingTable;  
 }
 
-
 /**
   * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp inside.
   *
@@ -216,8 +215,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   //********************Execution********************
   // Fill the kernel args
-  KernelArgs args;
-  args.targetDevice = TargetDevice::CUDA;
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
   TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
   TensorDesc outputArgs[kernelFunc.getNumArguments()];
@@ -229,30 +226,35 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
 
-    inputArgs[newIdx].data = TgtArgs[i];
-    inputArgs[newIdx].shape = rtType.getShape().data();
-    inputArgs[newIdx].rank = rtType.getRank();
-    inputArgs[newIdx].dtype = [&](){
-      auto eleType = rtType.getElementType();
-      if (eleType.isF32()){
-        return DType::F32;
-      } else if (eleType.isF64()){
-        return DType::F64;
-      } else if (eleType.isInteger(32)) {
-        return DType::I32;
-      }else {
-        std::cerr << "Unknown input type!\n";
-        exit(EXIT_FAILURE);
-      }
-    }();
-    inputArgs[newIdx].isLiteral = (ArgTypes[i] & 0x100);
+    inputArgs[newIdx] = (struct TensorDesc){
+      .data = TgtArgs[i],
+      .shape = rtType.getShape().data(),
+      .rank = (int32_t)rtType.getRank(),
+      .dtype = [&](){
+        auto eleType = rtType.getElementType();
+        if (eleType.isF32()){
+          return DType::F32;
+        } else if (eleType.isF64()){
+          return DType::F64;
+        } else if (eleType.isInteger(32)) {
+          return DType::I32;
+        }else {
+          std::cerr << "Unknown input type!\n";
+          exit(EXIT_FAILURE);
+        }
+      }(),
+      .isLiteral = (bool)(ArgTypes[i] & 0x100),
+    };
   }
 
-  args.inputArgs = inputArgs;
-  args.inputArgCount = mappingTable.size();
-  args.outputArgs = inputArgs; 
-  args.outputArgCount = mappingTable.size();
-
+  KernelArgs args = (struct KernelArgs){
+    .inputArgCount = mappingTable.size(),
+    .inputArgs = inputArgs,
+    .outputArgCount = mappingTable.size(),
+    .outputArgs = inputArgs,
+    .targetDevice = TargetDevice::CUDA,
+  };
+  
   launch_kernel(&args, getFuncOpAsString(kernelFunc));
 
   return 0;
