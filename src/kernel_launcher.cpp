@@ -108,19 +108,16 @@ static void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
   return;
 }
 
+// Each time when compiling an executable, we should also store it in the map for later usage.
 static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
                                    const std::string &func_code, KernelArgs* offloadingArgs) {
-  auto setProgram = [func_code](PJRT_Program *program,
-                                const std::string &format) -> void {
-    program->struct_size = PJRT_Program_STRUCT_SIZE;
-    // We have to set as mlir here as we're passing MLIR module string rather
-    // than serialized HLOModuleProto.
-    program->code = (char *)func_code.c_str();
-    program->code_size = (size_t)func_code.size();
-    program->format = format.c_str();
-    program->format_size = (size_t)format.size();
-    return;
-  };
+  PJRT_Program program = (struct PJRT_Program){
+    .struct_size = PJRT_Program_STRUCT_SIZE,
+    .code = (char*) func_code.c_str(),
+    .code_size = (size_t)func_code.size(),
+    .format = "mlir",
+    .format_size = (size_t) 4
+  }; 
 
   auto getCompileOptionsProto = [&]() -> std::string {
     xla::CompileOptionsProto opts = {};
@@ -154,20 +151,21 @@ static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *clie
   };
 
   // It seems PJRT_Client_Compile will also help to load the execute
-  PJRT_Client_Compile_Args compile_args = {};
-  compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
-  compile_args.client = client;
-  PJRT_Program program = {};
-  setProgram(&program, "mlir");
-  compile_args.program = &program;
-  auto buf = getCompileOptionsProto();
-  compile_args.compile_options = (char *)buf.c_str();
-  compile_args.compile_options_size = (size_t)buf.size();
+  auto buf =  getCompileOptionsProto();
+  PJRT_Client_Compile_Args compile_args = (struct PJRT_Client_Compile_Args){
+    .struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,
+    .client = client,
+    .program = &program,
+    .compile_options = (char *)buf.c_str(),
+    .compile_options_size = (size_t)buf.size()
+  };
 
   auto error = api->PJRT_Client_Compile(&compile_args);
   if (!checkPJRTError(api, error, "Compile The Program")) {
     return nullptr;
   }
+
+  // TODO: insert executable to map
   return compile_args.executable;
 }
 
