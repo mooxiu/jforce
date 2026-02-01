@@ -25,7 +25,7 @@ find_package(Clang REQUIRED CONFIG)
 find_package(Flang REQUIRED CONFIG)
 
 # -------------------- Find StableHLO --------------------  
-set(STABLEHLO_PROJECT "${HOME}/projects/stablehlo")
+set(STABLEHLO_PROJECT "${HOME}/Documents/workspace/projects/stablehlo")
 # set(STABLEHLO_SRC_PATH "${STABLEHLO_PROJECT}/stablehlo")
 set(STABLEHLO_BUILD_PATH "${STABLEHLO_PROJECT}/build")
 set(STABLEHLO_STATIC_LIBS "${STABLEHLO_BUILD_PATH}/lib")
@@ -100,8 +100,8 @@ set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
 target_compile_definitions(jit-code-executor
     PRIVATE
-    # DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
-    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_gpu_plugin.so"
+    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
+    # DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_gpu_plugin.so"
 )
 
 # -------------------- Macro for compiling tests --------------------  
