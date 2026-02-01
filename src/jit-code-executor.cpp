@@ -1,32 +1,23 @@
-#include "../third_party/headers/pjrt_c_api.h"
-#include "absl/strings/internal/str_format/extension.h"
-#include "flang/Support/Fortran.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "kernel_pointer_interface.h"
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include "flang/Optimizer/Dialect/FIRDialect.h"
-#include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
-#include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Affine/Passes.h>
@@ -203,7 +194,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     func::FuncDialect, 
     omp::OpenMPDialect, 
     fir::FIROpsDialect, 
-    hlfir::hlfirDialect, 
+    hlfir::hlfirDialect,
     arith::ArithDialect, 
     stablehlo::StablehloDialect>();
   mlir::ParserConfig parserConfig(&context);
@@ -212,7 +203,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     std::cerr << "Module not extracted!" << std::endl;
     exit(EXIT_FAILURE);
   }
-  std::cout << "JIT Code: \n" << JitCodeC << std::endl;
   auto moduleOp = module.get();
 
 
@@ -222,8 +212,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
   llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
-  std::string kernelFuncLiteral = getFuncOpAsString(kernelFunc);
-  std::cout << "Function lowered from JIT Code: \n" << kernelFuncLiteral << std::endl;
 
 
   //********************Execution********************
@@ -265,31 +253,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   args.outputArgs = inputArgs; 
   args.outputArgCount = mappingTable.size();
 
-  args.formatPrint();
-
-
-
-#define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
-#define h(A) std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
-
-  for (unsigned I = 0; I < NumArgs; I++) {
-    std::cerr << "Device Arg #" << I << ":\n";
-    p(TgtArgs);
-    p(TgtOffsets);
-  }
-  for (unsigned I = 0; I < NumHostArgs; I++) {
-    std::cerr << "Host Arg #" << I << ":\n";
-    p(ArgBasePtrs);
-    p(ArgPtrs);
-    p(ArgSizes);
-    h(ArgTypes);
-  }
-
-#undef p
-#undef h
-
-
-  launch_kernel(&args, kernelFuncLiteral);
+  launch_kernel(&args, getFuncOpAsString(kernelFunc));
 
   return 0;
 }
