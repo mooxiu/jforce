@@ -248,7 +248,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     .inputArgs = inputArgs,
     .outputArgCount = mappingTable.size(),
     .outputArgs = inputArgs,
-    .targetDevice = TargetDevice::CUDA,
+    .targetDevice = TargetDevice::CPU,
   };
 
 
