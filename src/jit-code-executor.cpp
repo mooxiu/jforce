@@ -49,12 +49,11 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
+#include "kernel_launcher.h"
 
 using namespace mlir;
 
 func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp);
-
-void launch_kernel(KernelArgs *argsPointer, const std::string& kernelFuncStr);
 
 void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
 
@@ -186,7 +185,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
-
   // Parse JitCode to ModuleOp
   mlir::MLIRContext context;
   context.loadDialect<
@@ -212,9 +210,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
   llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
 
-
-  //********************Execution********************
-  // Fill the kernel args
+  // ------------------------------ Fill the kernel args ------------------------------ 
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
   TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
   TensorDesc outputArgs[kernelFunc.getNumArguments()];
@@ -254,8 +250,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     .outputArgs = inputArgs,
     .targetDevice = TargetDevice::CUDA,
   };
-  
-  launch_kernel(&args, getFuncOpAsString(kernelFunc));
 
+
+  // ------------------------------ Fill the kernel args ------------------------------ 
+  auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
+  launchKernel(&args, JitCodePtrUint, getFuncOpAsString(kernelFunc));
   return 0;
 }
