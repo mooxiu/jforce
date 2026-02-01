@@ -49,12 +49,11 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
+#include "kernel_launcher.h"
 
 using namespace mlir;
 
 func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp);
-
-void launch_kernel(KernelArgs *argsPointer, const std::string& kernelFuncStr);
 
 void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
 
@@ -173,7 +172,6 @@ static llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, fu
   return mappingTable;  
 }
 
-
 /**
   * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp inside.
   *
@@ -187,7 +185,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
-
   // Parse JitCode to ModuleOp
   mlir::MLIRContext context;
   context.loadDialect<
@@ -213,10 +210,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
   llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
 
-  //********************Execution********************
-  // Fill the kernel args
-  KernelArgs args;
-  args.targetDevice = TargetDevice::CPU;
+  // ------------------------------ Fill the kernel args ------------------------------ 
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
   TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
   TensorDesc outputArgs[kernelFunc.getNumArguments()];
@@ -228,31 +222,38 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
 
-    inputArgs[newIdx].data = TgtArgs[i];
-    inputArgs[newIdx].shape = rtType.getShape().data();
-    inputArgs[newIdx].rank = rtType.getRank();
-    inputArgs[newIdx].dtype = [&](){
-      auto eleType = rtType.getElementType();
-      if (eleType.isF32()){
-        return DType::F32;
-      } else if (eleType.isF64()){
-        return DType::F64;
-      } else if (eleType.isInteger(32)) {
-        return DType::I32;
-      }else {
-        std::cerr << "Unknown input type!\n";
-        exit(EXIT_FAILURE);
-      }
-    }();
-    inputArgs[newIdx].isLiteral = (ArgTypes[i] & 0x100);
+    inputArgs[newIdx] = (struct TensorDesc){
+      .data = TgtArgs[i],
+      .shape = rtType.getShape().data(),
+      .rank = (int32_t)rtType.getRank(),
+      .dtype = [&](){
+        auto eleType = rtType.getElementType();
+        if (eleType.isF32()){
+          return DType::F32;
+        } else if (eleType.isF64()){
+          return DType::F64;
+        } else if (eleType.isInteger(32)) {
+          return DType::I32;
+        }else {
+          std::cerr << "Unknown input type!\n";
+          exit(EXIT_FAILURE);
+        }
+      }(),
+      .isLiteral = (bool)(ArgTypes[i] & 0x100),
+    };
   }
 
-  args.inputArgs = inputArgs;
-  args.inputArgCount = mappingTable.size();
-  args.outputArgs = inputArgs; 
-  args.outputArgCount = mappingTable.size();
+  KernelArgs args = (struct KernelArgs){
+    .inputArgCount = mappingTable.size(),
+    .inputArgs = inputArgs,
+    .outputArgCount = mappingTable.size(),
+    .outputArgs = inputArgs,
+    .targetDevice = TargetDevice::CUDA,
+  };
 
-  launch_kernel(&args, getFuncOpAsString(kernelFunc));
 
+  // ------------------------------ Fill the kernel args ------------------------------ 
+  auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
+  launchKernel(&args, JitCodePtrUint, getFuncOpAsString(kernelFunc));
   return 0;
 }

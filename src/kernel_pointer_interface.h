@@ -53,9 +53,9 @@ struct TensorDesc {
 };
 
 struct KernelArgs {
-  int32_t inputArgCount;
+  unsigned int inputArgCount;
   TensorDesc *inputArgs;
-  int32_t outputArgCount;
+  unsigned int outputArgCount;
   TensorDesc *outputArgs;
   TargetDevice targetDevice;
 

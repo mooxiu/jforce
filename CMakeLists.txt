@@ -1,16 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
-set(InstallPath "/home/haruka/opt/llvm-project/release/install")
-set(STABLEHLO_PROJECT "/home/haruka/Documents/workspace/projects/stablehlo")
-# set(LLVM_PREFIX "/home/muyao/projects/llvm-project/build")
+set(HOME $ENV{HOME})
+set(InstallPath "${HOME}/opt/llvm-project/release/install")
+set(STABLEHLO_PROJECT "${HOME}/Documents/workspace/projects/stablehlo")
 set(LLVM_PREFIX ${InstallPath})
 # StableHLO does not have *Config.cmake, so we cannot do in that way
 
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
 set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 
-project(xla_glue_project LANGUAGES CXX Fortran)
+project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)

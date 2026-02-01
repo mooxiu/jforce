@@ -1,6 +1,6 @@
+#include "kernel_launcher.h"
 #include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
-#include "flang/Common/leading-zero-bit-count.h"
 #include "kernel_pointer_interface.h"
 #include "utilities.h"
 #include "xla/xla.pb.h"
@@ -16,7 +16,6 @@
 #include <dlfcn.h>
 #include <functional>
 #include <iostream>
-#include <iterator>
 #include <numeric>
 #include <ostream>
 #include <string>
@@ -31,9 +30,15 @@ std::string getPluginPath() {
 #endif
 }
 
+static const PJRT_Api* api = nullptr;
+static PJRT_Client* client = nullptr;
+static PJRT_Device* device = nullptr;
+static mlir::DenseMap<uintptr_t, PJRT_LoadedExecutable*> XLAKernelsMap;
+
 /**
 -------------------- Tool Functions --------------------
  */
+
 static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   PJRT_Error_GetCode_Args code_args = {};
   code_args.struct_size = PJRT_Error_GetCode_Args_STRUCT_SIZE;
@@ -71,35 +76,47 @@ static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
 -------------------- End Tool Functions --------------------
  */
 
-static PJRT_Api *getAPI() {
-  auto handle_ = dlopen(getPluginPath().c_str(), RTLD_LAZY | RTLD_LOCAL);
-  if (!handle_) {
-    logger::Log("Error loading plugin: " + std::string(dlerror()),
-                logLevel::ERROR);
-    return nullptr;
+static const PJRT_Api* getPJRTApi() {
+  if (api) {
+    return api;
+  } else {
+    auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+    if (!handle_) {
+      std::cerr << "error loading plugin: " << dlerror() << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    // follow the example of `man dlopen`
+    auto get_api_fn = (PJRT_Api * (*)()) dlsym(handle_, "GetPjrtApi");
+    if (!get_api_fn) {
+      std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    api = get_api_fn();
+    PJRT_Plugin_Initialize_Args initArgs = {};
+    initArgs.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
+    auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
+    checkPJRTError(api, initErr, "Init Plugins");
+    // Theoretically need to close handle_ when exiting, but it will automatically be destroyed when exiting the program so intentionally leave it.
+    return api;
   }
-  // follow the example of `man dlopen`
-  auto get_api_fn = (PJRT_Api * (*)()) dlsym(handle_, "GetPjrtApi");
-  if (!get_api_fn) {
-    logger::Log("Error finding GetPjrtApi: " + std::string(dlerror()),
-                logLevel::ERROR);
-    return nullptr;
-  }
-  auto api = get_api_fn();
-  logger::Log("The api loaded successfully!", logLevel::DEBUG);
-  return api;
 }
 
-static PJRT_Client *createClient(const PJRT_Api *api) {
-  PJRT_Client_Create_Args args = {};
-  args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
-  auto error = api->PJRT_Client_Create(&args);
-  if (!checkPJRTError(api, error, "Creating Client")) {
-    return nullptr;
+static PJRT_Client *getPJRTClient(const PJRT_Api *api) {
+  if (client) {
+    return client;
+  } else {
+    PJRT_Client_Create_Args args = {};
+    args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
+    auto error = api->PJRT_Client_Create(&args);
+    if (!checkPJRTError(api, error, "Creating Client")) {
+      return nullptr;
+    }
+    client = args.client;
+    return client;
   }
-  return args.client;
 }
 
+[[deprecated("Client has lifetime through the whole program, it will be automatically destroyed")]]
 static void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
   PJRT_Client_Destroy_Args client_destroy_args = {};
   client_destroy_args.struct_size = PJRT_Client_Destroy_Args_STRUCT_SIZE;
@@ -108,19 +125,16 @@ static void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
   return;
 }
 
+// Each time when compiling an executable, we should also store it in the map for later usage.
 static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
                                    const std::string &func_code, KernelArgs* offloadingArgs) {
-  auto setProgram = [func_code](PJRT_Program *program,
-                                const std::string &format) -> void {
-    program->struct_size = PJRT_Program_STRUCT_SIZE;
-    // We have to set as mlir here as we're passing MLIR module string rather
-    // than serialized HLOModuleProto.
-    program->code = (char *)func_code.c_str();
-    program->code_size = (size_t)func_code.size();
-    program->format = format.c_str();
-    program->format_size = (size_t)format.size();
-    return;
-  };
+  PJRT_Program program = (struct PJRT_Program){
+    .struct_size = PJRT_Program_STRUCT_SIZE,
+    .code = (char*) func_code.c_str(),
+    .code_size = (size_t)func_code.size(),
+    .format = "mlir",
+    .format_size = (size_t) 4 // Size of 'mlir' 4 chars 
+  }; 
 
   auto getCompileOptionsProto = [&]() -> std::string {
     xla::CompileOptionsProto opts = {};
@@ -154,27 +168,30 @@ static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *clie
   };
 
   // It seems PJRT_Client_Compile will also help to load the execute
-  PJRT_Client_Compile_Args compile_args = {};
-  compile_args.struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE;
-  compile_args.client = client;
-  PJRT_Program program = {};
-  setProgram(&program, "mlir");
-  compile_args.program = &program;
-  auto buf = getCompileOptionsProto();
-  compile_args.compile_options = (char *)buf.c_str();
-  compile_args.compile_options_size = (size_t)buf.size();
+  auto buf =  getCompileOptionsProto();
+  PJRT_Client_Compile_Args compile_args = (struct PJRT_Client_Compile_Args){
+    .struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,
+    .client = client,
+    .program = &program,
+    .compile_options = (char *)buf.c_str(),
+    .compile_options_size = (size_t)buf.size()
+  };
 
   auto error = api->PJRT_Client_Compile(&compile_args);
   if (!checkPJRTError(api, error, "Compile The Program")) {
     return nullptr;
   }
+
+  // TODO: insert executable to the XLA table!!!
   return compile_args.executable;
 }
 
+[[deprecated("Lifetime through the whole program")]]
 static void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *exe) {
-  PJRT_LoadedExecutable_Destroy_Args ledargs;
-  ledargs.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE;
-  ledargs.executable = exe;
+  PJRT_LoadedExecutable_Destroy_Args ledargs = {
+    .struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE,
+    .executable = exe,
+  };
   auto destroyErr = api->PJRT_LoadedExecutable_Destroy(&ledargs);
   checkPJRTError(api, destroyErr, "Destroy LoadedExecutable");
   return;
@@ -182,18 +199,20 @@ static void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *
 
 // For filtering out the target device.
 static std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device) {
-  PJRT_Device_GetDescription_Args args = {};
-  args.struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE;
-  args.device = device;
+  PJRT_Device_GetDescription_Args args = {
+    .struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE,
+    .device = device,
+  };
   auto err1 = api->PJRT_Device_GetDescription(&args);
   if (err1) {
     logger::Log("Fail to get description of device: " + getErrMsg(api, err1),
                 logLevel::ERROR);
     return nullptr;
   }
-  PJRT_DeviceDescription_ToString_Args ts_args = {};
-  ts_args.struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE;
-  ts_args.device_description = args.device_description;
+  PJRT_DeviceDescription_ToString_Args ts_args = {
+    .struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE,
+    .device_description = args.device_description,
+  };
   auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
   if (err2) {
     logger::Log("Fail to get device description to string: " +
@@ -207,9 +226,10 @@ static std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device
 // Get the target device handle
 static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
                         const std::string &deviceDescKeyword) {
-  PJRT_Client_AddressableDevices_Args device_args = {};
-  device_args.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE;
-  device_args.client = client;
+  PJRT_Client_AddressableDevices_Args device_args = {
+    .struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
+    .client = client,
+  };
   auto err = api->PJRT_Client_AddressableDevices(&device_args);
   if (!checkPJRTError(api, err, "Find Device")) {
     return nullptr;
@@ -238,13 +258,27 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
                 logLevel::ERROR);
     return nullptr;
   }
-
-  // TODO: Delete this after testing
-  // chosen_device_idx = 2;
-  logger::Log("Have chosen device id: " + std::to_string(chosen_device_idx) +
-                  " , desc: " + desc,
-              logLevel::DEBUG);
   return device_args.addressable_devices[chosen_device_idx];
+}
+
+static PJRT_Device* getPJRTDevice(const PJRT_Api* api, PJRT_Client *client, KernelArgs *offloadingArgs) {
+  if (device) {
+    return device;
+  } else {
+    if (offloadingArgs->targetDevice == TargetDevice::CPU) {
+      device = findDevice(api, client, "cpu");
+    } else if (offloadingArgs->targetDevice == TargetDevice::CUDA){
+      device = findDevice(api, client, "cuda");
+    } else {
+      std::cerr << "Unsupported Device Type!" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (!device) {
+      std::cerr << "Device not find! \n";
+      std::exit(EXIT_FAILURE);
+    }
+    return device;
+  }
 }
 
 static void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
@@ -261,14 +295,15 @@ static void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
 static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
                                PJRT_Device *device, void *ptr,
                                std::vector<int64_t> shape) {
-  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
-  buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
-  buffer_args.type = PJRT_Buffer_Type_F32;
-  buffer_args.device = device;
-  buffer_args.client = client;
-  buffer_args.data = ptr;
-  // TODO: should reconsider how to set the size and dimmension for general
-  buffer_args.num_dims = shape.size();
+  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {
+    .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+    .client = client,
+    .data = ptr,
+    .type = PJRT_Buffer_Type_F32,
+    .num_dims = shape.size(), // Should reconsider how to set the size and dimmension for general
+    .device = device,
+  };
+  
   int64_t dims_arr[shape.size()];
   for (int i = 0; i < shape.size(); i++) {
     dims_arr[i] = shape[i];
@@ -438,7 +473,7 @@ static void manageInputBuffers(
   return;
 }
 
-static void executeKernel(
+static void executeLoadedKernelExecutable(
   const PJRT_Api *api, 
   PJRT_LoadedExecutable *exe,
   PJRT_Device *device, 
@@ -446,22 +481,21 @@ static void executeKernel(
   PJRT_Buffer ***outLists,
   const int in_args_count
 ) {
-  PJRT_LoadedExecutable_Execute_Args leeas = {};
-  leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
-  // function and args
-  leeas.executable = exe;
-  PJRT_ExecuteOptions execute_options = {};
-  execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
+  PJRT_ExecuteOptions execute_options = {
+    .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
+  };
 
-
-  leeas.options = &execute_options;
-  leeas.num_devices = (size_t)1;
-  leeas.num_args = (size_t)in_args_count;
-  leeas.argument_lists = argLists; // [deviceCount][argCount]
-  // we have one device, and the output by this device is 1.
-  leeas.output_lists = outLists;
-  leeas.execute_device = device;
-
+  PJRT_LoadedExecutable_Execute_Args leeas = {
+    .struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE,// function and args
+    .executable = exe,
+    .options = &execute_options,
+    .argument_lists = argLists, // [deviceCount][argCount], 
+    .num_devices = (size_t)1, // we have one device, and the output by this device is 1.
+    .num_args = (size_t)in_args_count,
+    .output_lists = outLists,
+    .execute_device = device,
+  };
+  
   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
@@ -471,55 +505,20 @@ static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetD
     std::memcpy(dstPtr, srcPrt, byteCount);
   } else if (deviceTy == TargetDevice::CUDA) {
     // TODO: insert cudamemd2d 
+    std::cerr << "Not Implemented Yet!\n";
+    exit(EXIT_FAILURE);
   } else {
     logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(deviceTy)), logLevel::ERROR);
     exit(EXIT_FAILURE);
   }
 }
 
-
-static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& kernelFuncStr) {
-  auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
-  // auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW|RTLD_GLOBAL);
-  if (!handle_) {
-    std::cerr << "error loading plugin: " << dlerror() << std::endl;
-    return;
-  }
-  // follow the example of `man dlopen`
-  auto get_api_fn = (PJRT_Api * (*)()) dlsym(handle_, "GetPjrtApi");
-  if (!get_api_fn) {
-    std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
-    return;
-  }
-  auto api = get_api_fn();
-
-  auto checkNull = [handle_](void *ptr) -> void * {
-    if (!ptr) {
-      std::cerr << "[FATAL] Pointer not supposed to be null is null!! Exiting." << std::endl;
-      exit(1);
-    }
-    return ptr;
-  };
-
-  PJRT_Plugin_Initialize_Args initArgs = {};
-  initArgs.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
-  auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
-  checkPJRTError(api, initErr, "Init Plugins");
-
-  auto client = (PJRT_Client *)checkNull(createClient(api));
+void launchKernel(KernelArgs *offloadingArgs, const uintptr_t JitCodePtr, const std::string &kernelFuncStr) {
+  auto api = getPJRTApi();
+  auto client = getPJRTClient(api);
+  auto device = getPJRTDevice(api, client, offloadingArgs);
   
-  PJRT_Device* device;
-  if (offloadingArgs->targetDevice == TargetDevice::CPU) {
-    device = (PJRT_Device *)checkNull(findDevice(api, client, "cpu"));
-  } else if (offloadingArgs->targetDevice == TargetDevice::CUDA){
-    device = (PJRT_Device *)checkNull(findDevice(api, client, "cuda"));
-  } else {
-    std::cerr << "Unsupported Device Type!" << std::endl;
-    std::exit(EXIT_FAILURE);
-  }
-
-  // Compile StableHLO to XLA kernel
-  auto exe = (PJRT_LoadedExecutable *)checkNull(compileMLIR(api, client, kernelFuncStr, offloadingArgs));
+  PJRT_LoadedExecutable* exe = XLAKernelsMap.contains(JitCodePtr) ? XLAKernelsMap.at(JitCodePtr): compileMLIR(api, client, kernelFuncStr, offloadingArgs);
 
   // Create Buffer with memory managed by OpenMP
   // For literal MapType, there's no memory been allocated, we have to allocate the memory and buffer by ourselves!!!! 
@@ -536,7 +535,7 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
 
 
   // Execute the kernel
-  executeKernel(api, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
+  executeLoadedKernelExecutable(api, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
 
   PJRT_Buffer_ReadyEvent_Args* eventArgs[offloadingArgs->inputArgCount];
   for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
@@ -577,16 +576,7 @@ static void launchKernelInternal(KernelArgs *offloadingArgs, const std::string& 
     }
   }
 
-
-  // TODO: Still need to destroy PJRT_Buffers!!!!!!!
-  destroyLoadedExecutable(api, exe);
-  destroyClient(api, client);
-  dlclose(handle_);
-
+  // TODO: destory the buffers
   return;
-}
-
-void launch_kernel(KernelArgs* kernelArgs, const std::string& kernelFuncStr) {
-  launchKernelInternal(kernelArgs, kernelFuncStr);
 }
 
