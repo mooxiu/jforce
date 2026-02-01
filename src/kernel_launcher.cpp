@@ -91,7 +91,7 @@ static const PJRT_Api* getPJRTApi() {
       std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    auto api = get_api_fn();
+    api = get_api_fn();
     PJRT_Plugin_Initialize_Args initArgs = {};
     initArgs.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
     auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
@@ -111,7 +111,8 @@ static PJRT_Client *getPJRTClient(const PJRT_Api *api) {
     if (!checkPJRTError(api, error, "Creating Client")) {
       return nullptr;
     }
-    return args.client;
+    client = args.client;
+    return client;
   }
 }
 
@@ -187,9 +188,10 @@ static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *clie
 
 [[deprecated("Lifetime through the whole program")]]
 static void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *exe) {
-  PJRT_LoadedExecutable_Destroy_Args ledargs;
-  ledargs.struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE;
-  ledargs.executable = exe;
+  PJRT_LoadedExecutable_Destroy_Args ledargs = {
+    .struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE,
+    .executable = exe,
+  };
   auto destroyErr = api->PJRT_LoadedExecutable_Destroy(&ledargs);
   checkPJRTError(api, destroyErr, "Destroy LoadedExecutable");
   return;
@@ -197,18 +199,20 @@ static void destroyLoadedExecutable(const PJRT_Api *api, PJRT_LoadedExecutable *
 
 // For filtering out the target device.
 static std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device) {
-  PJRT_Device_GetDescription_Args args = {};
-  args.struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE;
-  args.device = device;
+  PJRT_Device_GetDescription_Args args = {
+    .struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE,
+    .device = device,
+  };
   auto err1 = api->PJRT_Device_GetDescription(&args);
   if (err1) {
     logger::Log("Fail to get description of device: " + getErrMsg(api, err1),
                 logLevel::ERROR);
     return nullptr;
   }
-  PJRT_DeviceDescription_ToString_Args ts_args = {};
-  ts_args.struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE;
-  ts_args.device_description = args.device_description;
+  PJRT_DeviceDescription_ToString_Args ts_args = {
+    .struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE,
+    .device_description = args.device_description,
+  };
   auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
   if (err2) {
     logger::Log("Fail to get device description to string: " +
@@ -222,9 +226,10 @@ static std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device
 // Get the target device handle
 static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
                         const std::string &deviceDescKeyword) {
-  PJRT_Client_AddressableDevices_Args device_args = {};
-  device_args.struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE;
-  device_args.client = client;
+  PJRT_Client_AddressableDevices_Args device_args = {
+    .struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
+    .client = client,
+  };
   auto err = api->PJRT_Client_AddressableDevices(&device_args);
   if (!checkPJRTError(api, err, "Find Device")) {
     return nullptr;
@@ -290,14 +295,15 @@ static void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
 static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
                                PJRT_Device *device, void *ptr,
                                std::vector<int64_t> shape) {
-  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
-  buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
-  buffer_args.type = PJRT_Buffer_Type_F32;
-  buffer_args.device = device;
-  buffer_args.client = client;
-  buffer_args.data = ptr;
-  // TODO: should reconsider how to set the size and dimmension for general
-  buffer_args.num_dims = shape.size();
+  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {
+    .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+    .client = client,
+    .data = ptr,
+    .type = PJRT_Buffer_Type_F32,
+    .num_dims = shape.size(), // Should reconsider how to set the size and dimmension for general
+    .device = device,
+  };
+  
   int64_t dims_arr[shape.size()];
   for (int i = 0; i < shape.size(); i++) {
     dims_arr[i] = shape[i];
@@ -475,22 +481,21 @@ static void executeLoadedKernelExecutable(
   PJRT_Buffer ***outLists,
   const int in_args_count
 ) {
-  PJRT_LoadedExecutable_Execute_Args leeas = {};
-  leeas.struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE;
-  // function and args
-  leeas.executable = exe;
-  PJRT_ExecuteOptions execute_options = {};
-  execute_options.struct_size = PJRT_ExecuteOptions_STRUCT_SIZE;
+  PJRT_ExecuteOptions execute_options = {
+    .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
+  };
 
-
-  leeas.options = &execute_options;
-  leeas.num_devices = (size_t)1;
-  leeas.num_args = (size_t)in_args_count;
-  leeas.argument_lists = argLists; // [deviceCount][argCount]
-  // we have one device, and the output by this device is 1.
-  leeas.output_lists = outLists;
-  leeas.execute_device = device;
-
+  PJRT_LoadedExecutable_Execute_Args leeas = {
+    .struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE,// function and args
+    .executable = exe,
+    .options = &execute_options,
+    .argument_lists = argLists, // [deviceCount][argCount], 
+    .num_devices = (size_t)1, // we have one device, and the output by this device is 1.
+    .num_args = (size_t)in_args_count,
+    .output_lists = outLists,
+    .execute_device = device,
+  };
+  
   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 }
@@ -573,7 +578,6 @@ void launchKernel(KernelArgs *offloadingArgs, const uintptr_t JitCodePtr, const 
   }
 
   // TODO: destory the buffers
-
   return;
 }
 
