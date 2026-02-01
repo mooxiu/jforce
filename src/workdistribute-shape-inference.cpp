@@ -123,8 +123,8 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
               dop.getUniqNameAttr(),      
               dop.getFortranAttrsAttr(),  
               dop.getDataAttrAttr(),      
-              nullptr,
-              dop.getDummyArgNoAttr()     
+              nullptr
+              // dop.getDummyArgNoAttr()     
           );
             // auto ndop = hlfir::DeclareOp::create(opBuilder, funcOp.getLoc(), newBoxType, dop.getMemref(), dop.getShape(), dop.getTypeparams(), dop.getDummyScope(), dop.getStorage(), dop.getStorageOffsetAttr(), dop.getUniqNameAttr(), dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), dop.getDummyArgNoAttr());
           dop.replaceAllUsesWith(ndop.getResults());

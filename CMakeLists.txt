@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
 set(InstallPath "/home/haruka/opt/llvm-project/release/install")
+set(STABLEHLO_PROJECT "/home/haruka/Documents/workspace/projects/stablehlo")
 # set(LLVM_PREFIX "/home/muyao/projects/llvm-project/build")
 set(LLVM_PREFIX ${InstallPath})
 # StableHLO does not have *Config.cmake, so we cannot do in that way
@@ -23,7 +24,6 @@ find_package(Clang REQUIRED CONFIG)
 find_package(Flang REQUIRED CONFIG)
 
 # -------------------- Find StableHLO --------------------  
-set(STABLEHLO_PROJECT "/home/haruka/Documents/workspace/projects/stablehlo")
 # set(STABLEHLO_SRC_PATH "${STABLEHLO_PROJECT}/stablehlo")
 set(STABLEHLO_BUILD_PATH "${STABLEHLO_PROJECT}/build")
 set(STABLEHLO_STATIC_LIBS "${STABLEHLO_BUILD_PATH}/lib")
@@ -101,11 +101,3 @@ target_compile_definitions(jit-code-executor
     DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
 )
 
-# -------------------- Macro for compiling tests --------------------  
-macro(add_test TEST_NAME SRC_FILE)
-  add_executable(${TEST_NAME} ${SRC_FILE})
-  target_link_libraries(${TEST_NAME} PRIVATE jit-code-executor)
-endmacro()
-
-
-add_test(test_1_dummy tests/test1.cpp)

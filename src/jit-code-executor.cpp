@@ -213,7 +213,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
   llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
 
-
   //********************Execution********************
   // Fill the kernel args
   KernelArgs args;
