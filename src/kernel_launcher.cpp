@@ -128,7 +128,8 @@ static void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
 
 // Each time when compiling an executable, we should also store it in the map for later usage.
 static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
-                                   const std::string &func_code, KernelArgs* offloadingArgs) {
+                                   const std::string &func_code, KernelArgs* offloadingArgs,
+                                          uintptr_t JitCodePtr) {
   PJRT_Program program = (struct PJRT_Program){
     .struct_size = PJRT_Program_STRUCT_SIZE,
     .code = (char*) func_code.c_str(),
@@ -183,7 +184,7 @@ static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *clie
     return nullptr;
   }
 
-  // TODO: insert executable to the XLA table!!!
+  XLAKernelsMap.insert(std::pair(JitCodePtr, compile_args.executable));
   return compile_args.executable;
 }
 
@@ -520,7 +521,15 @@ void launchKernel(KernelArgs *offloadingArgs, const uintptr_t JitCodePtr, const 
   auto client = getPJRTClient(api);
   auto device = getPJRTDevice(api, client, offloadingArgs);
   
-  PJRT_LoadedExecutable* exe = XLAKernelsMap.contains(JitCodePtr) ? XLAKernelsMap.at(JitCodePtr): compileMLIR(api, client, kernelFuncStr, offloadingArgs);
+  PJRT_LoadedExecutable* exe = [&]()->PJRT_LoadedExecutable* {
+    if (XLAKernelsMap.contains(JitCodePtr)){
+      // TODO: to delete
+      logger::Log("Cache hit", logLevel::DEBUG);
+      return XLAKernelsMap.at(JitCodePtr);
+    } else {
+      return compileMLIR(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
+    }; 
+  }();
 
   // Create Buffer with memory managed by OpenMP
   // For literal MapType, there's no memory been allocated, we have to allocate the memory and buffer by ourselves!!!! 
