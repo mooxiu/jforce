@@ -50,6 +50,7 @@
 #include <omp.h>
 #include <ostream>
 #include "kernel_launcher.h"
+#include "utilities.h"
 
 using namespace mlir;
 
@@ -85,17 +86,9 @@ static void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& 
 // - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
 // - Suppose ArgSizes 4 is shape constant
 static void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
-  // Is Immediate value, the pointer addr is the value of the constant
-  auto isImm = [](int64_t ty) -> bool {
-    // 0x100 means `mapping is literal`
-    // ref: `offload/include/omptarget.h`
-    // TODO: include header file instead of using the number directly
-    return ty&0x100;
-  };
-  
   for (unsigned i = 0; i < NumHostArgs; i++) {
     auto ty = ArgTypes[i];
-    if (isImm(ty)) {
+    if (isLiteralTy(ty)) {
       int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
       shapeConstMap.insert(std::pair(i, constVal));
     };
@@ -122,7 +115,7 @@ static llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, fu
 
   llvm::DenseSet<unsigned> toKeepIndices;
   for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    if ((ArgTypes[i]&0x100) == 0 || nonShapeArgs.contains(funcOp.getArgument(i))) {
+    if (!isLiteralTy(ArgTypes[i]) || nonShapeArgs.contains(funcOp.getArgument(i))) {
       toKeepIndices.insert(i);
     };
   }
@@ -239,7 +232,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
           exit(EXIT_FAILURE);
         }
       }(),
-      .isLiteral = (bool)(ArgTypes[i] & 0x100),
+      .isLiteral = isLiteralTy(ArgTypes[i]),
     };
   }
 

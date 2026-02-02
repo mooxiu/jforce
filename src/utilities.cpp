@@ -7,9 +7,12 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include <cstdint>
 #include <cstdlib>
-#include <iostream>
-#include <utility>
+
+bool isLiteralTy(int64_t argType) {
+  return (bool)(argType&0x100);  
+}
 
 void logger::Log(std::string msg, logLevel level) {
   switch (level) {

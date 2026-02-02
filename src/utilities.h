@@ -12,6 +12,8 @@ public:
   static void Log(std::string msg, logLevel level);
 };
 
+bool isLiteralTy(int64_t argType);
+
 bool isDynamicShape(mlir::Type type);
 
 mlir::Type convertToStaticShape(mlir::Type type, llvm::ArrayRef<int64_t> shape);

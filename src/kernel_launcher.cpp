@@ -4,6 +4,7 @@
 #include "kernel_pointer_interface.h"
 #include "utilities.h"
 #include "xla/xla.pb.h"
+#include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -505,6 +506,7 @@ static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetD
     std::memcpy(dstPtr, srcPrt, byteCount);
   } else if (deviceTy == TargetDevice::CUDA) {
     // TODO: insert cudamemd2d 
+    llvm::dbgs() << "Device Allocated Ptr: " << dstPtr << ", Function OutputPtr: " << srcPrt << ". Size: " << byteCount << "\n";
     std::cerr << "Not Implemented Yet!\n";
     exit(EXIT_FAILURE);
   } else {
@@ -557,21 +559,18 @@ void launchKernel(KernelArgs *offloadingArgs, const uintptr_t JitCodePtr, const 
 
   // After Execution, the data may not be updated in-place!!!!!
   for (int i = 0; i < argsBuffers.size(); i++) {
-    // PJRT_Buffer_UnsafePointer_Args upArgs = {};
-    // upArgs.struct_size = PJRT_Buffer_UnsafePointer_Args_STRUCT_SIZE;
-    // upArgs.buffer = argsBuffersList[0][i];
-    // api->PJRT_Buffer_UnsafePointer(&upArgs);
-    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {};
-    odmdpArgs.struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE;
-    odmdpArgs.buffer = argsBuffersList[0][i];
+    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
+      .struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
+      .buffer = argsBuffersList[0][i],
+    };
     api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
-
     void* afterPtr = odmdpArgs.device_memory_ptr;
 
-    if (afterPtr != offloadingArgs->inputArgs[i].data) {
+    auto inputArg = offloadingArgs->inputArgs[i];
+    if (!inputArg.isLiteral && afterPtr != inputArg.data) {
       cpyMemOnDevice(offloadingArgs->outputArgs[i].data, 
                   afterPtr, 
-                  sizeof(float_t) * offloadingArgs->inputArgs[i].getEleSize(),
+                  sizeof(float_t) * inputArg.getEleSize(),
                   offloadingArgs->targetDevice);
     }
   }
