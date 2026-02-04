@@ -1,6 +1,7 @@
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -11,6 +12,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
 #include <mlir/Dialect/Affine/Passes.h>
@@ -59,6 +61,7 @@ public:
   Example of source type:
   "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
   "!fir.ref<f32>": convert to "tensor<f32>"
+  "!hlfir.expr<shape>: convert to tensor<shape>"
  */
 static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   // If it's already a tensor type, then no need to convert
@@ -66,17 +69,24 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
     return llvm::dyn_cast<RankedTensorType>(srcTy);
   }
 
-  if (auto refType = mlir::dyn_cast<fir::ReferenceType>(srcTy)) {
-    srcTy = refType.getEleTy();
-  }
-  auto seqTy = mlir::dyn_cast<fir::SequenceType>(srcTy);
-  if (!seqTy) {
-    // this is a scalar
-    auto scalarTensorType = RankedTensorType::get({}, srcTy);
-    return scalarTensorType;
-  }
-  auto arrTensorType = RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
-  return arrTensorType;
+
+  return llvm::TypeSwitch<mlir::Type, RankedTensorType>(srcTy)
+  .Case<hlfir::ExprType>([](hlfir::ExprType expTy){
+    return convertBufferTyToTensorTy(expTy.getEleTy());
+  })
+  .Case<fir::BoxType>([](fir::BoxType bTy){
+    return convertBufferTyToTensorTy(bTy.getEleTy());
+  })
+  .Case<fir::ReferenceType>([](fir::ReferenceType refTy){
+    return convertBufferTyToTensorTy(refTy.getEleTy());
+  })
+  .Case<fir::SequenceType>([](fir::SequenceType seqTy){
+    return RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
+  })
+  .Default([&](auto scTy){
+    // Suppose this is a scalar type
+    return RankedTensorType::get({}, scTy);
+  });
 }
 
 /**
@@ -220,7 +230,7 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
       auto stablehloMulOp = stablehlo::MulOp::create(
         opBuilder, 
         funcOp.getLoc(), 
-        mmOp.getResult().getType(), 
+        convertBufferTyToTensorTy(mmOp.getResult().getType()), 
         tracking.valueMap.lookup(mmOp.getOperand(0)), 
         tracking.valueMap.lookup(mmOp.getOperand(1))
       );
