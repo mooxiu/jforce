@@ -215,10 +215,30 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
       auto stablehloDotProductOp = stablehlo::DotGeneralOp::create(opBuilder, funcOp->getLoc(), scalarType, lhs, rhs, attr, precisionConfig, algoAttr);
       tracking.valueMap.map(dpOp.getResult(), stablehloDotProductOp.getResult());
     })
-    .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp mmOp){})
+    .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp mmOp){
+      // %36 = hlfir.matmul %33#0 %35#0 {fastmath = #arith.fastmath<contract>} : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
+      auto stablehloMulOp = stablehlo::MulOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        mmOp.getResult().getType(), 
+        tracking.valueMap.lookup(mmOp.getOperand(0)), 
+        tracking.valueMap.lookup(mmOp.getOperand(1))
+      );
+      tracking.valueMap.map(mmOp.getResult(), stablehloMulOp.getResult());
+    })
+    .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp tOp){
+      // %24 = hlfir.transpose %23#0 : (!fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
+      auto stablehloTransposeOp = stablehlo::TransposeOp::create(
+        opBuilder, 
+        funcOp.getLoc(),
+        tOp.getResult().getType(),
+        tracking.valueMap.lookup(tOp.getOperand())
+      );
+      tracking.valueMap.map(tOp.getResult(), stablehloTransposeOp.getResult());
+    })
     .Default([](auto){
       llvm::errs() << "Not Supported Builtin Operators!\n";
-      return;
+      std::exit(EXIT_FAILURE);
     });
 }
 
@@ -290,6 +310,9 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       })
       .Case<hlfir::DotProductOp>([&](hlfir::DotProductOp dotProductOp){
         handleBuiltinOperators(tracking, opBuilder, funcOp, dotProductOp);
+      })
+      .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp transposeOp){
+        handleBuiltinOperators(tracking, opBuilder, funcOp, transposeOp);
       })
       // TODO: including other cases!
       .Default([](auto) {});
