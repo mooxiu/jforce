@@ -14,6 +14,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -72,7 +73,7 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
 
   return llvm::TypeSwitch<mlir::Type, RankedTensorType>(srcTy)
   .Case<hlfir::ExprType>([](hlfir::ExprType expTy){
-    return convertBufferTyToTensorTy(expTy.getEleTy());
+    return RankedTensorType::get(expTy.getShape(), expTy.getEleTy());
   })
   .Case<fir::BoxType>([](fir::BoxType bTy){
     return convertBufferTyToTensorTy(bTy.getEleTy());
@@ -227,22 +228,38 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
     })
     .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp mmOp){
       // %36 = hlfir.matmul %33#0 %35#0 {fastmath = #arith.fastmath<contract>} : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
+      auto op0 = tracking.valueMap.lookup(mmOp.getOperand(0));
+      auto op1 = tracking.valueMap.lookup(mmOp.getOperand(1));
+      auto op0Ty = convertBufferTyToTensorTy(op0.getType());
+      auto op1Ty = convertBufferTyToTensorTy(op1.getType());
+      auto resTy = RankedTensorType::get(
+        llvm::SmallVector<int64_t>{op0Ty.getShape()[0], op1Ty.getShape()[1]}, 
+        op0Ty.getElementType()
+      );
+
       auto stablehloMulOp = stablehlo::MulOp::create(
         opBuilder, 
         funcOp.getLoc(), 
-        convertBufferTyToTensorTy(mmOp.getResult().getType()), 
-        tracking.valueMap.lookup(mmOp.getOperand(0)), 
-        tracking.valueMap.lookup(mmOp.getOperand(1))
+        resTy,
+        op0,
+        op1
       );
       tracking.valueMap.map(mmOp.getResult(), stablehloMulOp.getResult());
     })
     .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp tOp){
       // %24 = hlfir.transpose %23#0 : (!fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
+      auto op = tracking.valueMap.lookup(tOp.getOperand());
+      auto opTy = convertBufferTyToTensorTy(op.getType());
+      auto resTy = RankedTensorType::get(
+        llvm::SmallVector<int64_t>{opTy.getShape()[1], opTy.getShape()[0]}, 
+        opTy.getElementType()
+      );
       auto stablehloTransposeOp = stablehlo::TransposeOp::create(
         opBuilder, 
         funcOp.getLoc(),
-        tOp.getResult().getType(),
-        tracking.valueMap.lookup(tOp.getOperand())
+        resTy,
+        op,
+        llvm::SmallVector<int64_t>{1, 0}
       );
       tracking.valueMap.map(tOp.getResult(), stablehloTransposeOp.getResult());
     })
