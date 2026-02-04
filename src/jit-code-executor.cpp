@@ -176,7 +176,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    int64_t *ArgSizes, int64_t *ArgTypes,
                                    void **ArgNames) {
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
+  std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
   // Parse JitCode to ModuleOp
   mlir::MLIRContext context;
@@ -202,6 +202,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
   optimizeSignatureForXLAAliasing(&context, kernelFunc);
   llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
+
+
+   std::cerr << "Transform the jit call into:\n" << getFuncOpAsString(kernelFunc) << "\n";
+  
 
   // ------------------------------ Fill the kernel args ------------------------------ 
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
