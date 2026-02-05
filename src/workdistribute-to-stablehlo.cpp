@@ -237,14 +237,26 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
         op0Ty.getElementType()
       );
 
-      auto stablehloMulOp = stablehlo::MulOp::create(
-        opBuilder, 
-        funcOp.getLoc(), 
+      mlir::ArrayAttr config = {};
+      mlir::stablehlo::DotAlgorithmAttr algo = {};
+      auto dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+        funcOp.getContext(),
+        SmallVector<int64_t> {},
+        SmallVector<int64_t> {},
+        SmallVector<int64_t> {1},
+        SmallVector<int64_t> {0});
+
+      auto stablehloDotGeneralOp = stablehlo::DotGeneralOp::create(
+        opBuilder,
+        funcOp.getLoc(),
         resTy,
         op0,
-        op1
+        op1,
+        dims,
+        config,
+        algo
       );
-      tracking.valueMap.map(mmOp.getResult(), stablehloMulOp.getResult());
+      tracking.valueMap.map(mmOp.getResult(), stablehloDotGeneralOp.getResult());
     })
     .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp tOp){
       // %24 = hlfir.transpose %23#0 : (!fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
