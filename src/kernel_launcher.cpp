@@ -321,13 +321,15 @@ static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
 // TODO: should have a better implementation
 static size_t getSizeOf(PJRT_Buffer_Type type) {
   switch (type) {
-  case PJRT_Buffer_Type_F32:
-    return size_t(4);
-  case PJRT_Buffer_Type_F64:
-    return size_t(8);
-  default:
-    logger::Log("Unknown Type", logLevel::ERROR);
-    exit(1);
+    case PJRT_Buffer_Type_F32:
+    case PJRT_Buffer_Type_S32:
+      return size_t(4);
+    case PJRT_Buffer_Type_F64:
+    case PJRT_Buffer_Type_S64:
+      return size_t(8);
+    default:
+      logger::Log("Unknown Type", logLevel::ERROR);
+      exit(1);
   }
 }
 
@@ -377,6 +379,10 @@ static PJRT_Buffer* createViewBuffers(
         return PJRT_Buffer_Type_F32;
       case DType::F64:
         return PJRT_Buffer_Type_F64;
+      case DType::I32:
+        return PJRT_Buffer_Type_S32;
+      case DType::I64:
+        return PJRT_Buffer_Type_S64;
       default:
         logger::Log("Unexpected data type", logLevel::ERROR);
         exit(EXIT_FAILURE);
@@ -410,6 +416,12 @@ static PJRT_Buffer *createLiteralBuffers(
         *dataptrI32 = val;
         return (void*)dataptrI32; 
       }
+      case DType::I64: {
+        int64_t* dataptrI64 = (int64_t*)malloc(sizeof(int64_t) * 1);
+        int64_t val = static_cast<int64_t>(raw);
+        *dataptrI64 = val;
+        return (void*)dataptrI64; 
+      }
       case DType::F64: {
         double_t* dataptrF64 = (double_t*)malloc(sizeof(double) * 1);
         memcpy(dataptrF64, &raw, sizeof(double));
@@ -435,6 +447,8 @@ static PJRT_Buffer *createLiteralBuffers(
       return PJRT_Buffer_Type::PJRT_Buffer_Type_F64;
     } else if (inputArg.dtype == DType::I32) {
       return PJRT_Buffer_Type::PJRT_Buffer_Type_S32;
+    } else if (inputArg.dtype == DType::I64) {
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_S64;
     } else {
       std::cerr << "Unknown Buffer Types!\n";
       std::exit(EXIT_FAILURE);

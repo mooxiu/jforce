@@ -11,6 +11,7 @@ enum class DType : int32_t {
   F32 = 0,
   F64 = 1,
   I32 = 2,
+  I64 = 3,
 };
 
 enum class TargetDevice : int32_t {

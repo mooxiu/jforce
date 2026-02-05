@@ -229,8 +229,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
           return DType::F64;
         } else if (eleType.isInteger(32)) {
           return DType::I32;
-        }else {
-          std::cerr << "Unknown input type!\n";
+        } else if (eleType.isInteger(64)) {
+          return DType::I64;
+        } else {
+          llvm::errs() << "\n";
+          eleType.print(llvm::errs() << "Unknown input type: ");
+          llvm::errs() << "\n";
           exit(EXIT_FAILURE);
         }
       }(),
