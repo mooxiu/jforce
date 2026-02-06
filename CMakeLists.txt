@@ -67,6 +67,7 @@ add_library(jit-code-executor SHARED
   src/kernel_launcher.cpp
   src/kernel_pointer_interface.cpp
   src/utilities.cpp
+  src/jit-manager.cpp
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)

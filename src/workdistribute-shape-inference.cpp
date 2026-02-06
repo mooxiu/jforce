@@ -194,3 +194,97 @@ void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::Dens
   return;
 }
 
+// Ref: https://openxla.org/xla/aliasing
+// XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
+// function: `ConvertToHloModule::RunOnFunction`
+void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
+  OpBuilder opBuilder(context);
+  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+    funcOp.setArgAttr(i, "tf.aliasing_output", opBuilder.getI64IntegerAttr(i));
+  }
+  return;
+}
+
+// TODO: 
+// - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
+// - Suppose ArgSizes 4 is shape constant
+void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
+  for (unsigned i = 0; i < NumHostArgs; i++) {
+    auto ty = ArgTypes[i];
+    if (isLiteralTy(ty)) {
+      int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
+      shapeConstMap.insert(std::pair(i, constVal));
+    };
+  }    
+  return;
+}
+
+// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
+// Return a map mapping original Index -> new Index;
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes) {
+  llvm::DenseSet<Value> nonShapeArgs;
+  funcOp.walk([&](Operation* op){
+    if (llvm::isa<func::FuncOp>(op) || llvm::isa<func::ReturnOp>(op)){
+      // SKIP
+    } else {
+      auto operands = op->getOperands();
+      std::for_each(operands.begin(), operands.end(), [&](Value operand){
+        if (!nonShapeArgs.contains(operand)) {
+          nonShapeArgs.insert(operand);
+        }
+      });
+    };
+  });
+
+  llvm::DenseSet<unsigned> toKeepIndices;
+  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+    if (!isLiteralTy(ArgTypes[i]) || nonShapeArgs.contains(funcOp.getArgument(i))) {
+      toKeepIndices.insert(i);
+    };
+  }
+
+  // Revise the signature and return value
+  llvm::DenseMap<unsigned, unsigned> mappingTable;
+  OpBuilder opBuilder(context);
+  funcOp.walk([&](Operation * op){
+    if (llvm::isa<func::FuncOp>(op)){
+      auto funcType = funcOp.getFunctionType();
+      auto oldArgsTypes = llvm::to_vector(funcType.getInputs());
+      llvm::SmallVector<Type> newArgsTypes;
+
+      unsigned j = 0;
+      for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+        if (toKeepIndices.contains(i)) {
+          newArgsTypes.push_back(oldArgsTypes[i]); 
+          mappingTable[i] = j;
+          j += 1;
+        }      
+      }
+
+      Block &entryBlock = funcOp.front();
+      for (int i = entryBlock.getNumArguments() - 1; i >= 0; --i) {
+        if (!mappingTable.contains(i)) {
+          entryBlock.eraseArgument(i);
+        }
+      }
+      auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes);
+      funcOp.setType(newFuncType);
+    } else if (auto retOp = llvm::dyn_cast<func::ReturnOp>(op)) {
+      opBuilder.setInsertionPoint(retOp);
+
+      llvm::SmallVector<Value> retOperands; 
+      for (unsigned i = 0; i < retOp.getNumOperands(); i++) {
+        if (toKeepIndices.contains(i)) {
+          retOperands.push_back(retOp.getOperand(i));
+        }
+      }
+      func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
+      retOp.erase();   
+    } else {
+      // DO NOTHING
+    };
+  });
+  
+  return mappingTable;  
+}
+

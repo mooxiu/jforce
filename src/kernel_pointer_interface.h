@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-#include <iostream>
 #include "llvm/Support/raw_ostream.h"
 
 // TODO: all the tests are using f32 for now.

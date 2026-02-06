@@ -1,14 +1,4 @@
 #include "utilities.h"
-#include "flang/Optimizer/Dialect/FIRType.h"
-#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "mlir/IR/Types.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
-#include <cstdint>
-#include <cstdlib>
 
 bool isLiteralTy(int64_t argType) {
   return (bool)(argType&0x100);  
@@ -73,4 +63,11 @@ mlir::Type convertToStaticShape(mlir::Type type, llvm::ArrayRef<int64_t> shape){
     });
 };
 
+
+std::string getFuncOpAsString(mlir::func::FuncOp funcOp) {
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  funcOp.print(os);
+  return output;
+}
 

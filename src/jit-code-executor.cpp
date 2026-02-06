@@ -1,24 +1,20 @@
-#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
-#include "kernel_pointer_interface.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/Transforms/Passes.h"
-#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/Value.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -50,7 +46,7 @@
 #include <omp.h>
 #include <ostream>
 #include "kernel_launcher.h"
-#include "utilities.h"
+#include "kernel_pointer_interface.h"
 
 using namespace mlir;
 
@@ -59,112 +55,16 @@ func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleO
 void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
 
 
-// TODO: Adding verifications for the input moduleOp
-static bool verifyJitCode(const ModuleOp& moduleOp) {
-  return true;
-}
+void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
 
-static std::string getFuncOpAsString(func::FuncOp funcOp) {
-  std::string output;
-  llvm::raw_string_ostream os(output);
-  funcOp.print(os);
-  return output;
-}
 
-// Ref: https://openxla.org/xla/aliasing
-// XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
-// function: `ConvertToHloModule::RunOnFunction`
-static void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
-  OpBuilder opBuilder(context);
-  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    funcOp.setArgAttr(i, "tf.aliasing_output", opBuilder.getI64IntegerAttr(i));
-  }
-  return;
-}
+void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
 
-// TODO: 
-// - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
-// - Suppose ArgSizes 4 is shape constant
-static void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
-  for (unsigned i = 0; i < NumHostArgs; i++) {
-    auto ty = ArgTypes[i];
-    if (isLiteralTy(ty)) {
-      int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
-      shapeConstMap.insert(std::pair(i, constVal));
-    };
-  }    
-  return;
-}
 
-// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
-// Return a map mapping original Index -> new Index;
-static llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes) {
-  llvm::DenseSet<Value> nonShapeArgs;
-  funcOp.walk([&](Operation* op){
-    if (llvm::isa<func::FuncOp>(op) || llvm::isa<func::ReturnOp>(op)){
-      // SKIP
-    } else {
-      auto operands = op->getOperands();
-      std::for_each(operands.begin(), operands.end(), [&](Value operand){
-        if (!nonShapeArgs.contains(operand)) {
-          nonShapeArgs.insert(operand);
-        }
-      });
-    };
-  });
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes);
 
-  llvm::DenseSet<unsigned> toKeepIndices;
-  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    if (!isLiteralTy(ArgTypes[i]) || nonShapeArgs.contains(funcOp.getArgument(i))) {
-      toKeepIndices.insert(i);
-    };
-  }
 
-  // Revise the signature and return value
-  llvm::DenseMap<unsigned, unsigned> mappingTable;
-  OpBuilder opBuilder(context);
-  funcOp.walk([&](Operation * op){
-    if (llvm::isa<func::FuncOp>(op)){
-      auto funcType = funcOp.getFunctionType();
-      auto oldArgsTypes = llvm::to_vector(funcType.getInputs());
-      llvm::SmallVector<Type> newArgsTypes;
-
-      unsigned j = 0;
-      for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-        if (toKeepIndices.contains(i)) {
-          newArgsTypes.push_back(oldArgsTypes[i]); 
-          mappingTable[i] = j;
-          j += 1;
-        }      
-      }
-
-      Block &entryBlock = funcOp.front();
-      for (int i = entryBlock.getNumArguments() - 1; i >= 0; --i) {
-        if (!mappingTable.contains(i)) {
-          entryBlock.eraseArgument(i);
-        }
-      }
-      auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes);
-      funcOp.setType(newFuncType);
-    } else if (auto retOp = llvm::dyn_cast<func::ReturnOp>(op)) {
-      opBuilder.setInsertionPoint(retOp);
-
-      llvm::SmallVector<Value> retOperands; 
-      for (unsigned i = 0; i < retOp.getNumOperands(); i++) {
-        if (toKeepIndices.contains(i)) {
-          retOperands.push_back(retOp.getOperand(i));
-        }
-      }
-      func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
-      retOp.erase();   
-    } else {
-      // DO NOTHING
-    };
-  });
-  
-  return mappingTable;  
-}
-
+// ------------------------------ Init ------------------------------ 
 /**
   * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp inside.
   *

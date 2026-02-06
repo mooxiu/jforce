@@ -1,8 +1,5 @@
 #include "kernel_launcher.h"
-#include "../third_party/headers/pjrt_c_api.h"
 #include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
-#include "kernel_pointer_interface.h"
-#include "utilities.h"
 #include "xla/xla.pb.h"
 #include "llvm/Support/Debug.h"
 #include <algorithm>
@@ -20,21 +17,6 @@
 #include <numeric>
 #include <ostream>
 #include <string>
-
-std::string getPluginPath() {
-// DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
-#ifdef DEFAULT_PJRT_PLUGIN_PATH
-  return DEFAULT_PJRT_PLUGIN_PATH;
-#else
-  throw std::runtime_error(
-      "PJRT plugin path not found. Please set PJRT_PLUGIN_PATH.");
-#endif
-}
-
-static const PJRT_Api* api = nullptr;
-static PJRT_Client* client = nullptr;
-static PJRT_Device* device = nullptr;
-static mlir::DenseMap<uintptr_t, PJRT_LoadedExecutable*> XLAKernelsMap;
 
 /**
 -------------------- Tool Functions --------------------
@@ -77,30 +59,6 @@ static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
 -------------------- End Tool Functions --------------------
  */
 
-static const PJRT_Api* getPJRTApi() {
-  if (api) {
-    return api;
-  } else {
-    auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
-    if (!handle_) {
-      std::cerr << "error loading plugin: " << dlerror() << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
-    // follow the example of `man dlopen`
-    auto get_api_fn = (PJRT_Api * (*)()) dlsym(handle_, "GetPjrtApi");
-    if (!get_api_fn) {
-      std::cerr << "error finding GetPjrtApi: " << dlerror() << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
-    api = get_api_fn();
-    PJRT_Plugin_Initialize_Args initArgs = {};
-    initArgs.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
-    auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
-    checkPJRTError(api, initErr, "Init Plugins");
-    // Theoretically need to close handle_ when exiting, but it will automatically be destroyed when exiting the program so intentionally leave it.
-    return api;
-  }
-}
 
 static PJRT_Client *getPJRTClient(const PJRT_Api *api) {
   if (client) {
@@ -124,68 +82,6 @@ static void destroyClient(const PJRT_Api *api, PJRT_Client *client) {
   client_destroy_args.client = client;
   api->PJRT_Client_Destroy(&client_destroy_args);
   return;
-}
-
-// Each time when compiling an executable, we should also store it in the map for later usage.
-static PJRT_LoadedExecutable *compileMLIR(const PJRT_Api *api, PJRT_Client *client,
-                                   const std::string &func_code, KernelArgs* offloadingArgs,
-                                          uintptr_t JitCodePtr) {
-  PJRT_Program program = (struct PJRT_Program){
-    .struct_size = PJRT_Program_STRUCT_SIZE,
-    .code = (char*) func_code.c_str(),
-    .code_size = (size_t)func_code.size(),
-    .format = "mlir",
-    .format_size = (size_t) 4 // Size of 'mlir' 4 chars 
-  }; 
-
-  auto getCompileOptionsProto = [&]() -> std::string {
-    xla::CompileOptionsProto opts = {};
-    opts.set_parameter_is_tupled_arguments(false);
-    opts.set_compile_portable_executable(false);
-    opts.set_profile_version(1);
-
-    xla::ExecutableBuildOptionsProto *build_opts = opts.mutable_executable_build_options();
-    build_opts->set_num_replicas(1);
-    build_opts->set_num_partitions(1);
-
-    // Special option for CUDA
-    if (offloadingArgs->targetDevice == TargetDevice::CUDA) {
-      // TODO: this might make compiled code slower!!!
-      auto debugOptions = build_opts->mutable_debug_options();
-      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
-      if (const char* cuda_path_env = std::getenv("MY_CUDA_PATH")) {
-        debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
-      } else {
-        // DO NOTHING, this might cause warning
-      } 
-    }    
-
-    std::string buf;
-    // SerializeToString(): This is protobuf's method inherited by `CompileOptionProto`.
-    if (!opts.SerializeToString(&buf)) {
-      logger::Log("Fail to serialize CompileOptionsProto", logLevel::ERROR);
-      return nullptr;
-    }
-    return buf;
-  };
-
-  // It seems PJRT_Client_Compile will also help to load the execute
-  auto buf =  getCompileOptionsProto();
-  PJRT_Client_Compile_Args compile_args = (struct PJRT_Client_Compile_Args){
-    .struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,
-    .client = client,
-    .program = &program,
-    .compile_options = (char *)buf.c_str(),
-    .compile_options_size = (size_t)buf.size()
-  };
-
-  auto error = api->PJRT_Client_Compile(&compile_args);
-  if (!checkPJRTError(api, error, "Compile The Program")) {
-    return nullptr;
-  }
-
-  XLAKernelsMap.insert(std::pair(JitCodePtr, compile_args.executable));
-  return compile_args.executable;
 }
 
 [[deprecated("Lifetime through the whole program")]]
@@ -530,18 +426,21 @@ static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetD
   }
 }
 
-void launchKernel(KernelArgs *offloadingArgs, const uintptr_t JitCodePtr, const std::string &kernelFuncStr) {
-  auto api = getPJRTApi();
+void launchKernel(
+  KernelArgs *offloadingArgs, 
+  const uintptr_t JitCodePtr, 
+  const std::string &kernelFuncStr
+) {
+  auto api = jitManager.getPJRTApi();
   auto client = getPJRTClient(api);
   auto device = getPJRTDevice(api, client, offloadingArgs);
   
   PJRT_LoadedExecutable* exe = [&]()->PJRT_LoadedExecutable* {
-    if (XLAKernelsMap.contains(JitCodePtr)){
-      // TODO: to delete
-      logger::Log("Cache hit", logLevel::DEBUG);
-      return XLAKernelsMap.at(JitCodePtr);
+    auto exe = jitManager.tryGetExecutable(JitCodePtr);
+    if (exe) {
+      return exe;
     } else {
-      return compileMLIR(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
+      return jitManager.compileAndGetExecutable(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
     }; 
   }();
 

@@ -3,7 +3,18 @@
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <string>
-#include <vector>
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/Types.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include <cstdint>
+#include <cstdlib>
+
 
 enum class logLevel { DEBUG, ERROR };
 
@@ -18,3 +29,4 @@ bool isDynamicShape(mlir::Type type);
 
 mlir::Type convertToStaticShape(mlir::Type type, llvm::ArrayRef<int64_t> shape);
 
+std::string getFuncOpAsString(mlir::func::FuncOp funcOp);
