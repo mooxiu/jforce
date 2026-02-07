@@ -1,4 +1,5 @@
 #include "../third_party/headers/pjrt_c_api.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
 #include <cstdint>
@@ -8,14 +9,28 @@
 
 class JitManager {
 private:
+
+  mlir::MLIRContext* context;
   const PJRT_Api *pjrtApi;
   std::shared_mutex mutex;
   mlir::DenseMap<uintptr_t, PJRT_LoadedExecutable*> XLAKernelsMap;
 
 public:
   JitManager();
+
+  // Making JitManager a singleton
+  JitManager(const JitManager&) = delete;
+  JitManager& operator=(const JitManager&) = delete;
+
+
+  static JitManager& getInstance();
+
+  mlir::MLIRContext* getContext();
+
   const PJRT_Api* getPJRTApi();
+
   PJRT_LoadedExecutable* tryGetExecutable(uintptr_t ptr);
+
   PJRT_LoadedExecutable* compileAndGetExecutable(
     const PJRT_Api *api, 
     PJRT_Client *client,
@@ -24,11 +39,6 @@ public:
     uintptr_t JitCodePtr);
 };
 
-static JitManager jitManager;
-
-__attribute__ ((constructor))
-static void initJitMgr() {
-  JitManager jitManager;
-}
-
+// Should be initialized at the beginning
+static JitManager& __dummy = JitManager::getInstance();
 

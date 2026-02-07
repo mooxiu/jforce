@@ -178,9 +178,9 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
 }
 
 // ShapeInference by tracking constant number
-void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap){
-  mlir::PassManager pm(&context);
-  OpBuilder opBuilder(&context);
+void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap){
+  mlir::PassManager pm(context);
+  OpBuilder opBuilder(context);
 
   moduleOp->walk([&](func::FuncOp funcOp){
     for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {

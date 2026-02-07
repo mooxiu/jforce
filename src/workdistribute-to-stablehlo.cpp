@@ -99,7 +99,7 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   value and call stablehlo function;
   "%arg0, %arg1, %arg2" are the values we need to track.
  */
-static func::FuncOp createFunction(mlir::MLIRContext &context,
+static func::FuncOp createFunction(mlir::MLIRContext* context,
                                    TrackingInfo &tracking,
                                    const func::FuncOp& inputOp) {
   auto &firstRegion = inputOp->getRegion(0);
@@ -111,7 +111,7 @@ static func::FuncOp createFunction(mlir::MLIRContext &context,
     outputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
   }
 
-  auto funcType = mlir::FunctionType::get(&context, inputTypes, outputTypes);
+  auto funcType = mlir::FunctionType::get(context, inputTypes, outputTypes);
   auto funcOp =
       func::FuncOp::create(inputOp->getLoc(), "main", funcType, {});
   // we need to update the valueMap!
@@ -376,8 +376,8 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 
 // Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 // but should also be compatible with following code.
-func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp) {
-  OpBuilder opBuilder(&context);
+func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp) {
+  OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;
   func::FuncOp stableHLOFuncOp;
 

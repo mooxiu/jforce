@@ -431,16 +431,16 @@ void launchKernel(
   const uintptr_t JitCodePtr, 
   const std::string &kernelFuncStr
 ) {
-  auto api = jitManager.getPJRTApi();
+  auto api = JitManager::getInstance().getPJRTApi();
   auto client = getPJRTClient(api);
   auto device = getPJRTDevice(api, client, offloadingArgs);
   
   PJRT_LoadedExecutable* exe = [&]()->PJRT_LoadedExecutable* {
-    auto exe = jitManager.tryGetExecutable(JitCodePtr);
+    auto exe = JitManager::getInstance().tryGetExecutable(JitCodePtr);
     if (exe) {
       return exe;
     } else {
-      return jitManager.compileAndGetExecutable(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
+      return JitManager::getInstance().compileAndGetExecutable(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
     }; 
   }();
 

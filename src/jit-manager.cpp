@@ -1,11 +1,20 @@
 #include "jit-manager.h"
+#include <algorithm>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <iostream>
 #include <mutex>
 #include <shared_mutex>
+#include <mlir/IR/MLIRContext.h>
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
+#include "flang/Optimizer/Dialect/FIRDialect.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 
 std::string getPluginPath() {
@@ -19,6 +28,17 @@ std::string getPluginPath() {
 }
 
 JitManager::JitManager() {
+  // Initialize context
+  this->context->loadDialect<
+    mlir::func::FuncDialect,
+    mlir::omp::OpenMPDialect,
+    fir::FIROpsDialect, 
+    hlfir::hlfirDialect,
+    mlir::arith::ArithDialect, 
+    mlir::stablehlo::StablehloDialect>();
+
+
+  // Iniialize PJRT_API
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
   if (!handle_) {
     std::cerr << "error loading plugin: " << dlerror() << std::endl;
@@ -38,10 +58,18 @@ JitManager::JitManager() {
   this->pjrtApi = api;
 }
 
+JitManager& JitManager::getInstance() {
+  static JitManager jitManager;
+  return jitManager;
+}
+
 const PJRT_Api* JitManager::getPJRTApi() {
   return this->pjrtApi;
 }
 
+mlir::MLIRContext* JitManager::getContext() {
+  return this->context;
+}
 
 // map elements will not be deleted during the execution, so we can check without lock at first
 PJRT_LoadedExecutable* JitManager::tryGetExecutable(uintptr_t ptr){
@@ -99,7 +127,7 @@ PJRT_LoadedExecutable* JitManager::compileAndGetExecutable(
     // SerializeToString(): This is protobuf's method inherited by `CompileOptionProto`.
     if (!opts.SerializeToString(&buf)) {
       llvm::errs() << "Fail to serialize CompileOptionsProto\n";
-      return nullptr;
+      return "";
     }
     return buf;
   };

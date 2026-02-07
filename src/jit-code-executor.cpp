@@ -50,9 +50,9 @@
 
 using namespace mlir;
 
-func::FuncOp workdistributeToStableHLO(MLIRContext& context, const mlir::ModuleOp& moduleOp);
+func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp);
 
-void runShapeInference(MLIRContext& context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
+void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
 
 
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
@@ -79,15 +79,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
   // Parse JitCode to ModuleOp
-  mlir::MLIRContext context;
-  context.loadDialect<
-    func::FuncDialect, 
-    omp::OpenMPDialect, 
-    fir::FIROpsDialect, 
-    hlfir::hlfirDialect,
-    arith::ArithDialect, 
-    stablehlo::StablehloDialect>();
-  mlir::ParserConfig parserConfig(&context);
+  mlir::ParserConfig parserConfig(JitManager::getInstance().getContext());
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(JitCodeC, parserConfig);
   if (!module) {
     std::cerr << "Module not extracted!" << std::endl;
@@ -98,10 +90,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   llvm::DenseMap<int, int> constShapeMap; // key: arg index; value: integer literal value 
   getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
-  runShapeInference(context, moduleOp, constShapeMap);
-  func::FuncOp kernelFunc = workdistributeToStableHLO(context, moduleOp);
-  optimizeSignatureForXLAAliasing(&context, kernelFunc);
-  llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(&context, kernelFunc, ArgTypes);
+  runShapeInference(JitManager::getInstance().getContext(), moduleOp, constShapeMap);
+  func::FuncOp kernelFunc = workdistributeToStableHLO(JitManager::getInstance().getContext(), moduleOp);
+  optimizeSignatureForXLAAliasing(JitManager::getInstance().getContext(), kernelFunc);
+  llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(JitManager::getInstance().getContext(), kernelFunc, ArgTypes);
    // std::cerr << "Transform the jit call into:\n" << getFuncOpAsString(kernelFunc) << "\n";
   
 
