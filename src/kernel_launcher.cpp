@@ -1,6 +1,4 @@
 #include "kernel_launcher.h"
-#include "../third_party/protos/generated/xla/pjrt/proto/compile_options.pb.h"
-#include "xla/xla.pb.h"
 #include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <cassert>

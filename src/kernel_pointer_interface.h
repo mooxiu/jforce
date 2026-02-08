@@ -35,6 +35,9 @@ struct TensorDesc {
   
   // Return total elements of this tensor
   size_t getEleSize() {
+    if (rank == 0) {
+      return 1;
+    }
     size_t acc = 1;
     for (int i = 0; i < rank; i++) {
       return acc *= shape[i];

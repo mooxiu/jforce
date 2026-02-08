@@ -6,6 +6,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <mlir/IR/MLIRContext.h>
+#include <string>
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -15,6 +16,7 @@
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "xla/pjrt/proto/compile_options.pb.h"
 
 
 std::string getPluginPath() {
@@ -72,6 +74,40 @@ mlir::MLIRContext* JitManager::getContext() {
 }
 
 
+// Executable is uniquely identified by the pointer to the function and the shape of the function.
+// Example: 
+//  func.func(tensor<1000x1000xf32> arg0, tensor<1000X1000xf32> arg1, tensor<f64> arg2); unitptr_t pointer = 12345678
+//  Notice the the rank and element type of each arg will not change
+//  We encode it to `12345678:1000:1000:1000:1000:0` 
+//
+//  (tensor<f64> is been regarded rank 0, different from tensor<1xf64> which is rank 1)
+std::string getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr) {
+  std::string key;
+  std::string delimiter = ":"; 
+  key.reserve(256); 
+
+  key.append(std::to_string(JitCodePtr));
+  
+  auto argsCount = offloadingArgs->inputArgCount;
+  for (int i = 0; i < argsCount; i++) {
+    auto argInfo = offloadingArgs->inputArgs[i];
+    key.append(delimiter);   
+
+    if (argInfo.rank == 0) {
+      key.append(":0"); 
+      continue;
+    } else {
+      for (int i = 0; i < argInfo.rank; i++) {
+        key.append(":");  
+        key.append(std::to_string(argInfo.shape[i]));
+      }
+    }
+  }
+
+  return key; 
+}
+
+
 // Simple RWLock implementation.
 // One problem is that multiple threads might be compiling the same executable and could waste some CPU cycle.
 // TODO: use an extra set to control which executable is being compiled. 
@@ -82,10 +118,12 @@ PJRT_LoadedExecutable* JitManager::getPJRTExecutable(
     KernelArgs* offloadingArgs,
     uintptr_t JitCodePtr
 ){
+  auto key = this->getPJRTExecutableKey(offloadingArgs, JitCodePtr); 
+
   std::shared_lock<std::shared_mutex> rLock(rwmtx);
-  auto it = this->XLAKernelsMap.find(JitCodePtr);
+  auto it = this->XLAKernelsMap.find(key);
   if (it != XLAKernelsMap.end()) {
-    return it->getSecond();
+    return it->second;
   };
 
   rLock.unlock();
@@ -93,12 +131,12 @@ PJRT_LoadedExecutable* JitManager::getPJRTExecutable(
   
   std::unique_lock<std::shared_mutex> wLock(rwmtx);
   // other threads might alredy compiled and insert this one
-  auto it2 = this->XLAKernelsMap.find(JitCodePtr);
+  auto it2 = this->XLAKernelsMap.find(key);
   if (it2 != XLAKernelsMap.end()) {
-    return it2->getSecond();
+    return it2->second;
   };
   // if really not found, insert
-  XLAKernelsMap.insert(std::pair(JitCodePtr, compiled)); 
+  XLAKernelsMap.insert(std::pair(key, compiled)); 
   return compiled;
 }
 
