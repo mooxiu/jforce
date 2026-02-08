@@ -12,8 +12,15 @@ private:
 
   mlir::MLIRContext* context;
   const PJRT_Api *pjrtApi;
-  std::shared_mutex mutex;
+  std::shared_mutex rwmtx;
   mlir::DenseMap<uintptr_t, PJRT_LoadedExecutable*> XLAKernelsMap;
+  
+  PJRT_LoadedExecutable* compilePJRTExecutable(
+    const PJRT_Api *api, 
+    PJRT_Client *client,
+    const std::string &func_code, 
+    KernelArgs* offloadingArgs,
+    uintptr_t JitCodePtr);
 
 public:
   JitManager();
@@ -29,9 +36,7 @@ public:
 
   const PJRT_Api* getPJRTApi();
 
-  PJRT_LoadedExecutable* tryGetExecutable(uintptr_t ptr);
-
-  PJRT_LoadedExecutable* compileAndGetExecutable(
+  PJRT_LoadedExecutable* getPJRTExecutable(
     const PJRT_Api *api, 
     PJRT_Client *client,
     const std::string &func_code, 

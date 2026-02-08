@@ -71,28 +71,44 @@ mlir::MLIRContext* JitManager::getContext() {
   return this->context;
 }
 
-// map elements will not be deleted during the execution, so we can check without lock at first
-PJRT_LoadedExecutable* JitManager::tryGetExecutable(uintptr_t ptr){
-  if (this->XLAKernelsMap.contains(ptr)) {
-    return this->XLAKernelsMap.at(ptr);
-  }      
-  return nullptr;
+
+// Simple RWLock implementation.
+// One problem is that multiple threads might be compiling the same executable and could waste some CPU cycle.
+// TODO: use an extra set to control which executable is being compiled. 
+PJRT_LoadedExecutable* JitManager::getPJRTExecutable( 
+    const PJRT_Api *api, 
+    PJRT_Client *client,
+    const std::string &func_code, 
+    KernelArgs* offloadingArgs,
+    uintptr_t JitCodePtr
+){
+  std::shared_lock<std::shared_mutex> rLock(rwmtx);
+  auto it = this->XLAKernelsMap.find(JitCodePtr);
+  if (it != XLAKernelsMap.end()) {
+    return it->getSecond();
+  };
+
+  rLock.unlock();
+  auto compiled = this->compilePJRTExecutable(api, client, func_code, offloadingArgs, JitCodePtr);
+  
+  std::unique_lock<std::shared_mutex> wLock(rwmtx);
+  // other threads might alredy compiled and insert this one
+  auto it2 = this->XLAKernelsMap.find(JitCodePtr);
+  if (it2 != XLAKernelsMap.end()) {
+    return it2->getSecond();
+  };
+  // if really not found, insert
+  XLAKernelsMap.insert(std::pair(JitCodePtr, compiled)); 
+  return compiled;
 }
 
-
-// Each time when compiling an executable, we should also store it in the map for later usage.
-PJRT_LoadedExecutable* JitManager::compileAndGetExecutable(
+PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
   const PJRT_Api *api, 
   PJRT_Client *client,
   const std::string &func_code, 
   KernelArgs* offloadingArgs,
   uintptr_t JitCodePtr
 ){
-  std::shared_lock<std::shared_mutex> lock(this->mutex);
-  if (this->XLAKernelsMap.contains(JitCodePtr)) {
-    return this->XLAKernelsMap.at(JitCodePtr);
-  }
-
   PJRT_Program program = (struct PJRT_Program){
     .struct_size = PJRT_Program_STRUCT_SIZE,
     .code = (char*) func_code.c_str(),
@@ -147,7 +163,6 @@ PJRT_LoadedExecutable* JitManager::compileAndGetExecutable(
     llvm::errs() << "Fail to compile XLA Executable!\n";
     return nullptr;
   }
-  XLAKernelsMap.insert(std::pair(JitCodePtr, compile_args.executable));
   return compile_args.executable;
 }
 

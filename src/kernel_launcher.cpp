@@ -435,14 +435,7 @@ void launchKernel(
   auto client = getPJRTClient(api);
   auto device = getPJRTDevice(api, client, offloadingArgs);
   
-  PJRT_LoadedExecutable* exe = [&]()->PJRT_LoadedExecutable* {
-    auto exe = JitManager::getInstance().tryGetExecutable(JitCodePtr);
-    if (exe) {
-      return exe;
-    } else {
-      return JitManager::getInstance().compileAndGetExecutable(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
-    }; 
-  }();
+  PJRT_LoadedExecutable* exe = JitManager::getInstance().getPJRTExecutable(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
 
   // Create Buffer with memory managed by OpenMP
   // For literal MapType, there's no memory been allocated, we have to allocate the memory and buffer by ourselves!!!! 
