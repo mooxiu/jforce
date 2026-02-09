@@ -8,7 +8,7 @@
 class JitManager {
 private:
 
-  mlir::MLIRContext* context;
+  mlir::MLIRContext context;
   const PJRT_Api *pjrtApi;
   std::shared_mutex rwmtx;
   llvm::StringMap<PJRT_LoadedExecutable*> XLAKernelsMap;

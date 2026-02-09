@@ -40,7 +40,7 @@ struct TensorDesc {
     }
     size_t acc = 1;
     for (int i = 0; i < rank; i++) {
-      return acc *= shape[i];
+      acc *= shape[i];
     }
     return acc;
   }

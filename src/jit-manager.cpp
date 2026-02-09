@@ -31,7 +31,7 @@ std::string getPluginPath() {
 
 JitManager::JitManager() {
   // Initialize context
-  this->context->loadDialect<
+  this->context.loadDialect<
     mlir::func::FuncDialect,
     mlir::omp::OpenMPDialect,
     fir::FIROpsDialect, 
@@ -70,7 +70,7 @@ const PJRT_Api* JitManager::getPJRTApi() {
 }
 
 mlir::MLIRContext* JitManager::getContext() {
-  return this->context;
+  return &this->context;
 }
 
 
@@ -81,7 +81,7 @@ mlir::MLIRContext* JitManager::getContext() {
 //  We encode it to `12345678:1000:1000:1000:1000:0` 
 //
 //  (tensor<f64> is been regarded rank 0, different from tensor<1xf64> which is rank 1)
-std::string getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr) {
+std::string JitManager::getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr) {
   std::string key;
   std::string delimiter = ":"; 
   key.reserve(256); 
