@@ -50,18 +50,18 @@
 
 using namespace mlir;
 
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp);
+func::FuncOp workdistributeToStableHLO(MLIRContext* context, OpBuilder& opBuilder, const mlir::ModuleOp& moduleOp);
 
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
+void runShapeInference(MLIRContext* context, OpBuilder& opBuilder, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
 
 
-void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
+void optimizeSignatureForXLAAliasing(MLIRContext* context, OpBuilder& opBuilder, func::FuncOp& funcOp);
 
 
 void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
 
 
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes);
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, OpBuilder& opBuilder, func::FuncOp& funcOp, int64_t* ArgTypes);
 
 
 // ------------------------------ Init ------------------------------ 
@@ -79,7 +79,9 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
   // Parse JitCode to ModuleOp
-  mlir::ParserConfig parserConfig(JitManager::getInstance().getContext());
+  auto ctx  = JitManager::getInstance().getContext();
+  OpBuilder opBuilder(ctx);
+  mlir::ParserConfig parserConfig(ctx);
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(JitCodeC, parserConfig);
   if (!module) {
     std::cerr << "Module not extracted!" << std::endl;
@@ -87,13 +89,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   }
   auto moduleOp = module.get();
 
-
   llvm::DenseMap<int, int> constShapeMap; // key: arg index; value: integer literal value 
   getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
-  runShapeInference(JitManager::getInstance().getContext(), moduleOp, constShapeMap);
-  func::FuncOp kernelFunc = workdistributeToStableHLO(JitManager::getInstance().getContext(), moduleOp);
-  optimizeSignatureForXLAAliasing(JitManager::getInstance().getContext(), kernelFunc);
-  llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(JitManager::getInstance().getContext(), kernelFunc, ArgTypes);
+  runShapeInference(ctx, opBuilder, moduleOp, constShapeMap);
+  func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, opBuilder, moduleOp);
+  optimizeSignatureForXLAAliasing(ctx, opBuilder, kernelFunc);
+  llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(ctx, opBuilder, kernelFunc, ArgTypes);
    // std::cerr << "Transform the jit call into:\n" << getFuncOpAsString(kernelFunc) << "\n";
   
 

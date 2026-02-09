@@ -18,6 +18,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -25,11 +26,11 @@
 
 using namespace mlir;
 
-static llvm::DenseMap<Value, int> valueMap;
+// llvm::DenseMap<Value, int> valueMap;
 
 // If this is an argument for shape, then we return the positive int value;
 // If not, return -1;
-static int getSolidVal(Value v) {
+static int getSolidVal(llvm::DenseMap<Value, int>& valueMap, Value v) {
   if (valueMap.contains(v)) {
     return valueMap.at(v);
   }
@@ -44,13 +45,19 @@ static int getSolidVal(Value v) {
 * - SCCP: Sparse Conditional Constant Propagation
 * Ref: https://mlir.llvm.org/docs/Passes/
 */
-static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func::FuncOp funcOp, llvm::DenseMap<int, int> constShapeMap) {
+static void preprocWithExistingPasses(
+  OpBuilder opBuilder, 
+  PassManager& pm, 
+  func::FuncOp funcOp, 
+  llvm::DenseMap<int, int>& constShapeMap,
+  llvm::DenseMap<Value, int>& valueMap 
+) {
     // First replace some known constants to the mlir
   funcOp.walk([&](fir::LoadOp lop){
     opBuilder.setInsertionPoint(lop);
-    if (getSolidVal(lop.getOperand()) > 0) {
+    if (getSolidVal(valueMap, lop.getOperand()) > 0) {
       auto resValue = lop.getResult();
-      arith::ConstantIntOp cop = arith::ConstantIntOp::create(opBuilder, funcOp.getLoc(), resValue.getType(), getSolidVal(lop.getOperand()));
+      arith::ConstantIntOp cop = arith::ConstantIntOp::create(opBuilder, funcOp.getLoc(), resValue.getType(), getSolidVal(valueMap, lop.getOperand()));
       lop.replaceAllUsesWith(cop.getResult());
       assert(lop.use_empty() && "Still been used!");
       lop.erase();
@@ -178,9 +185,14 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
 }
 
 // ShapeInference by tracking constant number
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap){
+void runShapeInference(
+  MLIRContext* context, 
+  OpBuilder& opBuilder, 
+  mlir::ModuleOp moduleOp, 
+  llvm::DenseMap<int, int>& constShapeMap
+){
+  llvm::DenseMap<Value, int> valueMap;
   mlir::PassManager pm(context);
-  OpBuilder opBuilder(context);
 
   moduleOp->walk([&](func::FuncOp funcOp){
     for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
@@ -188,7 +200,7 @@ void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::Dens
         valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constShapeMap[i]));
       }
     }
-    preprocWithExistingPasses(opBuilder, pm, funcOp, constShapeMap);
+    preprocWithExistingPasses(opBuilder, pm, funcOp, constShapeMap, valueMap);
     shapeInferenceInternal(opBuilder, funcOp);
   });
   return;
@@ -197,8 +209,7 @@ void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::Dens
 // Ref: https://openxla.org/xla/aliasing
 // XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
 // function: `ConvertToHloModule::RunOnFunction`
-void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
-  OpBuilder opBuilder(context);
+void optimizeSignatureForXLAAliasing(MLIRContext* context, OpBuilder& opBuilder, func::FuncOp& funcOp) {
   for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
     funcOp.setArgAttr(i, "tf.aliasing_output", opBuilder.getI64IntegerAttr(i));
   }
@@ -221,7 +232,7 @@ void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHos
 
 // Some arguments are there just meant to be shape meta data, need to drop them for better performance.
 // Return a map mapping original Index -> new Index;
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes) {
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, OpBuilder& opBuilder, func::FuncOp& funcOp, int64_t* ArgTypes) {
   llvm::DenseSet<Value> nonShapeArgs;
   funcOp.walk([&](Operation* op){
     if (llvm::isa<func::FuncOp>(op) || llvm::isa<func::ReturnOp>(op)){
@@ -245,7 +256,6 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::Fun
 
   // Revise the signature and return value
   llvm::DenseMap<unsigned, unsigned> mappingTable;
-  OpBuilder opBuilder(context);
   funcOp.walk([&](Operation * op){
     if (llvm::isa<func::FuncOp>(op)){
       auto funcType = funcOp.getFunctionType();
