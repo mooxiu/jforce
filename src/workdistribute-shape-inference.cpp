@@ -25,17 +25,6 @@
 
 using namespace mlir;
 
-static llvm::DenseMap<Value, int> valueMap;
-
-// If this is an argument for shape, then we return the positive int value;
-// If not, return -1;
-static int getSolidVal(Value v) {
-  if (valueMap.contains(v)) {
-    return valueMap.at(v);
-  }
-  return -1;  
-}
-
 /**
 * Fill some known values to the mlir and use existing passes to do constant propagation.
 * Including:
@@ -44,7 +33,20 @@ static int getSolidVal(Value v) {
 * - SCCP: Sparse Conditional Constant Propagation
 * Ref: https://mlir.llvm.org/docs/Passes/
 */
-static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func::FuncOp funcOp) {
+static void preprocWithExistingPasses(
+  OpBuilder opBuilder, 
+  PassManager& pm, 
+  func::FuncOp funcOp,
+  const llvm::DenseMap<Value, int>& valueMap
+) {
+  auto getSolidVal = [&](Value v) {
+    auto it = valueMap.find(v);
+    if (it != valueMap.end()) {
+      return it->getSecond();
+    }
+    return -1;
+  };
+
     // First replace some known constants to the mlir
   funcOp.walk([&](fir::LoadOp lop){
     opBuilder.setInsertionPoint(lop);
@@ -88,7 +90,7 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
         // %0 = fir.shape %c1000, %c1000 : (index, index) -> !fir.shape<2>
         llvm::SmallVector<int64_t> sizes; // {1000, 1000} in this example
         sizes.reserve(sop.getNumOperands());
-        for (unsigned i = 0; i < sop.getNumOperands(); i++) {
+        for (int i = 0; i < sop.getNumOperands(); i++) {
           auto opr = sop.getOperand(i);
           assert(constTrackingMap.contains(opr) && "Operand static value should be known!");
           sizes.push_back(constTrackingMap.at(opr));
@@ -102,7 +104,7 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
           auto staticShape = shapeMap.at(dop.getShape());
 
           // propagate the shape of the results
-          for (unsigned i = 0; i < dop.getNumResults(); i++) {
+          for (int i = 0; i < dop.getNumResults(); i++) {
             shapeMap.insert(std::pair(dop.getResult(i), staticShape));
           }
           shapeMap.insert(std::pair(dop.getMemref(), staticShape));
@@ -160,7 +162,7 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
         auto oldRes = funcType.getResults();
 
         Block &entryBlock = fop.front();
-        for (unsigned i = 0; i < entryBlock.getNumArguments(); i++) {
+        for (int i = 0; i < entryBlock.getNumArguments(); i++) {
           auto arg = entryBlock.getArgument(i);
           if (isDynamicShape(arg.getType())) {
             assert(shapeMap.contains(arg) && "Arg Shape should be known!");
@@ -177,39 +179,12 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
   return;
 }
 
-// ShapeInference by tracking constant number
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap){
-  mlir::PassManager pm(context);
-  OpBuilder opBuilder(context);
-
-  moduleOp->walk([&](func::FuncOp funcOp){
-    for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-      if (constShapeMap.contains(i)) {
-        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constShapeMap[i]));
-      }
-    }
-    preprocWithExistingPasses(opBuilder, pm, funcOp);
-    shapeInferenceInternal(opBuilder, funcOp);
-  });
-  return;
-}
-
-// Ref: https://openxla.org/xla/aliasing
-// XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
-// function: `ConvertToHloModule::RunOnFunction`
-void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
-  OpBuilder opBuilder(context);
-  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    funcOp.setArgAttr(i, "tf.aliasing_output", opBuilder.getI64IntegerAttr(i));
-  }
-  return;
-}
-
+[[deprecated("Use `inferShape` function instead, it combines this one and `runShapeInference`")]]
 // TODO: 
 // - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
 // - Suppose ArgSizes 4 is shape constant
 void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
-  for (unsigned i = 0; i < NumHostArgs; i++) {
+  for (int i = 0; i < NumHostArgs; i++) {
     auto ty = ArgTypes[i];
     if (isLiteralTy(ty)) {
       int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
@@ -219,72 +194,57 @@ void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumH
   return;
 }
 
-// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
-// Return a map mapping original Index -> new Index;
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes) {
-  llvm::DenseSet<Value> nonShapeArgs;
-  funcOp.walk([&](Operation* op){
-    if (llvm::isa<func::FuncOp>(op) || llvm::isa<func::ReturnOp>(op)){
-      // SKIP
-    } else {
-      auto operands = op->getOperands();
-      std::for_each(operands.begin(), operands.end(), [&](Value operand){
-        if (!nonShapeArgs.contains(operand)) {
-          nonShapeArgs.insert(operand);
-        }
-      });
-    };
-  });
-
-  llvm::DenseSet<unsigned> toKeepIndices;
-  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-    if (!isLiteralTy(ArgTypes[i]) || nonShapeArgs.contains(funcOp.getArgument(i))) {
-      toKeepIndices.insert(i);
-    };
-  }
-
-  // Revise the signature and return value
-  llvm::DenseMap<unsigned, unsigned> mappingTable;
+[[deprecated("Use `inferShape` function instead, it combines this one and `getShapeConstantMap`")]]
+// ShapeInference by tracking constant number
+void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap){
+  mlir::PassManager pm(context);
   OpBuilder opBuilder(context);
-  funcOp.walk([&](Operation * op){
-    if (llvm::isa<func::FuncOp>(op)){
-      auto funcType = funcOp.getFunctionType();
-      auto oldArgsTypes = llvm::to_vector(funcType.getInputs());
-      llvm::SmallVector<Type> newArgsTypes;
+  llvm::DenseMap<Value, int> valueMap;
 
-      unsigned j = 0;
-      for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-        if (toKeepIndices.contains(i)) {
-          newArgsTypes.push_back(oldArgsTypes[i]); 
-          mappingTable[i] = j;
-          j += 1;
-        }      
+  moduleOp->walk([&](func::FuncOp funcOp){
+    for (int i = 0; i < funcOp.getNumArguments(); i++) {
+      if (constShapeMap.contains(i)) {
+        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constShapeMap[i]));
       }
-
-      Block &entryBlock = funcOp.front();
-      for (int i = entryBlock.getNumArguments() - 1; i >= 0; --i) {
-        if (!mappingTable.contains(i)) {
-          entryBlock.eraseArgument(i);
-        }
-      }
-      auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes);
-      funcOp.setType(newFuncType);
-    } else if (auto retOp = llvm::dyn_cast<func::ReturnOp>(op)) {
-      opBuilder.setInsertionPoint(retOp);
-
-      llvm::SmallVector<Value> retOperands; 
-      for (unsigned i = 0; i < retOp.getNumOperands(); i++) {
-        if (toKeepIndices.contains(i)) {
-          retOperands.push_back(retOp.getOperand(i));
-        }
-      }
-      func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
-      retOp.erase();   
-    } else {
-      // DO NOTHING
-    };
+    }
+    preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
+    shapeInferenceInternal(opBuilder, funcOp);
   });
-  
-  return mappingTable;  
+  return;
+}
+
+void inferShape(
+  MLIRContext* ctx,
+  ModuleOp moduleOp,
+  int64_t NumHostArgs, 
+  void** ArgBasePtrs, 
+  int64_t* ArgSizes, 
+  int64_t* ArgTypes
+) {
+  // Key: index of the arguments of the function, value: if the argment is literal type, we know the value of the arg 
+  llvm::DenseMap<uint, uint> shapeConstMap;
+  llvm::DenseMap<Value, int> valueMap;
+
+  mlir::PassManager pm(ctx);
+  OpBuilder opBuilder(ctx);
+
+  for (int i = 0; i < NumHostArgs; i++) {
+    auto ty = ArgTypes[i];
+    if (isLiteralTy(ty)) {
+      int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
+      shapeConstMap.insert(std::pair(i, constVal));
+    };
+  } 
+
+  moduleOp->walk([&](func::FuncOp funcOp){
+    for (int i = 0; i < funcOp.getNumArguments(); i++) {
+      if (shapeConstMap.contains(i)) {
+        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap[i]));
+      }
+    }
+    preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
+    shapeInferenceInternal(opBuilder, funcOp);
+  });
+  return;
 }
 

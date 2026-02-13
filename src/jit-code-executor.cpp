@@ -52,9 +52,10 @@
 using namespace mlir;
 
 
-void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
+// void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
+// void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap);
 
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap);
+void inferShape(MLIRContext* ctx, ModuleOp moduleOp, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes); 
 
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
 
@@ -78,33 +79,32 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
   // Parse JitCode to ModuleOp
+  MLIRContext* ctx = JitManager::getInstance().getContext();
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   ModuleOp moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
 
- 
-  llvm::DenseMap<uint, uint> constShapeMap; // key: arg index; value: integer literal value 
-  getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
-  runShapeInference(JitManager::getInstance().getContext(), moduleOp, constShapeMap);
-  func::FuncOp kernelFunc = workdistributeToStableHLO(JitManager::getInstance().getContext(), moduleOp);
-  optimizeSignatureForXLAAliasing(JitManager::getInstance().getContext(), kernelFunc);
-  llvm::DenseMap<unsigned, unsigned> mappingTable = trimShapeArgs(JitManager::getInstance().getContext(), kernelFunc, ArgTypes);
+  inferShape(ctx, moduleOp, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
+
+  func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp);
+
+  optimizeSignatureForXLAAliasing(ctx, kernelFunc);
+
+  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
    // std::cerr << "Transform the jit call into:\n" << getFuncOpAsString(kernelFunc) << "\n";
   
 
   // ------------------------------ Fill the kernel args ------------------------------ 
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
-  TensorDesc inputArgs[kernelFunc.getNumArguments()]; // input arguments should be all args
-  TensorDesc outputArgs[kernelFunc.getNumArguments()];
+  TensorDesc newArgs[kernelFunc.getNumArguments()];  // args after being trimmed
 
-  // TODO: using NumHostArgs may not be very robostic, here i means the index in the function arguments beform trimming.
-  for (unsigned i = 0; i < NumHostArgs && mappingTable.contains(i); i++){
-    auto newIdx = mappingTable.at(i);
+  for (int oldIdx = 0; oldIdx < NumHostArgs && argsIndicesMapping.contains(oldIdx); oldIdx++){
+    auto newIdx = argsIndicesMapping.at(oldIdx);
     auto thisTy = argTypes[newIdx]; 
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
 
-    inputArgs[newIdx] = (struct TensorDesc){
-      .data = TgtArgs[i],
+    newArgs[newIdx] = (struct TensorDesc){
+      .data = TgtArgs[oldIdx],
       .shape = rtType.getShape().data(),
       .rank = (int32_t)rtType.getRank(),
       .dtype = [&](){
@@ -124,15 +124,15 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
           exit(EXIT_FAILURE);
         }
       }(),
-      .isLiteral = isLiteralTy(ArgTypes[i]),
+      .isLiteral = isLiteralTy(ArgTypes[oldIdx]),
     };
   }
 
   KernelArgs args = (struct KernelArgs){
-    .inputArgCount = mappingTable.size(),
-    .inputArgs = inputArgs,
-    .outputArgCount = mappingTable.size(),
-    .outputArgs = inputArgs,
+    .inputArgCount = argsIndicesMapping.size(),
+    .inputArgs = newArgs,
+    .outputArgCount = argsIndicesMapping.size(),
+    .outputArgs = newArgs,
     .targetDevice = TargetDevice::CPU,
   };
 

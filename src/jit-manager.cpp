@@ -123,11 +123,12 @@ std::string getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePt
     key.append(delimiter);   
 
     if (argInfo.rank == 0) {
-      key.append(":0"); 
+      key.append(delimiter);
+      key.append("0"); 
       continue;
     } else {
       for (int i = 0; i < argInfo.rank; i++) {
-        key.append(":");  
+        key.append(delimiter);  
         key.append(std::to_string(argInfo.shape[i]));
       }
     }
