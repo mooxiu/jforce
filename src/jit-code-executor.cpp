@@ -45,21 +45,20 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
+#include <sys/types.h>
 #include "kernel_launcher.h"
 #include "kernel_pointer_interface.h"
 
 using namespace mlir;
 
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp);
 
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap);
+void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
 
+void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap);
 
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
 
-
-void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
-
+func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp);
 
 llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes);
 
@@ -83,7 +82,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   ModuleOp moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
 
  
-  llvm::DenseMap<int, int> constShapeMap; // key: arg index; value: integer literal value 
+  llvm::DenseMap<uint, uint> constShapeMap; // key: arg index; value: integer literal value 
   getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
   runShapeInference(JitManager::getInstance().getContext(), moduleOp, constShapeMap);
   func::FuncOp kernelFunc = workdistributeToStableHLO(JitManager::getInstance().getContext(), moduleOp);

@@ -44,7 +44,7 @@ static int getSolidVal(Value v) {
 * - SCCP: Sparse Conditional Constant Propagation
 * Ref: https://mlir.llvm.org/docs/Passes/
 */
-static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func::FuncOp funcOp, llvm::DenseMap<int, int> constShapeMap) {
+static void preprocWithExistingPasses(OpBuilder opBuilder, PassManager& pm, func::FuncOp funcOp) {
     // First replace some known constants to the mlir
   funcOp.walk([&](fir::LoadOp lop){
     opBuilder.setInsertionPoint(lop);
@@ -178,7 +178,7 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
 }
 
 // ShapeInference by tracking constant number
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<int, int>& constShapeMap){
+void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap){
   mlir::PassManager pm(context);
   OpBuilder opBuilder(context);
 
@@ -188,7 +188,7 @@ void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::Dens
         valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constShapeMap[i]));
       }
     }
-    preprocWithExistingPasses(opBuilder, pm, funcOp, constShapeMap);
+    preprocWithExistingPasses(opBuilder, pm, funcOp);
     shapeInferenceInternal(opBuilder, funcOp);
   });
   return;
@@ -208,7 +208,7 @@ void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp)
 // TODO: 
 // - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
 // - Suppose ArgSizes 4 is shape constant
-void getShapeConstantMap(llvm::DenseMap<int, int>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
+void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
   for (unsigned i = 0; i < NumHostArgs; i++) {
     auto ty = ArgTypes[i];
     if (isLiteralTy(ty)) {
