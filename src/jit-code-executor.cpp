@@ -79,15 +79,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
   // Parse JitCode to ModuleOp
-  mlir::ParserConfig parserConfig(JitManager::getInstance().getContext());
-  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(JitCodeC, parserConfig);
-  if (!module) {
-    std::cerr << "Module not extracted!" << std::endl;
-    exit(EXIT_FAILURE);
-  }
-  auto moduleOp = module.get();
+  auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
+  ModuleOp moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
 
-
+ 
   llvm::DenseMap<int, int> constShapeMap; // key: arg index; value: integer literal value 
   getShapeConstantMap(constShapeMap, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
   runShapeInference(JitManager::getInstance().getContext(), moduleOp, constShapeMap);
@@ -144,7 +139,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
 
   // ------------------------------ Fill the kernel args ------------------------------ 
-  auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   launchKernel(&args, JitCodePtrUint, getFuncOpAsString(kernelFunc));
   return 0;
 }

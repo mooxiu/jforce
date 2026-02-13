@@ -1,5 +1,8 @@
 #include "../third_party/headers/pjrt_c_api.h"
+#include "mlir/IR/AsmState.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include <cstdint>
 #include <shared_mutex>
@@ -9,8 +12,13 @@ class JitManager {
 private:
 
   mlir::MLIRContext* context;
+ 
   const PJRT_Api *pjrtApi;
-  std::shared_mutex rwmtx;
+
+  std::shared_mutex moduleOpRWMtx;
+  llvm::DenseMap<uintptr_t, mlir::ModuleOp> moduleOpMap;
+
+  std::shared_mutex xlaKernelRWMtx;
   llvm::StringMap<PJRT_LoadedExecutable*> XLAKernelsMap;
   
   PJRT_LoadedExecutable* compilePJRTExecutable(
@@ -35,6 +43,8 @@ public:
   mlir::MLIRContext* getContext();
 
   const PJRT_Api* getPJRTApi();
+
+  mlir::ModuleOp getModuleOp(uintptr_t JitCodePtr, const char* JitCodeC);
 
   PJRT_LoadedExecutable* getPJRTExecutable(
     const PJRT_Api *api, 

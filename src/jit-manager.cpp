@@ -1,5 +1,6 @@
 #include "jit-manager.h"
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <iostream>
@@ -10,11 +11,13 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
+#include "mlir/Parser/Parser.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
 
@@ -73,6 +76,32 @@ mlir::MLIRContext* JitManager::getContext() {
   return this->context;
 }
 
+mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCodeC) {
+  // If can found in map, just return a cloned moduleOP
+  std::shared_lock<std::shared_mutex> rLock(moduleOpRWMtx);
+  auto it = this->moduleOpMap.find(JitCodePtr);
+  if (it != moduleOpMap.end()) {
+    return it->getSecond().clone();
+  }
+  rLock.unlock();
+
+  // Else, need to parse
+  mlir::ParserConfig parserConfig(this->context);
+  auto m = mlir::parseSourceString<mlir::ModuleOp>(JitCodeC, parserConfig);
+  if (!m) {
+    std::cerr << "Module not extracted!" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  auto moduleOp = m.get();
+
+  std::unique_lock<std::shared_mutex> wLock(moduleOpRWMtx);
+  auto it2 = this->moduleOpMap.find(JitCodePtr);
+  if (it2 != moduleOpMap.end()) {
+    return it->getSecond().clone();
+  }
+  this->moduleOpMap[JitCodePtr] = moduleOp;
+  return static_cast<mlir::ModuleOp>(moduleOp->clone());
+}
 
 // Executable is uniquely identified by the pointer to the function and the shape of the function.
 // Example: 
@@ -120,7 +149,7 @@ PJRT_LoadedExecutable* JitManager::getPJRTExecutable(
 ){
   auto key = this->getPJRTExecutableKey(offloadingArgs, JitCodePtr); 
 
-  std::shared_lock<std::shared_mutex> rLock(rwmtx);
+  std::shared_lock<std::shared_mutex> rLock(xlaKernelRWMtx);
   auto it = this->XLAKernelsMap.find(key);
   if (it != XLAKernelsMap.end()) {
     return it->second;
@@ -129,7 +158,7 @@ PJRT_LoadedExecutable* JitManager::getPJRTExecutable(
   rLock.unlock();
   auto compiled = this->compilePJRTExecutable(api, client, func_code, offloadingArgs, JitCodePtr);
   
-  std::unique_lock<std::shared_mutex> wLock(rwmtx);
+  std::unique_lock<std::shared_mutex> wLock(xlaKernelRWMtx);
   // other threads might alredy compiled and insert this one
   auto it2 = this->XLAKernelsMap.find(key);
   if (it2 != XLAKernelsMap.end()) {
