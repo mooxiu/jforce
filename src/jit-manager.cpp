@@ -8,6 +8,8 @@
 #include <shared_mutex>
 #include <mlir/IR/MLIRContext.h>
 #include <string>
+#include <vector>
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -107,29 +109,33 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCode
 // Example: 
 //  func.func(tensor<1000x1000xf32> arg0, tensor<1000X1000xf32> arg1, tensor<f64> arg2); unitptr_t pointer = 12345678
 //  Notice the the rank and element type of each arg will not change
-//  We encode it to `12345678:1000:1000:1000:1000:0` 
+//  We encode it to `12345678,1000,1000,1000,1000,0` (`,` does not exists, just make it easier for eyes to parse) 
 //
 //  (tensor<f64> is been regarded rank 0, different from tensor<1xf64> which is rank 1)
-std::string getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr) {
-  std::string key;
-  std::string delimiter = ":"; 
-  key.reserve(256); 
+static llvm::SmallVector<uint8_t> getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr) {
+  // we need 8 uint8_t to represents one uint64_t
+  // 256 elements vector can contain 32 numbers without realloc
+  // assume all shape size are uint64_t so delimiter is not needed
+  llvm::SmallVector<uint8_t, 256> key;
 
-  key.append(std::to_string(JitCodePtr));
+  auto pushToKey = [&](uint64_t value)->void {
+    uint8_t* byteArr = reinterpret_cast<uint8_t*>(&value);      
+    for (int i = 0; i < sizeof(value); i++) {
+      key.push_back(byteArr[i]);
+    }
+  };
+  
+  pushToKey(JitCodePtr);
   
   auto argsCount = offloadingArgs->inputArgCount;
   for (int i = 0; i < argsCount; i++) {
     auto argInfo = offloadingArgs->inputArgs[i];
-    key.append(delimiter);   
-
     if (argInfo.rank == 0) {
-      key.append(delimiter);
-      key.append("0"); 
+      pushToKey(0);
       continue;
     } else {
       for (int i = 0; i < argInfo.rank; i++) {
-        key.append(delimiter);  
-        key.append(std::to_string(argInfo.shape[i]));
+        pushToKey(argInfo.shape[i]);
       }
     }
   }
@@ -148,7 +154,7 @@ PJRT_LoadedExecutable* JitManager::getPJRTExecutable(
     KernelArgs* offloadingArgs,
     uintptr_t JitCodePtr
 ){
-  auto key = this->getPJRTExecutableKey(offloadingArgs, JitCodePtr); 
+  auto key = getPJRTExecutableKey(offloadingArgs, JitCodePtr); 
 
   std::shared_lock<std::shared_mutex> rLock(xlaKernelRWMtx);
   auto it = this->XLAKernelsMap.find(key);

@@ -61,8 +61,6 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::Fun
   // Usually 2 contains 1, and we may have false negative (should have trimmed but not), Reasons:
   // - But slow than incorrect
   // - If a buffer not been used, but it's already been moved to device by OpenMP, we will not move extra memory
-  llvm::DenseSet<unsigned> indicesToKeep; 
-
   auto argsBeenUsed = [&]() -> llvm::DenseSet<Value> {
     llvm::DenseSet<Value> res;
     funcOp.walk([&](Operation* op){
@@ -89,7 +87,6 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::Fun
   int currNewIdx = 0;
   for (int oldIdx = 0; oldIdx < funcOp.getNumArguments(); oldIdx++) {
     if (!isLiteralTy(ArgTypes[oldIdx]) || argsBeenUsed.contains(funcOp.getArgument(oldIdx))) {
-      indicesToKeep.insert(oldIdx);
       argsIndicesMapping.insert(std::pair(oldIdx, currNewIdx));
       currNewIdx += 1;
     };
@@ -103,7 +100,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::Fun
       llvm::SmallVector<Type> newArgsTypes;
       newArgsTypes.reserve(oldArgsTypes.size());
       for (int i = 0; i < funcOp.getNumArguments(); i++) {
-        if (indicesToKeep.contains(i)) {
+        if (argsIndicesMapping.contains(i)) {
           newArgsTypes.push_back(oldArgsTypes[i]); 
         }      
       }
@@ -124,7 +121,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::Fun
 
       llvm::SmallVector<Value> retOperands; 
       for (int i = 0; i < retOp.getNumOperands(); i++) {
-        if (indicesToKeep.contains(i)) {
+        if (argsIndicesMapping.contains(i)) {
           retOperands.push_back(retOp.getOperand(i));
         }
       }

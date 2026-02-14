@@ -2,6 +2,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include <cstdint>
 #include <shared_mutex>
@@ -18,7 +19,7 @@ private:
   llvm::DenseMap<uintptr_t, mlir::ModuleOp> moduleOpMap;
 
   std::shared_mutex xlaKernelRWMtx;
-  llvm::StringMap<PJRT_LoadedExecutable*> XLAKernelsMap;
+  llvm::DenseMap<llvm::SmallVector<uint8_t>, PJRT_LoadedExecutable*> XLAKernelsMap;
   
   PJRT_LoadedExecutable* compilePJRTExecutable(
     const PJRT_Api *api, 
@@ -26,8 +27,6 @@ private:
     const std::string &func_code, 
     KernelArgs* offloadingArgs,
     uintptr_t JitCodePtr);
-
-  std::string getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr);
 
 public:
   JitManager();
