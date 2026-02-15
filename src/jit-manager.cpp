@@ -8,6 +8,7 @@
 #include <shared_mutex>
 #include <mlir/IR/MLIRContext.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -19,6 +20,7 @@
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/Parser/Parser.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
@@ -36,7 +38,7 @@ std::string getPluginPath() {
 
 JitManager::JitManager() {
   // Initialize context
-  this->context->loadDialect<
+  this->context.loadDialect<
     mlir::func::FuncDialect,
     mlir::omp::OpenMPDialect,
     fir::FIROpsDialect, 
@@ -75,7 +77,7 @@ const PJRT_Api* JitManager::getPJRTApi() {
 }
 
 mlir::MLIRContext* JitManager::getContext() {
-  return this->context;
+  return &this->context;
 }
 
 mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCodeC) {
@@ -83,26 +85,25 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCode
   std::shared_lock<std::shared_mutex> rLock(moduleOpRWMtx);
   auto it = this->moduleOpMap.find(JitCodePtr);
   if (it != moduleOpMap.end()) {
-    return it->getSecond().clone();
+    return it->getSecond()->clone();
   }
   rLock.unlock();
 
   // Else, need to parse
-  mlir::ParserConfig parserConfig(this->context);
-  auto m = mlir::parseSourceString<mlir::ModuleOp>(JitCodeC, parserConfig);
+  mlir::ParserConfig parserConfig(&this->context);
+  mlir::OwningOpRef<mlir::ModuleOp> m = mlir::parseSourceString<mlir::ModuleOp>(JitCodeC, parserConfig);
   if (!m) {
     std::cerr << "Module not extracted!" << std::endl;
     exit(EXIT_FAILURE);
   }
-  auto moduleOp = m.get();
 
   std::unique_lock<std::shared_mutex> wLock(moduleOpRWMtx);
   auto it2 = this->moduleOpMap.find(JitCodePtr);
   if (it2 != moduleOpMap.end()) {
-    return it->getSecond().clone();
+    return it2->getSecond()->clone();
   }
-  this->moduleOpMap[JitCodePtr] = moduleOp;
-  return static_cast<mlir::ModuleOp>(moduleOp->clone());
+  this->moduleOpMap[JitCodePtr] = std::move(m);
+  return this->moduleOpMap[JitCodePtr]->clone();
 }
 
 // Executable is uniquely identified by the pointer to the function and the shape of the function.

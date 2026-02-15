@@ -7,16 +7,17 @@
 #include <cstdint>
 #include <shared_mutex>
 #include "kernel_pointer_interface.h"
+#include "mlir/IR/OwningOpRef.h"
 
 class JitManager {
 private:
 
-  mlir::MLIRContext* context;
+  mlir::MLIRContext context;
  
   const PJRT_Api *pjrtApi;
 
   std::shared_mutex moduleOpRWMtx;
-  llvm::DenseMap<uintptr_t, mlir::ModuleOp> moduleOpMap;
+  llvm::DenseMap<uintptr_t, mlir::OwningOpRef<mlir::ModuleOp>> moduleOpMap;
 
   std::shared_mutex xlaKernelRWMtx;
   llvm::DenseMap<llvm::SmallVector<uint8_t>, PJRT_LoadedExecutable*> XLAKernelsMap;
