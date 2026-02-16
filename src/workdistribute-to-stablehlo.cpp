@@ -47,23 +47,19 @@
 
 using namespace mlir;
 
-/**
- * valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning 
- * - valueMap: tracking the each operand of FIR pointing to the value of each operand in Stablehlo function
- * - argsTrackingMap: tracking the current value of arguments of stablehlo pointing to, practically a reverse map of `valueMap`
-*/
+/// valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning 
+/// - valueMap: tracking the each operand of FIR pointing to the value of each operand in Stablehlo function
+/// - argsTrackingMap: tracking the current value of arguments of stablehlo pointing to, practically a reverse map of `valueMap`
 struct TrackingInfo {
 public:
   mlir::IRMapping valueMap;
   mlir::IRMapping argsTrackingMap;
 };
 
-/**
-  Example of source type:
-  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
-  "!fir.ref<f32>": convert to "tensor<f32>"
-  "!hlfir.expr<shape>: convert to tensor<shape>"
- */
+///  Example of source type:
+///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
+///  "!fir.ref<f32>": convert to "tensor<f32>"
+///  "!hlfir.expr<shape>: convert to tensor<shape>"
 static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   // If it's already a tensor type, then no need to convert
   if (llvm::isa<RankedTensorType>(srcTy)) {
@@ -90,15 +86,13 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   });
 }
 
-/**
-  We're dealing with TargetOp like following:
-  > omp.target map_entries(%141 -> %arg0, %142 -> %arg1, %145 -> %arg2 :
-  !fir.ref<!fir.array<10xf32>>, !fir.ref<f32>, !fir.ref<!fir.array<10xf32>>) {
-
-  In which, "%141, %142, %145" is out values, they will be used when get the
-  value and call stablehlo function;
-  "%arg0, %arg1, %arg2" are the values we need to track.
- */
+/// We're dealing with TargetOp like following:
+/// > omp.target map_entries(%141 -> %arg0, %142 -> %arg1, %145 -> %arg2 :
+/// !fir.ref<!fir.array<10xf32>>, !fir.ref<f32>, !fir.ref<!fir.array<10xf32>>) {
+///
+/// In which, "%141, %142, %145" is out values, they will be used when get the
+/// value and call stablehlo function;
+/// "%arg0, %arg1, %arg2" are the values we need to track.
 static func::FuncOp createFunction(mlir::MLIRContext* context,
                                    TrackingInfo &tracking,
                                    const func::FuncOp& inputOp) {
@@ -127,13 +121,11 @@ static func::FuncOp createFunction(mlir::MLIRContext* context,
 }
 
 
-/**
-* Only support increase one dimension right now, for example:
-* - tensor<f32> -> tensor<10xf32>
-* - tensor<10xf32> -> tensor<10x10xf32>
-* 
-* Ref: https://openxla.org/stablehlo/spec#broadcast_in_dim
-*/
+/// Only support increase one dimension right now, for example:
+/// - tensor<f32> -> tensor<10xf32>
+/// - tensor<10xf32> -> tensor<10x10xf32>
+/// 
+/// Ref: https://openxla.org/stablehlo/spec#broadcast_in_dim
 static void handleArithBinaryOp(TrackingInfo& tracking, 
                                 OpBuilder &opBuilder, 
                                 func::FuncOp& funcOp, 
@@ -374,8 +366,8 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
   func::ReturnOp::create(opBuilder, loc, returnValues);
 }
 
-// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
-// but should also be compatible with following code.
+/// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
+/// but should also be compatible with following code.
 func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp) {
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;
