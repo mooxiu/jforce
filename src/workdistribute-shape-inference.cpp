@@ -18,21 +18,25 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace mlir;
 
-/**
-* Fill some known values to the mlir and use existing passes to do constant propagation.
-* Including:
-* - CSE: Common Subexpression Elimination
-* - Canonlicalize
-* - SCCP: Sparse Conditional Constant Propagation
-* Ref: https://mlir.llvm.org/docs/Passes/
-*/
+
+/// Fill some known values to the mlir and use existing passes to do constant propagation.
+/// Including:
+/// - CSE: Common Subexpression Elimination
+/// - Canonlicalize
+/// - SCCP: Sparse Conditional Constant Propagation
+/// Ref: https://mlir.llvm.org/docs/Passes/
 static void preprocWithExistingPasses(
   OpBuilder opBuilder, 
   PassManager& pm, 
@@ -47,7 +51,7 @@ static void preprocWithExistingPasses(
     return -1;
   };
 
-    // First replace some known constants to the mlir
+  // Replace some known values with constant values, then lifiting the propagation task to existing mlir passes.
   funcOp.walk([&](fir::LoadOp lop){
     opBuilder.setInsertionPoint(lop);
     if (getSolidVal(lop.getOperand()) > 0) {
@@ -58,16 +62,33 @@ static void preprocWithExistingPasses(
       lop.erase();
     }
   });
-  
+
   // Run passes
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createSCCPPass());
-  pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
-  if (mlir::failed(pm.run(funcOp))){
-    std::cerr << "[Fail] Fail to run passes on funcOp!" << std::endl;
-    exit(EXIT_FAILURE);
-  };
+  auto prevSnapshot = getMLIROperationAsString(funcOp);
+  auto currSnapshot = std::string();
+  const auto MAX_ITERATION = 3;
+  auto runPassCount = 0;
+  while (true) {
+    auto res = pm.run(funcOp); 
+    if (mlir::failed(res)) {
+      std::cerr << "[Fail] Fail to run passes on funcOp!" << std::endl;
+      std::exit(EXIT_FAILURE);
+    } else {
+      runPassCount += 1;
+    }
+    currSnapshot = getMLIROperationAsString(funcOp);
+    if ((currSnapshot != prevSnapshot) && (runPassCount < MAX_ITERATION)) {
+      std::swap(prevSnapshot, currSnapshot);
+      // now prevSnapshot pointing to currSnapshot, currSnapshot will be shadowed in next run.
+      continue;
+    } else {
+      // Is not changed or reach the upper limit
+      break;
+    }
+  }
   return;
 }
 
@@ -228,22 +249,36 @@ void inferShape(
   mlir::PassManager pm(ctx);
   OpBuilder opBuilder(ctx);
 
-  for (int i = 0; i < NumHostArgs; i++) {
-    auto ty = ArgTypes[i];
-    if (isLiteralTy(ty)) {
-      int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
-      shapeConstMap.insert(std::pair(i, constVal));
-    };
-  } 
-
-  moduleOp->walk([&](func::FuncOp funcOp){
+  moduleOp.walk([&](func::FuncOp funcOp){
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      if (shapeConstMap.contains(i)) {
-        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap[i]));
+      auto ty = ArgTypes[i];
+      if (isLiteralTy(ty)) {
+        int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
+        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constVal));
       }
-    }
-    preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
-    shapeInferenceInternal(opBuilder, funcOp);
+    };
+  });
+
+  moduleOp->walk([&](Operation* op){
+    llvm::TypeSwitch<Operation *>(op)
+      .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop){
+        // Sometimes it's included in declare Op
+        // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
+        // ...
+        // %4 = fir.load %2#0 : !fir.ref<i32>
+        if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
+          valueMap.insert(std::pair<Value, int>(dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
+        }  
+      })
+      .Case<func::FuncOp>([&](func::FuncOp funcOp){
+        for (int i = 0; i < funcOp.getNumArguments(); i++) {
+          if (shapeConstMap.contains(i)) {
+            valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap[i]));
+          }
+        }
+        preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
+        shapeInferenceInternal(opBuilder, funcOp);
+      });
   });
   return;
 }

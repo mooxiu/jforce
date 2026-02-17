@@ -1,4 +1,5 @@
 #include "utilities.h"
+#include "mlir/IR/OperationSupport.h"
 
 bool isLiteralTy(int64_t argType) {
   return (bool)(argType&0x100);  
@@ -63,11 +64,11 @@ mlir::Type convertToStaticShape(mlir::Type type, llvm::ArrayRef<int64_t> shape){
     });
 };
 
-
-std::string getFuncOpAsString(mlir::func::FuncOp funcOp) {
+std::string getMLIROperationAsString(mlir::Operation* op) {
   std::string output;
   llvm::raw_string_ostream os(output);
-  funcOp.print(os);
+  mlir::OpPrintingFlags flags;
+  op->print(os, flags.useLocalScope());
   return output;
 }
 
