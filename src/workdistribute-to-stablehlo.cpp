@@ -12,10 +12,12 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -273,10 +275,106 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
     });
 }
 
+
+static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::DesignateOp designateOp) {
+  auto isTriplet = designateOp.getIsTriplet();
+  assert(isTriplet.size() == 1 && "TODO: only dealing with one dimensional tensor for now!");
+  auto resultOperand = designateOp.getResult();
+  auto memRef = designateOp.getMemref();
+  if (!isTriplet[0]){
+    // example: %451 = "hlfir.designate"(%447#0, %arg9) 
+    // Often inside of an elemental operation
+    tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(memRef));
+  } else {
+    // example: %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+    auto indices = designateOp.getIndices();    
+    assert(indices.size() >= 3 && "Unexpected Indices!");
+    auto sliceStartIdxVal = indices[0];  // is mlir::Value
+    auto sliceEndIdxVal = indices[1]; 
+    auto sliceStrideVal = indices[2]; 
+    
+    auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
+      arith::ConstantIndexOp constOp = llvm::dyn_cast<arith::ConstantIndexOp>(idxVal.getDefiningOp());
+      if (!constOp) {
+        std::cerr << "This is not constantOp, you stupid!\n"; 
+        std::exit(EXIT_FAILURE);
+      }
+      return constOp.value();
+    };
+
+    // create slice operation
+    // we're not inserting in place, so donot set the insertion point of opBuilder
+    auto stablehloSliceOp = stablehlo::SliceOp::create(
+      opBuilder, 
+      funcOp.getLoc(),
+      convertBufferTyToTensorTy(resultOperand.getType()),
+      memRef,
+      {getI64Val(sliceStartIdxVal)},
+      {getI64Val(sliceEndIdxVal)},
+      {getI64Val(sliceStrideVal)} 
+    );
+    tracking.valueMap.map(designateOp.getResult(), stablehloSliceOp.getResult());
+  }
+}
+
+
+static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::AssignOp assignOp) {
+  // example: hlfir.assign %155 to %150#0 
+  // Assign A to B
+  assert(assignOp.getNumOperands() == 2 && "Fail to assert assignOp has 2 Operands!");
+  auto assignFromOperand = assignOp.getOperand(0); 
+  auto assignToOperand = assignOp.getOperand(1); 
+
+  // 1. Simple case: naive assignment
+  // 
+  // Example
+  //  def (arg0, arg1):
+  //    A = hlfir.declare arg0 // now arg0 is tracking A
+  //    B = hlfir.declare arg1 // now arg1 is tracking B
+  //    hlfir.assign A -> B       // now arg1 who was tracking B should also be tracking A, and value of A is arg0
+  //    return;
+  //
+  // Functional logic:
+  //  \arg0 arg1 -> (arg0, arg0)
+  //
+  // 2. Slice case:
+  //
+  // Example
+  //  def (arg0, arg1):
+  //    A = hlfir.designate arg0[1:5:2]
+  //    B = hlfir.designate arg1[1:5:2]
+  //    hlfir.assign A -> B
+  //    return;
+  //
+  // Functional logic:
+  //  \arg0 arg1 ->
+  //    A = arg0.slicing[1:5:2] // is A == arg0 ? in this case no.
+  //    B = arg1.slicing[1:5:2] // is B == arg1 ? in this case no. 
+  //    newArg1 = create_a_partial_updated_B(arg1, arg0, B, A)
+  //    return (arg0, newArg1)
+  //
+  //  In StableHLO, `scatter` is the operation for the above `create_a_partial_updatedB` logic
+  //
+
+  // TODO: generate scatter 
+
+
+  // value: B should tracking the same value as A
+  tracking.valueMap.map(assignToOperand, tracking.valueMap.lookup(assignFromOperand));  
+
+  // argsTrackingMap: the arg which is tracking B now should tracking A?
+  tracking.argsTrackingMap.map(tracking.valueMap.lookup(assignToOperand), assignFromOperand);
+
+}
+
 static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      OpBuilder &opBuilder, 
-                                     func::FuncOp& funcOp,
+                                     func::FuncOp& funcOp, // TODO: do not need &
                                      Operation *op) {
+  llvm::dbgs() << "-> currOp: \n";
+  op->print(llvm::dbgs());
+  llvm::dbgs() << "\n";
+
   llvm::TypeSwitch<Operation *>(op)
       .Case<hlfir::YieldElementOp>([&](hlfir::YieldElementOp yeOp){
         // Should find the corresponding the elementalOp and establish the mapping between the yield value and the result of elementalOp
@@ -292,17 +390,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         tracking.argsTrackingMap.map(stablehloArg, parentOpResult);
       })
       .Case<hlfir::AssignOp>([&](hlfir::AssignOp assignOp) {
-        // example: hlfir.assign %155 to %150#0 
-        // Assign A to B
-        assert(assignOp.getNumOperands() == 2 && "Fail to assert assignOp has 2 Operands!");
-        auto assignFromOperand = assignOp.getOperand(0); 
-        auto assignToOperand = assignOp.getOperand(1); 
-
-        // value: B should tracking the same value as A
-        tracking.valueMap.map(assignToOperand, tracking.valueMap.lookup(assignFromOperand));  
-
-        // argsTrackingMap: the arg which is tracking B now should tracking A?
-        tracking.argsTrackingMap.map(tracking.valueMap.lookup(assignToOperand), assignFromOperand);
+        handleAssignOp(tracking, opBuilder, funcOp, assignOp);
       })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
         auto declaredOprand = declareOp.getOperand(0);
@@ -312,13 +400,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
-        // example: %451 = "hlfir.designate"(%447#0, %arg9) 
-        auto resultOperand = designateOp->getOpResult(0);
-
-        auto refArr = designateOp.getMemref();
-
-        tracking.valueMap.map(resultOperand, 
-                              tracking.valueMap.lookup(refArr));
+        handleDesignateOp(tracking, opBuilder, funcOp, designateOp);
       })
       .Case<hlfir::ApplyOp>([&](hlfir::ApplyOp applyOp){
         // example: %445 = "hlfir.apply"(%443, %arg9)  
