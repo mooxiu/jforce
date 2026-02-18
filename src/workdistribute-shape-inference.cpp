@@ -154,6 +154,37 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
           dop.erase();
         }
       })
+      .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp dop){
+        // %5 = hlfir.designate %3#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+        // In the above example, it creates a part-ref of %3#0, with starting index %c1, end index %c5 and stride %c1
+        // in such case, the shape will be different
+        // But it can also be something a simple form, referring just a single value of it:
+        // example: %451 = "hlfir.designate"(%447#0, %arg9) 
+        if (isDynamicShape(dop.getResult().getType())) {
+          auto shapeVal = dop.getShape();
+          auto it = shapeMap.find(shapeVal);
+          assert(it != shapeMap.end());
+          auto shapeInfo = it->getSecond();
+          opBuilder.setInsertionPoint(dop);
+          auto neoDop = hlfir::DesignateOp::create(
+            opBuilder,
+            dop.getLoc(),
+            convertToStaticShape(dop.getResult().getType(), shapeInfo),
+            dop.getMemref(),
+            dop.getComponentAttr(),
+            dop.getComponentShape(),
+            dop.getIndices(),          
+            dop.getIsTripletAttr(),    
+            dop.getSubstring(),
+            dop.getComplexPartAttr(),
+            dop.getShape(),           
+            dop.getTypeparams(),
+            dop.getFortranAttrsAttr()
+          );
+          dop.replaceAllUsesWith(neoDop.getResult());
+          dop.erase();
+        }
+      })
       .Case<hlfir::ElementalOp>([&](hlfir::ElementalOp eop){
         // Example: %6 = hlfir.elemental %0 unordered : (!fir.shape<2>) -> !hlfir.expr<?x?xf64> {
         // static ElementalOp create(::mlir::OpBuilder &builder, ::mlir::Location location, mlir::Type result_type, mlir::Value shape, mlir::Value mold = {}, mlir::ValueRange typeparams = {}, bool isUnordered = false);
@@ -277,6 +308,9 @@ void inferShape(
           }
         }
         preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
+
+        std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
+
         shapeInferenceInternal(opBuilder, funcOp);
       });
   });
