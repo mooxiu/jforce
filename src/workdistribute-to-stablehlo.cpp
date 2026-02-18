@@ -290,7 +290,7 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     auto indices = designateOp.getIndices();    
     assert(indices.size() >= 3 && "Unexpected Indices!");
     auto sliceStartIdxVal = indices[0];  // is mlir::Value
-    auto sliceEndIdxVal = indices[1]; 
+    auto sliceLimitIdxVal = indices[1]; 
     auto sliceStrideVal = indices[2]; 
     
     auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
@@ -304,13 +304,21 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
 
     // create slice operation
     // we're not inserting in place, so donot set the insertion point of opBuilder
+    
+    // Debugging...
+    // llvm::dbgs() << "\n Working on a designateOp:"
+    //     << "\n\tsliceStartIdxVal: "  << getI64Val(sliceStartIdxVal)
+    //     << "\n\tsliceEndIdxVal: "  << getI64Val(sliceLimitIdxVal)
+    //     << "\n\tsliceStrideVal: "  << getI64Val(sliceStrideVal) 
+    //     << "\n";
+    
     auto stablehloSliceOp = stablehlo::SliceOp::create(
       opBuilder, 
       funcOp.getLoc(),
       convertBufferTyToTensorTy(resultOperand.getType()),
-      memRef,
+      tracking.valueMap.lookup(memRef),
       {getI64Val(sliceStartIdxVal)},
-      {getI64Val(sliceEndIdxVal)},
+      {getI64Val(sliceLimitIdxVal)},
       {getI64Val(sliceStrideVal)} 
     );
     tracking.valueMap.map(designateOp.getResult(), stablehloSliceOp.getResult());
