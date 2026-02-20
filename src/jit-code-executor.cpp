@@ -76,7 +76,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    int64_t *ArgSizes, int64_t *ArgTypes,
                                    void **ArgNames) {
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
+  // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   
   // Parse JitCode to ModuleOp
   MLIRContext* ctx = JitManager::getInstance().getContext();
@@ -85,14 +85,14 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   inferShape(ctx, moduleOp, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
 
-  std::cerr << "\nAfter Shape Infer: \n" << getMLIROperationAsString(moduleOp) << "\n";
+  // std::cerr << "\nAfter Shape Infer: \n" << getMLIROperationAsString(moduleOp) << "\n";
 
   func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp);
 
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
-   std::cerr << "Transform the jit call into:\n" << getMLIROperationAsString(kernelFunc) << "\n";
+   // std::cerr << "Transform the jit call into:\n" << getMLIROperationAsString(kernelFunc) << "\n";
   
 
   // ------------------------------ Fill the kernel args ------------------------------ 

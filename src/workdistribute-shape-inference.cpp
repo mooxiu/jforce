@@ -309,7 +309,7 @@ void inferShape(
         }
         preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
 
-        std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
+        // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
 
         shapeInferenceInternal(opBuilder, funcOp);
       });
