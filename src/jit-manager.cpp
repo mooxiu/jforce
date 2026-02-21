@@ -236,7 +236,7 @@ PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
   auto error = api->PJRT_Client_Compile(&compile_args);
   if (error) {
     llvm::errs() << "Fail to compile XLA Executable!\n";
-    return nullptr;
+    std::exit(EXIT_FAILURE);
   }
   return compile_args.executable;
 }

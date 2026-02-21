@@ -261,7 +261,7 @@ static PJRT_Buffer* createViewBuffers(
   const PJRT_Api *api,
   PJRT_Client* client,
   PJRT_Device* device,
-  const TensorDesc inputArg
+  const TensorDesc& inputArg
 ) {
 
   PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
@@ -278,7 +278,7 @@ static PJRT_Buffer* createViewBuffers(
       case DType::I64:
         return PJRT_Buffer_Type_S64;
       default:
-        logger::Log("Unexpected data type", logLevel::ERROR);
+        std::cerr << "[Error] Unexecpted data type: " << std::to_string((int32_t)inputArg.dtype) << "\n";
         exit(EXIT_FAILURE);
     }
   }();
@@ -289,7 +289,10 @@ static PJRT_Buffer* createViewBuffers(
   cvodbArg.dims = inputArg.shape;
   auto doNothingCallback = [](void* a, void* b){};
   cvodbArg.on_delete_callback = doNothingCallback;
-  checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer");
+  if (!checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer")) {
+    std::cerr << "Fail to create View of Device Buffer! Exit...\n";  
+    std::exit(EXIT_FAILURE);
+  };
   return cvodbArg.buffer;
 }
 
@@ -298,7 +301,7 @@ static PJRT_Buffer *createLiteralBuffers(
   const PJRT_Api *api, 
   PJRT_Client *client,
   PJRT_Device *device, 
-  const TensorDesc inputArg
+  const TensorDesc& inputArg
 ) {
   
   void* getLiteralData = [&]() -> void*{

@@ -46,7 +46,6 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
-#include <valarray>
 
 using namespace mlir;
 
@@ -306,10 +305,21 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
 
 static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::DesignateOp designateOp) {
   auto isTriplet = designateOp.getIsTriplet();
-  assert(isTriplet.size() == 1 && "TODO: only dealing with one dimensional tensor for now!");
   auto resultOperand = designateOp.getResult();
   auto memRef = designateOp.getMemref();
-  if (!isTriplet[0]){
+
+  bool isSlicing = [&]() {
+    auto containsSlicing = false;
+    for (bool tri: isTriplet) {
+      containsSlicing = tri || containsSlicing;
+      if (containsSlicing) {
+        return true;
+      }
+    }
+    return containsSlicing;
+  }();
+
+  if (!isSlicing){
     // example: %451 = "hlfir.designate"(%447#0, %arg9) 
     // Often inside of an elemental operation
     tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(memRef));
@@ -348,7 +358,7 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
       funcOp.getLoc(),
       convertBufferTyToTensorTy(resultOperand.getType()),
       memRefStablehlo,
-      {getI64Val(sliceStartIdxVal)},
+      {getI64Val(sliceStartIdxVal) - 1}, // Need to transforming from fortran's index!
       {getI64Val(sliceLimitIdxVal)},
       {getI64Val(sliceStrideVal)} 
     );
@@ -399,7 +409,8 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
   // TODO: generate scatter 
   assert(tracking.valueMap.contains(LHS) && "WriteToVal is not tracked!");
   auto LHSStablehloVal = tracking.valueMap.lookup(LHS);
-  if (llvm::isa<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp())) {
+  // Deciding if we're slicing the LHS
+  if (LHSStablehloVal.getDefiningOp() && llvm::isa<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp())) {
     auto LHSStablehloSliceVal = llvm::dyn_cast<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp());
     assert(
       LHSStablehloSliceVal.getStrides().size() == 1 && 
@@ -447,8 +458,9 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       {},
       {},
       {},
-      {0},
-      1);
+      {0}, 
+      0
+    );
 
     auto scatterOp = stablehlo::ScatterOp::create(
       opBuilder,
@@ -463,6 +475,19 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
     );
 
     assert(scatterOp.getNumResults() == 1 && ":( I was thinking scatterOp should have one result here, but more?");
+
+    // Insert computation block, in our case, just return the second one, which is the new created
+    auto storedBlock = opBuilder.getBlock();
+    auto storedInsertPoint = opBuilder.getInsertionPoint();
+
+    auto& computeRegion = scatterOp.getUpdateComputation();
+    auto computaeBlock = opBuilder.createBlock(&computeRegion);
+    auto elementTy = convertBufferTyToTensorTy(LHSStablehloSliceVal.getType().getElementType()); 
+    computaeBlock->addArgument(elementTy, funcOp.getLoc());
+    computaeBlock->addArgument(elementTy, funcOp.getLoc());
+    stablehlo::ReturnOp::create(opBuilder, funcOp.getLoc(), {computaeBlock->getArgument(1)});
+
+    opBuilder.setInsertionPoint(storedBlock, storedInsertPoint);
 
     // for args who is tracking the LHS's defining memref, it should now track scatterOp's result
     
