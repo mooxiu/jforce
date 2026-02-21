@@ -46,6 +46,7 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
+#include <string>
 #include <sys/types.h>
 #include "kernel_launcher.h"
 #include "kernel_pointer_interface.h"
@@ -55,11 +56,10 @@ using namespace mlir;
 
 static TargetDevice getTargetDevice() {
 #ifdef TARGET_DEVICE 
-  if (TARGET_DEVICE == "CUDA") {
+  if constexpr (std::string_view(TARGET_DEVICE) == "CUDA") {
     return TargetDevice::CUDA;
-  }  else {
-    return TargetDevice::CPU;
   }
+  return TargetDevice::CPU;
 #else
   return TargetDevice::CPU;
 #endif
