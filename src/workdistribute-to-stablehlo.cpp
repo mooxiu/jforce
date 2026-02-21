@@ -12,10 +12,12 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -47,23 +49,47 @@
 
 using namespace mlir;
 
-/**
- * valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning 
- * - valueMap: tracking the each operand of FIR pointing to the value of each operand in Stablehlo function
- * - argsTrackingMap: tracking the current value of arguments of stablehlo pointing to, practically a reverse map of `valueMap`
-*/
+/// valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning 
+/// - valueMap: tracking the each operand of FIR pointing to the value of each operand in Stablehlo function
+/// - argsTrackingMap: tracking the current value of arguments of stablehlo pointing to, practically a reverse map of `valueMap`
 struct TrackingInfo {
 public:
+  // Key: value in FIR function 
+  // Value: value in StableHLO function
   mlir::IRMapping valueMap;
+  // Key: value of one of StableHLO function's arguments 
+  // Value: value in FIR function
   mlir::IRMapping argsTrackingMap;
+
+  // void debug() {
+  //   llvm::dbgs() << "\n===== Start TrackingInfo:====\n";
+  //
+  //   llvm::dbgs() << "value map:\n";
+  //   for (const auto& pair: valueMap.getValueMap()) {
+  //     llvm::dbgs() << "key: ";
+  //     pair.getFirst().printAsOperand(llvm::dbgs(), {});
+  //     llvm::dbgs() << ", value: ";
+  //     pair.getSecond().printAsOperand(llvm::dbgs(), {});
+  //     llvm::dbgs() << "\n";
+  //   }
+  //
+  //   llvm::dbgs() << "\nargs tracking map:\n";
+  //   for (const auto& pair: argsTrackingMap.getValueMap()) {
+  //     llvm::dbgs() << "key: ";
+  //     pair.getFirst().printAsOperand(llvm::dbgs(), {});
+  //     llvm::dbgs() << ", value: ";
+  //     pair.getSecond().printAsOperand(llvm::dbgs(), {});
+  //     llvm::dbgs() << "\n";
+  //   }
+  //
+  //   llvm::dbgs() << "\n=====End TrackingInfo:=====\n";
+  // };
 };
 
-/**
-  Example of source type:
-  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
-  "!fir.ref<f32>": convert to "tensor<f32>"
-  "!hlfir.expr<shape>: convert to tensor<shape>"
- */
+///  Example of source type:
+///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
+///  "!fir.ref<f32>": convert to "tensor<f32>"
+///  "!hlfir.expr<shape>: convert to tensor<shape>"
 static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   // If it's already a tensor type, then no need to convert
   if (llvm::isa<RankedTensorType>(srcTy)) {
@@ -90,50 +116,45 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   });
 }
 
-/**
-  We're dealing with TargetOp like following:
-  > omp.target map_entries(%141 -> %arg0, %142 -> %arg1, %145 -> %arg2 :
-  !fir.ref<!fir.array<10xf32>>, !fir.ref<f32>, !fir.ref<!fir.array<10xf32>>) {
-
-  In which, "%141, %142, %145" is out values, they will be used when get the
-  value and call stablehlo function;
-  "%arg0, %arg1, %arg2" are the values we need to track.
- */
+/// We're dealing with TargetOp like following:
+/// > omp.target map_entries(%141 -> %arg0, %142 -> %arg1, %145 -> %arg2 :
+/// !fir.ref<!fir.array<10xf32>>, !fir.ref<f32>, !fir.ref<!fir.array<10xf32>>) {
+///
+/// In which, "%141, %142, %145" is out values, they will be used when get the
+/// value and call stablehlo function;
+/// "%arg0, %arg1, %arg2" are the values we need to track.
 static func::FuncOp createFunction(mlir::MLIRContext* context,
                                    TrackingInfo &tracking,
                                    const func::FuncOp& inputOp) {
   auto &firstRegion = inputOp->getRegion(0);
   auto &block = firstRegion.getBlocks().front();
 
-  mlir::SmallVector<Type> inputTypes, outputTypes;
-  for (auto arg : block.getArguments()) {
-    inputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
-    outputTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
+  mlir::SmallVector<Type> argsTypes;
+  for (const auto& arg : block.getArguments()) {
+    argsTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
   }
 
-  auto funcType = mlir::FunctionType::get(context, inputTypes, outputTypes);
+  auto funcType = mlir::FunctionType::get(context, argsTypes, argsTypes);
   auto funcOp =
       func::FuncOp::create(inputOp->getLoc(), "main", funcType, {});
   // we need to update the valueMap!
   funcOp.addEntryBlock();
 
-  for (unsigned int i = 0; i < block.getNumArguments(); i++) {
-    Value oldArgOperand = block.getArgument(i);
-    Value newArgOperand = funcOp.getArgument(i);
-    tracking.valueMap.map(oldArgOperand, newArgOperand); 
-    tracking.argsTrackingMap.map(newArgOperand, oldArgOperand);
+  for (int i = 0; i < block.getNumArguments(); i++) {
+    Value firFuncArg = block.getArgument(i);
+    Value stablehloFuncArg = funcOp.getArgument(i);
+    tracking.valueMap.map(firFuncArg, stablehloFuncArg); 
+    tracking.argsTrackingMap.map(stablehloFuncArg, firFuncArg);
   }
   return funcOp;
 }
 
 
-/**
-* Only support increase one dimension right now, for example:
-* - tensor<f32> -> tensor<10xf32>
-* - tensor<10xf32> -> tensor<10x10xf32>
-* 
-* Ref: https://openxla.org/stablehlo/spec#broadcast_in_dim
-*/
+/// Only support increase one dimension right now, for example:
+/// - tensor<f32> -> tensor<10xf32>
+/// - tensor<10xf32> -> tensor<10x10xf32>
+/// 
+/// Ref: https://openxla.org/stablehlo/spec#broadcast_in_dim
 static void handleArithBinaryOp(TrackingInfo& tracking, 
                                 OpBuilder &opBuilder, 
                                 func::FuncOp& funcOp, 
@@ -281,10 +302,218 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
     });
 }
 
+
+static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::DesignateOp designateOp) {
+  auto isTriplet = designateOp.getIsTriplet();
+  auto resultOperand = designateOp.getResult();
+  auto memRef = designateOp.getMemref();
+
+  bool isSlicing = [&]() {
+    auto containsSlicing = false;
+    for (bool tri: isTriplet) {
+      containsSlicing = tri || containsSlicing;
+      if (containsSlicing) {
+        return true;
+      }
+    }
+    return containsSlicing;
+  }();
+
+  if (!isSlicing){
+    // example: %451 = "hlfir.designate"(%447#0, %arg9) 
+    // Often inside of an elemental operation
+    tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(memRef));
+  } else {
+    // example: %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+    auto indices = designateOp.getIndices();    
+    assert(indices.size() >= 3 && "Unexpected Indices!");
+    auto sliceStartIdxVal = indices[0];  // is mlir::Value
+    auto sliceLimitIdxVal = indices[1]; 
+    auto sliceStrideVal = indices[2]; 
+    
+    auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
+      arith::ConstantIndexOp constOp = llvm::dyn_cast<arith::ConstantIndexOp>(idxVal.getDefiningOp());
+      if (!constOp) {
+        std::cerr << "This is not constantOp, you stupid!\n"; 
+        std::exit(EXIT_FAILURE);
+      }
+      return constOp.value();
+    };
+
+    // create slice operation
+    // we're not inserting in place, so donot set the insertion point of opBuilder
+    
+    // Debugging...
+    // llvm::dbgs() << "\n Working on a designateOp:"
+    //     << "\n\tsliceStartIdxVal: "  << getI64Val(sliceStartIdxVal)
+    //     << "\n\tsliceEndIdxVal: "  << getI64Val(sliceLimitIdxVal)
+    //     << "\n\tsliceStrideVal: "  << getI64Val(sliceStrideVal) 
+    //     << "\n";
+    
+
+    assert(tracking.valueMap.contains(memRef) && "memRef should have corresponding value in StablehlO function!");
+    auto memRefStablehlo = tracking.valueMap.lookup(memRef);
+    auto stablehloSliceOp = stablehlo::SliceOp::create(
+      opBuilder, 
+      funcOp.getLoc(),
+      convertBufferTyToTensorTy(resultOperand.getType()),
+      memRefStablehlo,
+      {getI64Val(sliceStartIdxVal) - 1}, // Need to transforming from fortran's index!
+      {getI64Val(sliceLimitIdxVal)},
+      {getI64Val(sliceStrideVal)} 
+    );
+    tracking.valueMap.map(resultOperand, stablehloSliceOp.getResult());
+  }
+  return;
+}
+
+
+static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::AssignOp assignOp) {
+  // example: hlfir.assign %155 to %150#0 
+  // Assign A to B
+  assert(assignOp.getNumOperands() == 2 && "Fail to assert assignOp has 2 Operands!");
+  auto RHS = assignOp.getOperand(0);          // assign from
+  auto LHS = assignOp.getOperand(1);   // assign to
+
+  // 1. Simple case: naive assignment
+  // 
+  // Example
+  //  def (arg0, arg1):
+  //    A = hlfir.declare arg0 // now arg0 is tracking A
+  //    B = hlfir.declare arg1 // now arg1 is tracking B
+  //    hlfir.assign A -> B       // now arg1 who was tracking B should also be tracking A, and value of A is arg0
+  //    return;
+  //
+  // Functional logic:
+  //  \arg0 arg1 -> (arg0, arg0)
+  //
+  // 2. Slice case:
+  //
+  // Example
+  //  def (arg0, arg1):
+  //    A = hlfir.designate arg0[1:5:2]
+  //    B = hlfir.designate arg1[1:5:2]
+  //    hlfir.assign A -> B
+  //    return;
+  //
+  // Functional logic:
+  //  \arg0 arg1 ->
+  //    A = arg0.slicing[1:5:2] // is A == arg0 ? in this case no.
+  //    B = arg1.slicing[1:5:2] // is B == arg1 ? in this case no. 
+  //    newArg1 = create_a_partial_updated_B(arg1, arg0, B, A)
+  //    return (arg0, newArg1)
+  //
+  //  In StableHLO, `scatter` is the operation for the above `create_a_partial_updatedB` logic
+  //
+
+  // TODO: generate scatter 
+  assert(tracking.valueMap.contains(LHS) && "WriteToVal is not tracked!");
+  auto LHSStablehloVal = tracking.valueMap.lookup(LHS);
+  // Deciding if we're slicing the LHS
+  if (LHSStablehloVal.getDefiningOp() && llvm::isa<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp())) {
+    auto LHSStablehloSliceVal = llvm::dyn_cast<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp());
+    assert(
+      LHSStablehloSliceVal.getStrides().size() == 1 && 
+      LHSStablehloSliceVal.getStartIndices().size() == 1 && 
+      LHSStablehloSliceVal.getLimitIndices().size() == 1 && 
+      "Only deal with 1D tensor for now!");
+    assert(LHSStablehloSliceVal.getStrides()[0] == 1 && "Only deal with continuous slice for now!");
+    // in continuous case, we only need to patch once, so instead of:
+    //
+    // ```
+    //  indices = stablehlo.iota(0: dimension) -> <count x i32> 
+    //  newWriteTo = stablehlo.scatter(writeTo, indices, readFrom)
+    // ```
+    //
+    // We can have:
+    // ```
+    //  updates = RHS (it can be a slice like `LHS(1:5) = RHS(1:5)` or not a slice like `LHS(1:5) = RHS`)
+    //  c0 = stablehlo.constant (LHSSlice->startIdx)
+    //  indices = stablehlo.broadcast_in_dims [] on c0 -> <1xi64> // where to start update, A.K.A. scatter indices
+    //  stablehlo.scatter(LHSOriginalNonSliceVal, indices, updates) 
+    //    {
+    //      update_window_dims = [0] -> which dimension of the updates,  
+    //      scatter_dims_to_operand_dims = [0] -> scatter indices to 
+    //    }
+    // ```
+    
+    int64_t lhsStartIdx = LHSStablehloSliceVal.getStartIndices()[0]; 
+    auto constOp = stablehlo::ConstantOp::create(
+      opBuilder, 
+      funcOp.getLoc(), 
+      DenseElementsAttr::get(RankedTensorType::get({}, opBuilder.getI64Type()), lhsStartIdx));
+    auto broadCastOp = stablehlo::BroadcastInDimOp::create(
+      opBuilder,
+      funcOp.getLoc(),
+      RankedTensorType::get({1}, opBuilder.getI64Type()), // from <i64> to <1xi64>
+      constOp.getResult(),
+      opBuilder.getDenseI64ArrayAttr({}));
+
+    auto RHSStablehloVal = tracking.valueMap.lookup(RHS); 
+    assert(RHSStablehloVal && ":( RHS of assignOP is not in valueMap, you have to put it in the valuemap!\n");
+
+    auto scatterDimNums = stablehlo::ScatterDimensionNumbersAttr::get(
+      funcOp.getContext(),
+      {0},
+      {},
+      {},
+      {},
+      {0}, 
+      0
+    );
+
+    auto scatterOp = stablehlo::ScatterOp::create(
+      opBuilder,
+      funcOp.getLoc(),
+      LHSStablehloSliceVal.getOperand().getType(), // result Type
+      LHSStablehloSliceVal.getOperand(), // refer to the original array, which is the input
+      broadCastOp.getResult(),
+      RHSStablehloVal,
+      /*scatter_dimension_numbers=*/ scatterDimNums,
+      /*indices_are_sorted*/ BoolAttr::get(funcOp.getContext(), true), // Following 2 are set to true because of referencing JAX generated, can be fixed after knowing more information
+      /*unique_indices*/ BoolAttr::get(funcOp.getContext(), true)
+    );
+
+    assert(scatterOp.getNumResults() == 1 && ":( I was thinking scatterOp should have one result here, but more?");
+
+    // Insert computation block, in our case, just return the second one, which is the new created
+    auto storedBlock = opBuilder.getBlock();
+    auto storedInsertPoint = opBuilder.getInsertionPoint();
+
+    auto& computeRegion = scatterOp.getUpdateComputation();
+    auto computaeBlock = opBuilder.createBlock(&computeRegion);
+    auto elementTy = convertBufferTyToTensorTy(LHSStablehloSliceVal.getType().getElementType()); 
+    computaeBlock->addArgument(elementTy, funcOp.getLoc());
+    computaeBlock->addArgument(elementTy, funcOp.getLoc());
+    stablehlo::ReturnOp::create(opBuilder, funcOp.getLoc(), {computaeBlock->getArgument(1)});
+
+    opBuilder.setInsertionPoint(storedBlock, storedInsertPoint);
+
+    // for args who is tracking the LHS's defining memref, it should now track scatterOp's result
+    
+    auto defOp = llvm::dyn_cast<hlfir::DesignateOp>(LHS.getDefiningOp());
+    assert(tracking.valueMap.contains(defOp.getMemref()) && "defOp's memref should be in valueMap!");
+    assert(tracking.argsTrackingMap.contains(tracking.valueMap.lookup(defOp.getMemref())) && "Can find a tracking from arg!");
+    tracking.valueMap.map(defOp.getMemref(), scatterOp.getResult(0));
+  } else {
+    // Old logic here when assignOp is to whole array, may also need to fix
+    // value: B should tracking the same value as A
+    tracking.valueMap.map(LHS, tracking.valueMap.lookup(RHS));  
+
+    // argsTrackingMap: the arg which is tracking B now should tracking A?
+    tracking.argsTrackingMap.map(tracking.valueMap.lookup(LHS), RHS);
+  }
+  return;
+}
+
 static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      OpBuilder &opBuilder, 
-                                     func::FuncOp& funcOp,
+                                     func::FuncOp& funcOp, // TODO: do not need &
                                      Operation *op) {
+  // llvm::dbgs() << "-> currOp: \n";
+  // op->print(llvm::dbgs());
+  // llvm::dbgs() << "\n";
+
   llvm::TypeSwitch<Operation *>(op)
       .Case<hlfir::YieldElementOp>([&](hlfir::YieldElementOp yeOp){
         // Should find the corresponding the elementalOp and establish the mapping between the yield value and the result of elementalOp
@@ -300,17 +529,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         tracking.argsTrackingMap.map(stablehloArg, parentOpResult);
       })
       .Case<hlfir::AssignOp>([&](hlfir::AssignOp assignOp) {
-        // example: hlfir.assign %155 to %150#0 
-        // Assign A to B
-        assert(assignOp.getNumOperands() == 2 && "Fail to assert assignOp has 2 Operands!");
-        auto assignFromOperand = assignOp.getOperand(0); 
-        auto assignToOperand = assignOp.getOperand(1); 
-
-        // value: B should tracking the same value as A
-        tracking.valueMap.map(assignToOperand, tracking.valueMap.lookup(assignFromOperand));  
-
-        // argsTrackingMap: the arg which is tracking B now should tracking A?
-        tracking.argsTrackingMap.map(tracking.valueMap.lookup(assignToOperand), assignFromOperand);
+        handleAssignOp(tracking, opBuilder, funcOp, assignOp);
       })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
         auto declaredOprand = declareOp.getOperand(0);
@@ -320,13 +539,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
-        // example: %451 = "hlfir.designate"(%447#0, %arg9) 
-        auto resultOperand = designateOp->getOpResult(0);
-
-        auto refArr = designateOp.getMemref();
-
-        tracking.valueMap.map(resultOperand, 
-                              tracking.valueMap.lookup(refArr));
+        handleDesignateOp(tracking, opBuilder, funcOp, designateOp);
       })
       .Case<hlfir::ApplyOp>([&](hlfir::ApplyOp applyOp){
         // example: %445 = "hlfir.apply"(%443, %arg9)  
@@ -374,8 +587,8 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
   func::ReturnOp::create(opBuilder, loc, returnValues);
 }
 
-// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
-// but should also be compatible with following code.
+/// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
+/// but should also be compatible with following code.
 func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp) {
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;

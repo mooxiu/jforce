@@ -1,3 +1,4 @@
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -29,4 +30,4 @@ bool isDynamicShape(mlir::Type type);
 
 mlir::Type convertToStaticShape(mlir::Type type, llvm::ArrayRef<int64_t> shape);
 
-std::string getFuncOpAsString(mlir::func::FuncOp funcOp);
+std::string getMLIROperationAsString(mlir::Operation* op);

@@ -2,13 +2,19 @@ cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
 set(HOME $ENV{HOME})
-set(InstallPath "${HOME}/opt/llvm-project/release/install")
-set(STABLEHLO_PROJECT "${HOME}/Documents/workspace/projects/stablehlo")
-set(LLVM_PREFIX ${InstallPath})
-# StableHLO does not have *Config.cmake, so we cannot do in that way
+set(CURR_ENV "LOCAL") # <- Change this for different environment
+if (CURR_ENV STREQUAL "LOCAL")
+  set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_cpu_plugin.so")
+  set(LLVM_INSTALL_PATH "${HOME}/Documents/workspace/projects/llvm-project/build")
+  set(STABLEHLO_PROJECT "${HOME}/Documents/workspace/projects/stablehlo")
+elseif (CURR_ENV STREQUAL "REMOTE")
+  set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_gpu_plugin.so")
+  set(LLVM_INSTALL_PATH "${HOME}/projects/llvm-project/build")
+  set(STABLEHLO_PROJECT "${HOME}/projects/stablehlo")
+endif()
 
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
-set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
+set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 
 project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -17,11 +23,12 @@ set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 set(CMAKE_CXX_STANDARD 17)
 
 # -------------------- Find MLIR, LLVM, Clang, Flang --------------------  
-list(APPEND CMAKE_PREFIX_PATH ${InstallPath})
+list(APPEND CMAKE_PREFIX_PATH ${LLVM_INSTALL_PATH})
 find_package(MLIR REQUIRED CONFIG)
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
 find_package(Flang REQUIRED CONFIG)
+# StableHLO does not have *Config.cmake, so we cannot do in that way
 
 # -------------------- Find StableHLO --------------------  
 # set(STABLEHLO_SRC_PATH "${STABLEHLO_PROJECT}/stablehlo")
@@ -96,10 +103,7 @@ target_link_libraries(jit-code-executor PRIVATE
   ${LLVM_LIBS}
 )
 
-set(THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-
-target_compile_definitions(jit-code-executor
-    PRIVATE
-    DEFAULT_PJRT_PLUGIN_PATH="${THIRD_PARTY}/pjrt_plugins/pjrt_c_api_cpu_plugin.so"
+target_compile_definitions(jit-code-executor PRIVATE
+  DEFAULT_PJRT_PLUGIN_PATH="${DEFAULT_PJRT_PLUGIN_PATH}"
 )
 

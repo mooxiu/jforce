@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -85,19 +86,25 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   inferShape(ctx, moduleOp, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes);
 
+  // std::cerr << "\nAfter Shape Infer: \n" << getMLIROperationAsString(moduleOp) << "\n";
+
   func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp);
+  // std::cerr << "\nAfter Workdistribute: \n" << getMLIROperationAsString(kernelFunc) << "\n";
 
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
-   // std::cerr << "Transform the jit call into:\n" << getFuncOpAsString(kernelFunc) << "\n";
+   // std::cerr << "Transform the jit call into:\n" << getMLIROperationAsString(kernelFunc) << "\n";
   
 
   // ------------------------------ Fill the kernel args ------------------------------ 
   auto argTypes = kernelFunc.getFunctionType().getInputs(); 
   TensorDesc newArgs[kernelFunc.getNumArguments()];  // args after being trimmed
 
-  for (int oldIdx = 0; oldIdx < NumHostArgs && argsIndicesMapping.contains(oldIdx); oldIdx++){
+  for (int oldIdx = 0; oldIdx < NumHostArgs ; oldIdx++){
+    if (!argsIndicesMapping.contains(oldIdx)) {
+      continue;
+    }
     auto newIdx = argsIndicesMapping.at(oldIdx);
     auto thisTy = argTypes[newIdx]; 
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
@@ -138,6 +145,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
 
   // ------------------------------ Fill the kernel args ------------------------------ 
-  launchKernel(&args, JitCodePtrUint, getFuncOpAsString(kernelFunc));
+  launchKernel(&args, JitCodePtrUint, getMLIROperationAsString(kernelFunc));
   return 0;
 }
