@@ -53,8 +53,18 @@
 using namespace mlir;
 
 
-// void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes);
-// void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap);
+static TargetDevice getTargetDevice() {
+#ifdef TARGET_DEVICE 
+  if (TARGET_DEVICE == "CUDA") {
+    return TargetDevice::CUDA;
+  }  else {
+    return TargetDevice::CPU;
+  }
+#else
+  return TargetDevice::CPU;
+#endif
+}
+
 
 void inferShape(MLIRContext* ctx, ModuleOp moduleOp, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes); 
 
@@ -140,7 +150,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     .inputArgs = newArgs,
     .outputArgCount = argsIndicesMapping.size(),
     .outputArgs = newArgs,
-    .targetDevice = TargetDevice::CPU,
+    .targetDevice = getTargetDevice(),
   };
 
 

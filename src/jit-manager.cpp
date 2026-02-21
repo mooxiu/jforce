@@ -1,5 +1,4 @@
 #include "jit-manager.h"
-#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -9,7 +8,6 @@
 #include <mlir/IR/MLIRContext.h>
 #include <string>
 #include <utility>
-#include <vector>
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
