@@ -46,6 +46,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
+#include "utilities.h"
 
 using namespace mlir;
 
@@ -159,12 +160,16 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
                                 OpBuilder &opBuilder, 
                                 func::FuncOp& funcOp, 
                                 Operation* arithOp) {
+  // llvm::dbgs() << "\n Handling Arith Binary OP: " << getMLIROperationAsString(arithOp) << "\n";
+
   assert(arithOp->hasTrait<mlir::OpTrait::OneResult>());
   assert(arithOp->hasTrait<mlir::OpTrait::NOperands<2>::Impl>());
   Value operand1 = arithOp->getOperand(0);
   Value operand2 = arithOp->getOperand(1);
   Value result = arithOp->getResult(0);
 
+  assert(tracking.valueMap.contains(operand1) && "ValueMap supposed to contain operand1!");
+  assert(tracking.valueMap.contains(operand2) && "ValueMap supposed to contain operand2!");
   Value operand1Src = tracking.valueMap.lookup(operand1);
   Value operand2Src = tracking.valueMap.lookup(operand2);
 
@@ -515,6 +520,14 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
   // llvm::dbgs() << "\n";
 
   llvm::TypeSwitch<Operation *>(op)
+      .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
+        if (constOp.getResult().getType().isIndex()) {
+          // This is just shape info, just return
+          return;
+        }
+        auto stablehloConstOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), constOp.getValueAttr());
+        tracking.valueMap.map(constOp.getResult(), stablehloConstOp.getResult());
+      })
       .Case<hlfir::YieldElementOp>([&](hlfir::YieldElementOp yeOp){
         // Should find the corresponding the elementalOp and establish the mapping between the yield value and the result of elementalOp
         assert(yeOp->getNumOperands() == 1 && "Fail to assert YeOP has 1 operand!");
