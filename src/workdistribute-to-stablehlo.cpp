@@ -16,6 +16,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -93,7 +94,7 @@ public:
 ///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
 ///  "!fir.ref<f32>": convert to "tensor<f32>"
 ///  "!hlfir.expr<shape>: convert to tensor<shape>"
-static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
+static RankedTensorType convertToTensorTy(mlir::Type srcTy) {
   // If it's already a tensor type, then no need to convert
   if (llvm::isa<RankedTensorType>(srcTy)) {
     return llvm::dyn_cast<RankedTensorType>(srcTy);
@@ -105,10 +106,10 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
     return RankedTensorType::get(expTy.getShape(), expTy.getEleTy());
   })
   .Case<fir::BoxType>([](fir::BoxType bTy){
-    return convertBufferTyToTensorTy(bTy.getEleTy());
+    return convertToTensorTy(bTy.getEleTy());
   })
   .Case<fir::ReferenceType>([](fir::ReferenceType refTy){
-    return convertBufferTyToTensorTy(refTy.getEleTy());
+    return convertToTensorTy(refTy.getEleTy());
   })
   .Case<fir::SequenceType>([](fir::SequenceType seqTy){
     return RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
@@ -117,6 +118,12 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
     // Suppose this is a scalar type
     return RankedTensorType::get({}, scTy);
   });
+}
+
+static RankedTensorType reverseRankedTensorType(mlir::RankedTensorType srcTy) {
+  auto shape = srcTy.getShape();
+  std::reverse(shape.begin(), shape.end());
+  return RankedTensorType::get(shape, srcTy.getElementType());
 }
 
 /// We're dealing with TargetOp like following:
@@ -134,7 +141,7 @@ static func::FuncOp createFunction(mlir::MLIRContext* context,
 
   mlir::SmallVector<Type> argsTypes;
   for (const auto& arg : block.getArguments()) {
-    argsTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
+    argsTypes.push_back(convertToTensorTy(arg.getType()));
   }
 
   auto funcType = mlir::FunctionType::get(context, argsTypes, argsTypes);
@@ -176,8 +183,8 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
   Value operand2Src = tracking.valueMap.lookup(operand2);
 
 
-  RankedTensorType o1Type = convertBufferTyToTensorTy(operand1Src.getType()); 
-  RankedTensorType o2Type = convertBufferTyToTensorTy(operand2Src.getType()); 
+  RankedTensorType o1Type = convertToTensorTy(operand1Src.getType()); 
+  RankedTensorType o2Type = convertToTensorTy(operand2Src.getType()); 
   assert(o1Type.hasRank() && o2Type.hasRank());
 
   Value largerOperand, smallerOperand; 
@@ -188,7 +195,7 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
     largerOperand = operand2Src;
     smallerOperand = operand1Src;
   }
-  RankedTensorType targetType = convertBufferTyToTensorTy(largerOperand.getType());
+  RankedTensorType targetType = convertToTensorTy(largerOperand.getType());
 
   // insert the broadcast
   if (o1Type.getRank() != o2Type.getRank()) {
@@ -258,8 +265,8 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
       // %36 = hlfir.matmul %33#0 %35#0 {fastmath = #arith.fastmath<contract>} : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
       auto op0 = tracking.valueMap.lookup(mmOp.getOperand(0));
       auto op1 = tracking.valueMap.lookup(mmOp.getOperand(1));
-      auto op0Ty = convertBufferTyToTensorTy(op0.getType());
-      auto op1Ty = convertBufferTyToTensorTy(op1.getType());
+      auto op0Ty = convertToTensorTy(op0.getType());
+      auto op1Ty = convertToTensorTy(op1.getType());
       auto resTy = RankedTensorType::get(
         llvm::SmallVector<int64_t>{op0Ty.getShape()[0], op1Ty.getShape()[1]}, 
         op0Ty.getElementType()
@@ -289,7 +296,7 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
     .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp tOp){
       // %24 = hlfir.transpose %23#0 : (!fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
       auto op = tracking.valueMap.lookup(tOp.getOperand());
-      auto opTy = convertBufferTyToTensorTy(op.getType());
+      auto opTy = convertToTensorTy(op.getType());
       auto resTy = RankedTensorType::get(
         llvm::SmallVector<int64_t>{opTy.getShape()[1], opTy.getShape()[0]}, 
         opTy.getElementType()
@@ -386,7 +393,7 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     auto stablehloSliceOp = stablehlo::SliceOp::create(
       opBuilder, 
       funcOp.getLoc(),
-      convertBufferTyToTensorTy(resultOperand.getType()),
+      convertToTensorTy(resultOperand.getType()),
       memRefStablehlo,
       sliceStartIdxVals,
       sliceLimitIdxVals,
@@ -524,7 +531,7 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
         funcOp.getLoc(), 
         mlir::RankedTensorType::get(
           broadcastsRes.size(), 
-          convertBufferTyToTensorTy(broadcastsRes[0].getType()).getElementType()),// mlir::Type resultType0 
+          convertToTensorTy(broadcastsRes[0].getType()).getElementType()),// mlir::Type resultType0 
         broadcastsRes,
         opBuilder.getI64IntegerAttr(0)); // concat in dimension 0
       scatterIndice = concatOp.getResult();
@@ -565,7 +572,7 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
 
     auto& computeRegion = scatterOp.getUpdateComputation();
     auto computaeBlock = opBuilder.createBlock(&computeRegion);
-    auto elementTy = convertBufferTyToTensorTy(LHSStablehloSliceVal.getType().getElementType()); 
+    auto elementTy = convertToTensorTy(LHSStablehloSliceVal.getType().getElementType()); 
     computaeBlock->addArgument(elementTy, funcOp.getLoc());
     computaeBlock->addArgument(elementTy, funcOp.getLoc());
     stablehlo::ReturnOp::create(opBuilder, funcOp.getLoc(), {computaeBlock->getArgument(1)});
