@@ -6,9 +6,11 @@
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
@@ -329,14 +331,19 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     // Often inside of an elemental operation
     tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(memRef));
   } else {
-    // example: %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+    // example 1: 1D slicing %1#0 [%c1: %c5: %c1]
+    // - %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+    //
+    // example 2: 2D slicing %6#0 []
+    //- %8 = "hlfir.designate"(%6#0, %1, %2, %1, %1, %0, %1, %7) <{is_triplet = array<i1: true, true>, operandSegmentSizes = array<i32: 1, 0, 6, 0, 1, 0>}> : (!fir.box<!fir.array<5x5xf64>>, index, index, index, index, index, index, !fir.shape<2>) -> !fir.box<!fir.array<2x5xf64>>
     auto indices = designateOp.getIndices();    
-    assert(indices.size() >= 3 && "Unexpected Indices!");
-    auto sliceStartIdxVal = indices[0];  // is mlir::Value
-    auto sliceLimitIdxVal = indices[1]; 
-    auto sliceStrideVal = indices[2]; 
+    assert(indices.size() >= 3 && indices.size() % 3 == 0 && "Unexpected Indices!");
     
-    auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
+    llvm::SmallVector<int64_t> sliceStartIdxVals;
+    llvm::SmallVector<int64_t> sliceLimitIdxVals;
+    llvm::SmallVector<int64_t> sliceStrideIdxVals;
+
+   auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
       arith::ConstantIndexOp constOp = llvm::dyn_cast<arith::ConstantIndexOp>(idxVal.getDefiningOp());
       if (!constOp) {
         std::cerr << "This is not constantOp, you stupid!\n"; 
@@ -345,6 +352,24 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
       return constOp.value();
     };
 
+    for (int i = 0; i < indices.size(); i++) {
+      switch (i%3) {
+        case 0: 
+          sliceStartIdxVals.push_back(getI64Val(indices[i]) - 1); // Fortran's idx starts from 1
+          break;
+        case 1:
+          sliceLimitIdxVals.push_back(getI64Val(indices[i]));
+          break;
+        case 2:
+          assert(getI64Val(indices[i]) == 1 && "Only dealing with stride = 1 for now!!!");
+          sliceStrideIdxVals.push_back(getI64Val(indices[i]));
+          break;
+        default:
+          std::cerr << "Only to make it exhausitive \n";
+          std::exit(EXIT_FAILURE);
+      } 
+    }
+    
     // create slice operation
     // we're not inserting in place, so donot set the insertion point of opBuilder
     
@@ -363,9 +388,9 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
       funcOp.getLoc(),
       convertBufferTyToTensorTy(resultOperand.getType()),
       memRefStablehlo,
-      {getI64Val(sliceStartIdxVal) - 1}, // Need to transforming from fortran's index!
-      {getI64Val(sliceLimitIdxVal)},
-      {getI64Val(sliceStrideVal)} 
+      sliceStartIdxVals,
+      sliceLimitIdxVals,
+      sliceStrideIdxVals
     );
     tracking.valueMap.map(resultOperand, stablehloSliceOp.getResult());
   }
@@ -417,11 +442,6 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
   // Deciding if we're slicing the LHS
   if (LHSStablehloVal.getDefiningOp() && llvm::isa<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp())) {
     auto LHSStablehloSliceVal = llvm::dyn_cast<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp());
-    assert(
-      LHSStablehloSliceVal.getStrides().size() == 1 && 
-      LHSStablehloSliceVal.getStartIndices().size() == 1 && 
-      LHSStablehloSliceVal.getLimitIndices().size() == 1 && 
-      "Only deal with 1D tensor for now!");
     assert(LHSStablehloSliceVal.getStrides()[0] == 1 && "Only deal with continuous slice for now!");
     // in continuous case, we only need to patch once, so instead of:
     //
@@ -441,30 +461,88 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
     //      scatter_dims_to_operand_dims = [0] -> scatter indices to 
     //    }
     // ```
+    //
+    // In general, here is the rule:
+    // y[ya_0:yb_0, ..., ya_n-1: yb_n-1] = x
+    // x is already sliced, so we don't care about its starting and limiting idx
+    // Here's how we set indices, and scatter_dims_to_operand_dims.
+    // ```
+    // for (int i = 0; i < n; i++) {
+    //  update_window_dims.push_back(i); // if updating this dimension, we need this
+    //  if ((yb_i - ya_i) < y.dim[i].size()) {
+    //    // just updating part
+    //    indices.push_back(y_ai);
+    //    scatter_dims_to_operand_dims(i);
+    //  }
+    // }
+    //
     
-    int64_t lhsStartIdx = LHSStablehloSliceVal.getStartIndices()[0]; 
-    auto constOp = stablehlo::ConstantOp::create(
-      opBuilder, 
-      funcOp.getLoc(), 
-      DenseElementsAttr::get(RankedTensorType::get({}, opBuilder.getI64Type()), lhsStartIdx));
-    auto broadCastOp = stablehlo::BroadcastInDimOp::create(
-      opBuilder,
-      funcOp.getLoc(),
-      RankedTensorType::get({1}, opBuilder.getI64Type()), // from <i64> to <1xi64>
-      constOp.getResult(),
-      opBuilder.getDenseI64ArrayAttr({}));
 
+    llvm::DenseSet<int> startIndices;
+    llvm::DenseMap<int, Value> startIndicesValues;
+    llvm::SmallVector<int64_t> updateWindowDims;
+    llvm::SmallVector<int64_t> scatterDimsToOperandDims;
+    auto LHSUnderlineTensorShape = llvm::dyn_cast<mlir::ShapedType>(LHSStablehloSliceVal.getOperand().getType());
+    int updateDims = LHSStablehloSliceVal.getStartIndices().size();
+    assert(LHSUnderlineTensorShape.getRank() == updateDims && "UnderlineTensor should have rank the same with updateDims!");
+    for (int i = 0; i < updateDims; i++) {
+      auto sliceStartIdx = LHSStablehloSliceVal.getStartIndices()[i];  
+      auto sliceLimitIdx = LHSStablehloSliceVal.getLimitIndices()[i];
+      updateWindowDims.push_back(i);
+      if (sliceStartIdx > 0 || (sliceLimitIdx - sliceStartIdx) < LHSUnderlineTensorShape.getDimSize(i)) {
+        // partial update in this dimension
+        if (!startIndices.contains(sliceStartIdx)) {
+          auto constOp = stablehlo::ConstantOp::create(
+              opBuilder, 
+              funcOp.getLoc(), 
+              DenseElementsAttr::get(RankedTensorType::get({}, opBuilder.getI64Type()), sliceStartIdx));
+          startIndices.insert(sliceStartIdx);
+          startIndicesValues.insert(std::pair(sliceStartIdx, constOp.getResult()));
+        }
+        scatterDimsToOperandDims.push_back(i);    
+      } 
+    }
+
+    Value scatterIndice;
+    llvm::SmallVector<Value> broadcastsRes;
+    assert(scatterDimsToOperandDims.size() && "At least one dimension should be partially update!");
+    for (const auto& pair: startIndicesValues) {
+      auto broadCastOp = stablehlo::BroadcastInDimOp::create(
+        opBuilder,
+        funcOp.getLoc(),
+        RankedTensorType::get({1}, opBuilder.getI64Type()), // from <i64> to <1xi64>
+        pair.getSecond(),
+        opBuilder.getDenseI64ArrayAttr({}));
+      broadcastsRes.push_back(broadCastOp.getResult());
+    }
+    if (scatterDimsToOperandDims.size() == 1) {
+      assert(startIndices.size() == 1 && scatterDimsToOperandDims.size() == 1 && "Should be smaller or equal to scatterDimsToOperandDims size!");
+      scatterIndice = broadcastsRes[0];
+    } else {
+      auto concatOp = stablehlo::ConcatenateOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        mlir::RankedTensorType::get(
+          broadcastsRes.size(), 
+          convertBufferTyToTensorTy(broadcastsRes[0].getType()).getElementType()),// mlir::Type resultType0 
+        broadcastsRes,
+        opBuilder.getI64IntegerAttr(0)); // concat in dimension 0
+      scatterIndice = concatOp.getResult();
+    }
+    
     auto RHSStablehloVal = tracking.valueMap.lookup(RHS); 
     assert(RHSStablehloVal && ":( RHS of assignOP is not in valueMap, you have to put it in the valuemap!\n");
 
+    // static ScatterDimensionNumbersAttr get(::mlir::MLIRContext *context, ::llvm::ArrayRef<int64_t> updateWindowDims, ::llvm::ArrayRef<int64_t> insertedWindowDims, ::llvm::ArrayRef<int64_t> inputBatchingDims, ::llvm::ArrayRef<int64_t> scatterIndicesBatchingDims, ::llvm::ArrayRef<int64_t> scatterDimsToOperandDims, int64_t indexVectorDim);
+     
     auto scatterDimNums = stablehlo::ScatterDimensionNumbersAttr::get(
-      funcOp.getContext(),
-      {0},
-      {},
-      {},
-      {},
-      {0}, 
-      0
+      /*context*/ funcOp.getContext(),
+      /*updateWindowDims*/ updateWindowDims,
+      /*insertedWindowDims*/ {},
+      /*inputBatchingDims*/ {},
+      /*scatterIndicesBatchingDims*/ {},
+      /*scatterDimsToOperandDims*/ scatterDimsToOperandDims, 
+      /*indexVectorDim*/ 0
     );
 
     auto scatterOp = stablehlo::ScatterOp::create(
@@ -472,7 +550,7 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       funcOp.getLoc(),
       LHSStablehloSliceVal.getOperand().getType(), // result Type
       LHSStablehloSliceVal.getOperand(), // refer to the original array, which is the input
-      broadCastOp.getResult(),
+      scatterIndice,
       RHSStablehloVal,
       /*scatter_dimension_numbers=*/ scatterDimNums,
       /*indices_are_sorted*/ BoolAttr::get(funcOp.getContext(), true), // Following 2 are set to true because of referencing JAX generated, can be fixed after knowing more information
@@ -515,9 +593,9 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      OpBuilder &opBuilder, 
                                      func::FuncOp& funcOp, // TODO: do not need &
                                      Operation *op) {
-  // llvm::dbgs() << "-> currOp: \n";
-  // op->print(llvm::dbgs());
-  // llvm::dbgs() << "\n";
+  llvm::dbgs() << "\n -> currOp: \n";
+  op->print(llvm::dbgs());
+  llvm::dbgs() << "\n";
 
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
