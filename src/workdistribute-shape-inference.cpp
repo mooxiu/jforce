@@ -118,10 +118,29 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
         }
         shapeMap.insert(std::pair(sop.getResult(), sizes)); // %0 -> {1000, 1000}
       })
+      .Case<fir::ShapeShiftOp>([&](fir::ShapeShiftOp ssop){
+        // In Fortran, the idx can start from any number, often we have shapeShiftOp
+        // %10 = fir.shape_shift %c-1, %c964, %c-1, %c965 : (index, index, index, index) -> !fir.shapeshift<2> 
+        // The shape is rank=2:
+        // - first rank: lower bound: %c-1, len: %c964
+        // - second rank: lower bound: %c-1, len: %c965
+        //
+        // TODO: the lower bound should also be stored for later usage: for example, when translating from `hlfir::desinateOp` to `stablehlo::slicingOp`
+        llvm::SmallVector<int64_t> sizes;
+        sizes.reserve(ssop.getNumOperands()/2);
+        // For idx 1 and stride 2, only get the length
+        for (int i = 1; i < ssop.getNumOperands(); i=i+2) {
+          auto opr = ssop.getOperand(i);
+          assert(constTrackingMap.contains(opr) && "Operand static value of shapeShift should be known!");
+          sizes.push_back(constTrackingMap.at(opr));
+        }
+        shapeMap.insert(std::pair(ssop.getResult(), sizes)); // %10 -> {%c964, %c965}
+      })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop){
         // Example: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<?x?xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<?x?xf64>>, !fir.ref<!fir.array<?x?xf64>>)
         // Objective: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<1000x1000xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<1000x1000xf64>>, !fir.ref<!fir.array<1000x1000xf64>>)
         if (isDynamicShape(dop.getResult(0).getType())) {
+          assert(shapeMap.contains(dop.getShape()) && "The shape of the declareOp has not been added!!!!");
           auto staticShape = shapeMap.at(dop.getShape());
 
           // propagate the shape of the results
@@ -280,6 +299,7 @@ void inferShape(
   mlir::PassManager pm(ctx);
   OpBuilder opBuilder(ctx);
 
+  // some parameters containing the shape info are passed as pointer like
   moduleOp.walk([&](func::FuncOp funcOp){
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
       auto ty = ArgTypes[i];
@@ -304,12 +324,14 @@ void inferShape(
       .Case<func::FuncOp>([&](func::FuncOp funcOp){
         for (int i = 0; i < funcOp.getNumArguments(); i++) {
           if (shapeConstMap.contains(i)) {
-            valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap[i]));
+            valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap.at(i)));
           }
         }
+
+        std::cerr << "\nBefore Prepro: ====================================\n";
         preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
 
-        // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
+        std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
 
         shapeInferenceInternal(opBuilder, funcOp);
       });
