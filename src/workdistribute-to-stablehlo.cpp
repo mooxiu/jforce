@@ -16,6 +16,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -209,7 +210,17 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         smallerOperand
       );
       stablehloRes = stablehloAddOp.getResult();
-          })
+    })
+    .Case<arith::SubFOp>([&](arith::SubFOp subOp){
+      auto stablehloSubOp = stablehlo::SubtractOp::create(
+        opBuilder,
+        funcOp.getLoc(),
+        targetType,
+        largerOperand,
+        smallerOperand
+      );
+      stablehloRes = stablehloSubOp.getResult();
+    })
     .Case<arith::MulFOp>([&](arith::MulFOp){
       auto stablehloMulOp = stablehlo::MulOp::create(
         opBuilder, 
@@ -380,6 +391,9 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     //     << "\n\tsliceStrideVal: "  << getI64Val(sliceStrideVal) 
     //     << "\n";
     
+    std::reverse(sliceStartIdxVals.begin(),  sliceStartIdxVals.end()); 
+    std::reverse(sliceLimitIdxVals.begin(),  sliceLimitIdxVals.end());
+    std::reverse(sliceStrideIdxVals.begin(),  sliceStrideIdxVals.end());
 
     assert(tracking.valueMap.contains(memRef) && "memRef should have corresponding value in StablehlO function!");
     auto memRefStablehlo = tracking.valueMap.lookup(memRef);
@@ -519,6 +533,7 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       assert(startIndices.size() == 1 && scatterDimsToOperandDims.size() == 1 && "Should be smaller or equal to scatterDimsToOperandDims size!");
       scatterIndice = broadcastsRes[0];
     } else {
+      std::reverse(broadcastsRes.begin(), broadcastsRes.end());
       auto concatOp = stablehlo::ConcatenateOp::create(
         opBuilder, 
         funcOp.getLoc(), 
@@ -645,6 +660,9 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       .Case<arith::AddFOp>([&](arith::AddFOp addFOp) {
         handleArithBinaryOp(tracking, opBuilder, funcOp, addFOp);
       })
+      .Case<arith::SubFOp>([&](arith::SubFOp subFOp) {
+        handleArithBinaryOp(tracking, opBuilder, funcOp, subFOp);
+      })
       .Case<arith::MulFOp>([&](arith::MulFOp mulFOp){
         handleArithBinaryOp(tracking, opBuilder, funcOp, mulFOp);
       })
@@ -656,6 +674,11 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       })
       .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp transposeOp){
         handleBuiltinOperators(tracking, opBuilder, funcOp, transposeOp);
+      })
+      .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop){
+        assert(tracking.valueMap.contains(nrop.getOperand()) && "Operand of NoReassocOp is supposed to be in ValueMap!");
+        // just ignore and pass to the result
+        tracking.valueMap.map(nrop.getResult(), tracking.valueMap.lookup(nrop.getOperand()));
       })
       // TODO: including other cases!
       .Default([](auto) {});
