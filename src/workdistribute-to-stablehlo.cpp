@@ -10,6 +10,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -49,6 +50,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
+#include <string>
 #include "utilities.h"
 
 using namespace mlir;
@@ -321,7 +323,13 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
 }
 
 
-static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::DesignateOp designateOp) {
+static void handleDesignateOp(
+  TrackingInfo& tracking, 
+  OpBuilder &opBuilder, 
+  func::FuncOp funcOp, 
+  hlfir::DesignateOp designateOp, 
+  llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
+) {
   auto isTriplet = designateOp.getIsTriplet();
   auto resultOperand = designateOp.getResult();
   auto memRef = designateOp.getMemref();
@@ -349,6 +357,25 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     //- %8 = "hlfir.designate"(%6#0, %1, %2, %1, %1, %0, %1, %7) <{is_triplet = array<i1: true, true>, operandSegmentSizes = array<i32: 1, 0, 6, 0, 1, 0>}> : (!fir.box<!fir.array<5x5xf64>>, index, index, index, index, index, index, !fir.shape<2>) -> !fir.box<!fir.array<2x5xf64>>
     auto indices = designateOp.getIndices();    
     assert(indices.size() >= 3 && indices.size() % 3 == 0 && "Unexpected Indices!");
+    auto rank = indices.size()/3;
+
+    // index shifts
+    auto defOp = llvm::dyn_cast<hlfir::DeclareOp>(designateOp.getMemref().getDefiningOp());
+    assert(defOp && "Defining Op of designateOp memref should be a declareOp!");
+
+    llvm::SmallVector<int> defaultShifts(rank, 0);
+    const llvm::SmallVector<int>* shifts;
+    auto ssOp = llvm::dyn_cast<fir::ShapeShiftOp>(defOp.getShape().getDefiningOp());
+    if(ssOp) {
+      auto it = sliceShiftMap.find(ssOp.getResult());
+      assert(it != sliceShiftMap.end() && "All shapeshifts should already have been recorded!");
+      shifts = &(it->getSecond());
+    } else {
+      shifts = &defaultShifts;
+    }    
+    assert((shifts->size() == rank) || 
+      (llvm::errs() << "Shifts size should be the same with dimension size! While shifts size: " <<  shifts->size() << ", while rank =" << rank, false));
+
     
     llvm::SmallVector<int64_t> sliceStartIdxVals;
     llvm::SmallVector<int64_t> sliceLimitIdxVals;
@@ -363,24 +390,22 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
       return constOp.value();
     };
 
-    for (int i = 0; i < indices.size(); i++) {
-      switch (i%3) {
-        case 0: 
-          sliceStartIdxVals.push_back(getI64Val(indices[i]) - 1); // Fortran's idx starts from 1
-          break;
-        case 1:
-          sliceLimitIdxVals.push_back(getI64Val(indices[i]));
-          break;
-        case 2:
-          assert(getI64Val(indices[i]) == 1 && "Only dealing with stride = 1 for now!!!");
-          sliceStrideIdxVals.push_back(getI64Val(indices[i]));
-          break;
-        default:
-          std::cerr << "Only to make it exhausitive \n";
-          std::exit(EXIT_FAILURE);
-      } 
+
+    // example, FortranSlice(-1, 2, 1) with shift -1, should be FortranSlice(1, 4, 1), should be stablehlo.slice(0, 4, 1)
+    // example, FortranSlice(1, 2, 1) with shift 0, should be FortranSlice(1, 2, 1), should be stablehlo.slice(0, 3, 1)
+    for (int i = 0; i < rank; i++) {
+      auto offSet = i * 3;
+
+      auto startIdxVal = getI64Val(indices[offSet]) - (*shifts)[i];   
+      auto limitIdxVal = getI64Val(indices[offSet+1]) - (*shifts)[i] + 1; // In stablehlo, the limit idx is not included 
+      assert(getI64Val(indices[offSet + 2]) == 1 && "Only dealing with stride = 1 for now!!!");
+      auto strideIdxVal = getI64Val(indices[offSet + 2]); 
+
+      sliceStartIdxVals.push_back(startIdxVal);
+      sliceLimitIdxVals.push_back(limitIdxVal);
+      sliceStrideIdxVals.push_back(strideIdxVal);
     }
-    
+       
     // create slice operation
     // we're not inserting in place, so donot set the insertion point of opBuilder
     
@@ -607,7 +632,8 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
 static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      OpBuilder &opBuilder, 
                                      func::FuncOp& funcOp, // TODO: do not need &
-                                     Operation *op) {
+                                     Operation *op,
+                                     llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
   llvm::dbgs() << "\n -> currOp: \n";
   op->print(llvm::dbgs());
   llvm::dbgs() << "\n";
@@ -645,7 +671,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
-        handleDesignateOp(tracking, opBuilder, funcOp, designateOp);
+        handleDesignateOp(tracking, opBuilder, funcOp, designateOp, sliceShiftMap);
       })
       .Case<hlfir::ApplyOp>([&](hlfir::ApplyOp applyOp){
         // example: %445 = "hlfir.apply"(%443, %arg9)  
@@ -703,7 +729,7 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 
 /// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 /// but should also be compatible with following code.
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp) {
+func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;
   func::FuncOp stableHLOFuncOp;
@@ -712,7 +738,7 @@ func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleO
     auto funcOp = createFunction(context, trackingInfo, inputOp);
     opBuilder.setInsertionPointToStart(&funcOp.front());
     inputOp->walk([&](Operation *op) {
-      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op);
+      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op, sliceShiftMap);
     });
     terminateFunction(trackingInfo, opBuilder, funcOp);
     stableHLOFuncOp = funcOp;
