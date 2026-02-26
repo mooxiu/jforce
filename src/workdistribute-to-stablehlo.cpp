@@ -416,10 +416,10 @@ static void handleDesignateOp(
     //     << "\n\tsliceStrideVal: "  << getI64Val(sliceStrideVal) 
     //     << "\n";
     
-    std::reverse(sliceStartIdxVals.begin(),  sliceStartIdxVals.end()); 
-    std::reverse(sliceLimitIdxVals.begin(),  sliceLimitIdxVals.end());
-    std::reverse(sliceStrideIdxVals.begin(),  sliceStrideIdxVals.end());
-
+    // std::reverse(sliceStartIdxVals.begin(),  sliceStartIdxVals.end()); 
+    // std::reverse(sliceLimitIdxVals.begin(),  sliceLimitIdxVals.end());
+    // std::reverse(sliceStrideIdxVals.begin(),  sliceStrideIdxVals.end());
+    
     assert(tracking.valueMap.contains(memRef) && "memRef should have corresponding value in StablehlO function!");
     auto memRefStablehlo = tracking.valueMap.lookup(memRef);
     auto stablehloSliceOp = stablehlo::SliceOp::create(
