@@ -397,7 +397,7 @@ static void handleDesignateOp(
     auto defOp = llvm::dyn_cast<hlfir::DeclareOp>(designateOp.getMemref().getDefiningOp());
     assert(defOp && "Defining Op of designateOp memref should be a declareOp!");
 
-    llvm::SmallVector<int> defaultShifts(rank, 0);
+    llvm::SmallVector<int> defaultShifts(rank, 1);
     const llvm::SmallVector<int>* shifts;
     auto ssOp = llvm::dyn_cast<fir::ShapeShiftOp>(defOp.getShape().getDefiningOp());
     if(ssOp) {
@@ -668,10 +668,10 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      func::FuncOp& funcOp, // TODO: do not need &
                                      Operation *op,
                                      llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
-  llvm::dbgs() << "\n -> currOp: \n";
-  op->print(llvm::dbgs());
-  llvm::dbgs() << "\n";
-
+  // llvm::dbgs() << "\n -> currOp: \n";
+  // op->print(llvm::dbgs());
+  // llvm::dbgs() << "\n";
+  //
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {
