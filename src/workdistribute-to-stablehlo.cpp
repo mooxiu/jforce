@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -49,6 +50,7 @@
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
+#include <numeric>
 #include <omp.h>
 #include <string>
 #include "utilities.h"
@@ -580,6 +582,7 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
               constOp.getResult(),
               opBuilder.getDenseI64ArrayAttr({}));
 
+          startIndicesSet.insert(sliceStartIdx);
           idxToBroadcastRes[sliceStartIdx] = broadCastOp.getResult();
         }
         updatesIndicesOfEachDim.push_back(idxToBroadcastRes.at(sliceStartIdx)); 
@@ -589,10 +592,10 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
 
     Value scatterIndice;
     if (scatterDimsToOperandDims.size() == 1) {
-      assert(startIndicesSet.size() == 1 && scatterDimsToOperandDims.size() == 1 && "Should be smaller or equal to scatterDimsToOperandDims size!");
+      assert(startIndicesSet.size() == 1 || 
+             (llvm::dbgs() << "Should be smaller or equal to scatterDimsToOperandDims size: " << startIndicesSet.size() << "\n", false));
       scatterIndice = updatesIndicesOfEachDim[0];
     } else {
-      // std::reverse(broadcastsRes.begin(), broadcastsRes.end());
       auto concatOp = stablehlo::ConcatenateOp::create(
         opBuilder, 
         funcOp.getLoc(), 
@@ -631,6 +634,29 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       /*unique_indices*/ BoolAttr::get(funcOp.getContext(), true)
     );
 
+    // // scatter is very bug prone, this is for debugging
+    // [&](){
+    //   llvm::dbgs() << "\n\nDebugging Info for scatterOp: \n";
+    //   llvm::dbgs() << "> Left side slice:\n";
+    //   LHSStablehloSliceVal.print(llvm::dbgs());
+    //   llvm::dbgs() << "\n> Right side slice:\n";
+    //   auto RHSStablehloSliceVal = llvm::dyn_cast<stablehlo::SliceOp>(RHSStablehloVal.getDefiningOp());
+    //   if (RHSStablehloSliceVal) {
+    //     RHSStablehloSliceVal.print(llvm::dbgs());
+    //   }
+    //
+    //   llvm::dbgs() << "\n Update Window Dims: ";
+    //   llvm::interleaveComma(updateWindowDims, llvm::dbgs());
+    //   llvm::dbgs() << "\n Scatter Dims To Operand Dims: ";
+    //   llvm::interleaveComma(scatterDimsToOperandDims, llvm::dbgs());
+    //
+    //   auto indices = llvm::dyn_cast<stablehlo::ConcatenateOp>(scatterIndice.getDefiningOp());
+    //   if (indices) {
+    //     llvm::dbgs() << "\n ScatterIndices(update indices): \n";
+    //     indices.print(llvm::dbgs());
+    //   }
+    // }(); 
+    //
     assert(scatterOp.getNumResults() == 1 && ":( I was thinking scatterOp should have one result here, but more?");
 
     // Insert computation block, in our case, just return the second one, which is the new created
