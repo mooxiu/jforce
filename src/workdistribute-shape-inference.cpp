@@ -304,10 +304,10 @@ void inferShape(
           }
         }
 
-        std::cerr << "\nBefore Prepro: ====================================\n";
+        // std::cerr << "\nBefore Prepro: ====================================\n";
         preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
 
-        std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
+        // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
 
         shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
       });
