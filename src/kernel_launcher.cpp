@@ -177,10 +177,11 @@ static PJRT_Device* getPJRTDevice(const PJRT_Api* api, PJRT_Client *client, Kern
   }
 }
 
-static void destroyPJRTBuffer(PJRT_Api *api, PJRT_Buffer *buffer) {
-  PJRT_Buffer_Destroy_Args args = {};
-  args.struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE;
-  args.buffer = buffer;
+static void destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *buffer) {
+  PJRT_Buffer_Destroy_Args args = {
+    .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+    .buffer = buffer
+  };
   auto err = api->PJRT_Buffer_Destroy(&args);
   checkPJRTError(api, err, "Destroy Buffer");
   return;
@@ -398,19 +399,40 @@ static void executeLoadedKernelExecutable(
     .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
   };
 
+  const int deviceCount = 1;
+
+  PJRT_Event* deviceCompleteEvents[deviceCount];
+
   PJRT_LoadedExecutable_Execute_Args leeas = {
     .struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE,// function and args
     .executable = exe,
     .options = &execute_options,
     .argument_lists = argLists, // [deviceCount][argCount], 
-    .num_devices = (size_t)1, // we have one device, and the output by this device is 1.
+    .num_devices = (size_t)deviceCount, // we have one device, and the output by this device is 1.
     .num_args = (size_t)in_args_count,
     .output_lists = outLists,
+    .device_complete_events = deviceCompleteEvents,
     .execute_device = device,
   };
   
   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
   checkPJRTError(api, executeErr, "Execute LoadedExecutable");
+
+  for(int i = 0; i < deviceCount; i++) {
+    PJRT_Event_Await_Args waitArgs = {
+      .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
+      .event = leeas.device_complete_events[i]
+    };
+    api->PJRT_Event_Await(&waitArgs);
+  } 
+
+  for (int i = 0; i < deviceCount; i++) {
+    PJRT_Event_Destroy_Args eda = {
+      .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
+      .event = leeas.device_complete_events[i]
+    };
+    api->PJRT_Event_Destroy(&eda);
+  }
 }
 
 static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetDevice deviceTy) {
@@ -432,7 +454,7 @@ void launchKernel(
   const uintptr_t JitCodePtr, 
   const std::string &kernelFuncStr
 ) {
-  auto api = JitManager::getInstance().getPJRTApi();
+  const PJRT_Api* api = JitManager::getInstance().getPJRTApi();
   auto client = getPJRTClient(api);
   auto device = getPJRTDevice(api, client, offloadingArgs);
   
@@ -491,7 +513,10 @@ void launchKernel(
     }
   }
 
-  // TODO: destory the buffers
+  for (int i = 0; i < argsBuffers.size(); i++) {
+    PJRT_Buffer* b = argsBuffers.at(i);
+    destroyPJRTBuffer(api, b);
+  }
   return;
 }
 
