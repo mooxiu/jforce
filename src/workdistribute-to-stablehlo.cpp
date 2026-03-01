@@ -269,7 +269,17 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
       );
       stablehloRes = stablehloMulOp.getResult();
     })
-  .Default([](auto){
+    .Case<arith::DivFOp>([&](arith::DivFOp){
+      auto stablehloDivOp = stablehlo::DivOp::create(
+        opBuilder,
+        funcOp.getLoc(),
+        targetType,
+        largerOperand,
+        smallerOperand 
+      );
+      stablehloRes = stablehloDivOp.getResult();
+    })
+    .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
       return;
     });
@@ -751,6 +761,9 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       })
       .Case<arith::MulFOp>([&](arith::MulFOp mulFOp){
         handleArithBinaryOp(tracking, opBuilder, funcOp, mulFOp);
+      })
+      .Case<arith::DivFOp>([&](arith::DivFOp divFOp){
+        handleArithBinaryOp(tracking, opBuilder, funcOp, divFOp);
       })
       .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
         handleBuiltinOperators(tracking, opBuilder, funcOp, matmulOp);
