@@ -93,7 +93,7 @@ static void preprocWithExistingPasses(
 }
 
 // Not a roboust transformation but works for now.
-static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
+static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
    // mapping from value to shape (a vector of each dimension)
   llvm::DenseMap<Value, llvm::SmallVector<int64_t>> shapeMap;
   // tracking shape constant
@@ -118,10 +118,38 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
         }
         shapeMap.insert(std::pair(sop.getResult(), sizes)); // %0 -> {1000, 1000}
       })
+      .Case<fir::ShapeShiftOp>([&](fir::ShapeShiftOp ssOp){
+        // In Fortran, the idx can start from any number, often we have shapeShiftOp
+        // %10 = fir.shape_shift %c-1, %c964, %c-1, %c965 : (index, index, index, index) -> !fir.shapeshift<2> 
+        // The shape is rank=2:
+        // - first rank: lower bound: %c-1, len: %c964
+        // - second rank: lower bound: %c-1, len: %c965
+        //
+        // TODO: the lower bound should also be stored for later usage: for example, when translating from `hlfir::desinateOp` to `stablehlo::slicingOp`
+        llvm::SmallVector<int64_t> shapeSizes;
+        llvm::SmallVector<int> shapeShifts;
+        assert(ssOp.getNumOperands()%2 == 0 && "ShapeShift should have even number of operands!");
+        shapeSizes.reserve(ssOp.getNumOperands()/2);
+
+        for (int i = 0; i < ssOp.getNumOperands(); i++) {
+          auto opr = ssOp.getOperand(i);
+          assert(constTrackingMap.contains(opr) && "Operand static value of shapeShift should be known!");
+          if (i % 2 == 0) {
+            auto idxLowerBound = constTrackingMap.at(opr);
+            shapeShifts.push_back(idxLowerBound);
+          } else {
+            auto dimSize = constTrackingMap.at(opr);
+            shapeSizes.push_back(dimSize);
+          }
+        }
+        shapeMap.insert(std::pair(ssOp.getResult(), shapeSizes)); // %10 -> {%c964, %c965}
+        sliceShiftMap.insert(std::pair(ssOp.getResult(), shapeShifts)); // %10 -> {%c-1, %c-1}
+      })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop){
         // Example: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<?x?xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<?x?xf64>>, !fir.ref<!fir.array<?x?xf64>>)
         // Objective: %1:2 = hlfir.declare %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<1000x1000xf64>>, !fir.shape<2>) -> (!fir.box<!fir.array<1000x1000xf64>>, !fir.ref<!fir.array<1000x1000xf64>>)
         if (isDynamicShape(dop.getResult(0).getType())) {
+          assert(shapeMap.contains(dop.getShape()) && "The shape of the declareOp has not been added!!!!");
           auto staticShape = shapeMap.at(dop.getShape());
 
           // propagate the shape of the results
@@ -231,47 +259,14 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
   return;
 }
 
-[[deprecated("Use `inferShape` function instead, it combines this one and `runShapeInference`")]]
-// TODO: 
-// - Should use target ptrs instead of host, but host has more info, should be changed to use target ptrs later
-// - Suppose ArgSizes 4 is shape constant
-void getShapeConstantMap(llvm::DenseMap<uint, uint>& shapeConstMap, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes) {
-  for (int i = 0; i < NumHostArgs; i++) {
-    auto ty = ArgTypes[i];
-    if (isLiteralTy(ty)) {
-      int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
-      shapeConstMap.insert(std::pair(i, constVal));
-    };
-  }    
-  return;
-}
-
-[[deprecated("Use `inferShape` function instead, it combines this one and `getShapeConstantMap`")]]
-// ShapeInference by tracking constant number
-void runShapeInference(MLIRContext* context, mlir::ModuleOp moduleOp, llvm::DenseMap<uint, uint>& constShapeMap){
-  mlir::PassManager pm(context);
-  OpBuilder opBuilder(context);
-  llvm::DenseMap<Value, int> valueMap;
-
-  moduleOp->walk([&](func::FuncOp funcOp){
-    for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      if (constShapeMap.contains(i)) {
-        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constShapeMap[i]));
-      }
-    }
-    preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
-    shapeInferenceInternal(opBuilder, funcOp);
-  });
-  return;
-}
-
 void inferShape(
   MLIRContext* ctx,
   ModuleOp moduleOp,
   int64_t NumHostArgs, 
   void** ArgBasePtrs, 
   int64_t* ArgSizes, 
-  int64_t* ArgTypes
+  int64_t* ArgTypes,
+  llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap 
 ) {
   // Key: index of the arguments of the function, value: if the argment is literal type, we know the value of the arg 
   llvm::DenseMap<uint, uint> shapeConstMap;
@@ -280,6 +275,7 @@ void inferShape(
   mlir::PassManager pm(ctx);
   OpBuilder opBuilder(ctx);
 
+  // some parameters containing the shape info are passed as pointer like
   moduleOp.walk([&](func::FuncOp funcOp){
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
       auto ty = ArgTypes[i];
@@ -304,14 +300,16 @@ void inferShape(
       .Case<func::FuncOp>([&](func::FuncOp funcOp){
         for (int i = 0; i < funcOp.getNumArguments(); i++) {
           if (shapeConstMap.contains(i)) {
-            valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap[i]));
+            valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap.at(i)));
           }
         }
+
+        // std::cerr << "\nBefore Prepro: ====================================\n";
         preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
 
         // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
 
-        shapeInferenceInternal(opBuilder, funcOp);
+        shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
       });
   });
   return;

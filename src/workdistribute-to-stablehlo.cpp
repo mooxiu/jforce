@@ -6,18 +6,23 @@
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -45,7 +50,9 @@
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
+#include <numeric>
 #include <omp.h>
+#include <string>
 #include "utilities.h"
 
 using namespace mlir;
@@ -91,6 +98,7 @@ public:
 ///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
 ///  "!fir.ref<f32>": convert to "tensor<f32>"
 ///  "!hlfir.expr<shape>: convert to tensor<shape>"
+[[deprecated("Should only be used when generating stablehlo op, and should reverse the dimensions")]]
 static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
   // If it's already a tensor type, then no need to convert
   if (llvm::isa<RankedTensorType>(srcTy)) {
@@ -103,13 +111,46 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
     return RankedTensorType::get(expTy.getShape(), expTy.getEleTy());
   })
   .Case<fir::BoxType>([](fir::BoxType bTy){
-    return convertBufferTyToTensorTy(bTy.getEleTy());
+    return convertToTensorTy(bTy.getEleTy());
   })
   .Case<fir::ReferenceType>([](fir::ReferenceType refTy){
-    return convertBufferTyToTensorTy(refTy.getEleTy());
+    return convertToTensorTy(refTy.getEleTy());
   })
   .Case<fir::SequenceType>([](fir::SequenceType seqTy){
     return RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
+  })
+  .Default([&](auto scTy){
+    // Suppose this is a scalar type
+    return RankedTensorType::get({}, scTy);
+  });
+}
+
+///  Example of source type:
+///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
+///  "!fir.ref<!fir.array<10x20xf32>>": convert to "tensor<20x10xf32>", notice it is reversed
+///  "!fir.ref<f32>": convert to "tensor<f32>"
+static RankedTensorType toCorrespondingTensorTy(mlir::Type srcTy) {
+  // If it's already a tensor type, then no need to convert
+  if (llvm::isa<RankedTensorType>(srcTy)) {
+    return llvm::dyn_cast<RankedTensorType>(srcTy);
+  }
+
+  return llvm::TypeSwitch<mlir::Type, RankedTensorType>(srcTy)
+  .Case<hlfir::ExprType>([](hlfir::ExprType expTy){
+    auto shape = llvm::to_vector(expTy.getShape());
+    std::reverse(shape.begin(), shape.end());
+    return RankedTensorType::get(shape, expTy.getEleTy());
+  })
+  .Case<fir::BoxType>([](fir::BoxType bTy){
+    return toCorrespondingTensorTy(bTy.getEleTy());
+  })
+  .Case<fir::ReferenceType>([](fir::ReferenceType refTy){
+    return toCorrespondingTensorTy(refTy.getEleTy());
+  })
+  .Case<fir::SequenceType>([](fir::SequenceType seqTy){
+    auto shape = llvm::to_vector(seqTy.getShape());
+    std::reverse(shape.begin(), shape.end());
+    return RankedTensorType::get(shape, seqTy.getEleTy());
   })
   .Default([&](auto scTy){
     // Suppose this is a scalar type
@@ -132,7 +173,7 @@ static func::FuncOp createFunction(mlir::MLIRContext* context,
 
   mlir::SmallVector<Type> argsTypes;
   for (const auto& arg : block.getArguments()) {
-    argsTypes.push_back(convertBufferTyToTensorTy(arg.getType()));
+    argsTypes.push_back(toCorrespondingTensorTy(arg.getType()));
   }
 
   auto funcType = mlir::FunctionType::get(context, argsTypes, argsTypes);
@@ -174,8 +215,8 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
   Value operand2Src = tracking.valueMap.lookup(operand2);
 
 
-  RankedTensorType o1Type = convertBufferTyToTensorTy(operand1Src.getType()); 
-  RankedTensorType o2Type = convertBufferTyToTensorTy(operand2Src.getType()); 
+  RankedTensorType o1Type = toCorrespondingTensorTy(operand1Src.getType()); 
+  RankedTensorType o2Type = toCorrespondingTensorTy(operand2Src.getType()); 
   assert(o1Type.hasRank() && o2Type.hasRank());
 
   Value largerOperand, smallerOperand; 
@@ -186,7 +227,7 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
     largerOperand = operand2Src;
     smallerOperand = operand1Src;
   }
-  RankedTensorType targetType = convertBufferTyToTensorTy(largerOperand.getType());
+  RankedTensorType targetType = toCorrespondingTensorTy(largerOperand.getType());
 
   // insert the broadcast
   if (o1Type.getRank() != o2Type.getRank()) {
@@ -207,7 +248,17 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         smallerOperand
       );
       stablehloRes = stablehloAddOp.getResult();
-          })
+    })
+    .Case<arith::SubFOp>([&](arith::SubFOp subOp){
+      auto stablehloSubOp = stablehlo::SubtractOp::create(
+        opBuilder,
+        funcOp.getLoc(),
+        targetType,
+        largerOperand,
+        smallerOperand
+      );
+      stablehloRes = stablehloSubOp.getResult();
+    })
     .Case<arith::MulFOp>([&](arith::MulFOp){
       auto stablehloMulOp = stablehlo::MulOp::create(
         opBuilder, 
@@ -218,7 +269,17 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
       );
       stablehloRes = stablehloMulOp.getResult();
     })
-  .Default([](auto){
+    .Case<arith::DivFOp>([&](arith::DivFOp){
+      auto stablehloDivOp = stablehlo::DivOp::create(
+        opBuilder,
+        funcOp.getLoc(),
+        targetType,
+        largerOperand,
+        smallerOperand 
+      );
+      stablehloRes = stablehloDivOp.getResult();
+    })
+    .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
       return;
     });
@@ -256,8 +317,8 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
       // %36 = hlfir.matmul %33#0 %35#0 {fastmath = #arith.fastmath<contract>} : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
       auto op0 = tracking.valueMap.lookup(mmOp.getOperand(0));
       auto op1 = tracking.valueMap.lookup(mmOp.getOperand(1));
-      auto op0Ty = convertBufferTyToTensorTy(op0.getType());
-      auto op1Ty = convertBufferTyToTensorTy(op1.getType());
+      auto op0Ty = toCorrespondingTensorTy(op0.getType());
+      auto op1Ty = toCorrespondingTensorTy(op1.getType());
       auto resTy = RankedTensorType::get(
         llvm::SmallVector<int64_t>{op0Ty.getShape()[0], op1Ty.getShape()[1]}, 
         op0Ty.getElementType()
@@ -276,8 +337,8 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
         opBuilder,
         funcOp.getLoc(),
         resTy,
-        op0,
         op1,
+        op0,
         dims,
         config,
         algo
@@ -287,7 +348,7 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
     .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp tOp){
       // %24 = hlfir.transpose %23#0 : (!fir.box<!fir.array<?x?xf64>>) -> !hlfir.expr<?x?xf64>
       auto op = tracking.valueMap.lookup(tOp.getOperand());
-      auto opTy = convertBufferTyToTensorTy(op.getType());
+      auto opTy = toCorrespondingTensorTy(op.getType());
       auto resTy = RankedTensorType::get(
         llvm::SmallVector<int64_t>{opTy.getShape()[1], opTy.getShape()[0]}, 
         opTy.getElementType()
@@ -308,7 +369,13 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
 }
 
 
-static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::FuncOp funcOp, hlfir::DesignateOp designateOp) {
+static void handleDesignateOp(
+  TrackingInfo& tracking, 
+  OpBuilder &opBuilder, 
+  func::FuncOp funcOp, 
+  hlfir::DesignateOp designateOp, 
+  llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
+) {
   auto isTriplet = designateOp.getIsTriplet();
   auto resultOperand = designateOp.getResult();
   auto memRef = designateOp.getMemref();
@@ -329,14 +396,38 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     // Often inside of an elemental operation
     tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(memRef));
   } else {
-    // example: %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+    // example 1: 1D slicing %1#0 [%c1: %c5: %c1]
+    // - %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
+    //
+    // example 2: 2D slicing %6#0 []
+    //- %8 = "hlfir.designate"(%6#0, %1, %2, %1, %1, %0, %1, %7) <{is_triplet = array<i1: true, true>, operandSegmentSizes = array<i32: 1, 0, 6, 0, 1, 0>}> : (!fir.box<!fir.array<5x5xf64>>, index, index, index, index, index, index, !fir.shape<2>) -> !fir.box<!fir.array<2x5xf64>>
     auto indices = designateOp.getIndices();    
-    assert(indices.size() >= 3 && "Unexpected Indices!");
-    auto sliceStartIdxVal = indices[0];  // is mlir::Value
-    auto sliceLimitIdxVal = indices[1]; 
-    auto sliceStrideVal = indices[2]; 
+    assert(indices.size() >= 3 && indices.size() % 3 == 0 && "Unexpected Indices!");
+    auto rank = indices.size()/3;
+
+    // index shifts
+    auto defOp = llvm::dyn_cast<hlfir::DeclareOp>(designateOp.getMemref().getDefiningOp());
+    assert(defOp && "Defining Op of designateOp memref should be a declareOp!");
+
+    llvm::SmallVector<int> defaultShifts(rank, 1);
+    const llvm::SmallVector<int>* shifts;
+    auto ssOp = llvm::dyn_cast<fir::ShapeShiftOp>(defOp.getShape().getDefiningOp());
+    if(ssOp) {
+      auto it = sliceShiftMap.find(ssOp.getResult());
+      assert(it != sliceShiftMap.end() && "All shapeshifts should already have been recorded!");
+      shifts = &(it->getSecond());
+    } else {
+      shifts = &defaultShifts;
+    }    
+    assert((shifts->size() == rank) || 
+      (llvm::errs() << "Shifts size should be the same with dimension size! While shifts size: " <<  shifts->size() << ", while rank =" << rank, false));
+
     
-    auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
+    llvm::SmallVector<int64_t> sliceStartIdxVals;
+    llvm::SmallVector<int64_t> sliceLimitIdxVals;
+    llvm::SmallVector<int64_t> sliceStrideIdxVals;
+
+   auto getI64Val = [](const mlir::Value& idxVal) -> int64_t {
       arith::ConstantIndexOp constOp = llvm::dyn_cast<arith::ConstantIndexOp>(idxVal.getDefiningOp());
       if (!constOp) {
         std::cerr << "This is not constantOp, you stupid!\n"; 
@@ -345,6 +436,22 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
       return constOp.value();
     };
 
+
+    // example, FortranSlice(-1, 2, 1) with shift -1, should be FortranSlice(1, 4, 1), should be stablehlo.slice(0, 4, 1)
+    // example, FortranSlice(1, 2, 1) with shift 0, should be FortranSlice(1, 2, 1), should be stablehlo.slice(0, 3, 1)
+    for (int i = 0; i < rank; i++) {
+      auto offSet = i * 3;
+
+      auto startIdxVal = getI64Val(indices[offSet]) - (*shifts)[i];   
+      auto limitIdxVal = getI64Val(indices[offSet+1]) - (*shifts)[i] + 1; // In stablehlo, the limit idx is not included 
+      assert(getI64Val(indices[offSet + 2]) == 1 && "Only dealing with stride = 1 for now!!!");
+      auto strideIdxVal = getI64Val(indices[offSet + 2]); 
+
+      sliceStartIdxVals.push_back(startIdxVal);
+      sliceLimitIdxVals.push_back(limitIdxVal);
+      sliceStrideIdxVals.push_back(strideIdxVal);
+    }
+       
     // create slice operation
     // we're not inserting in place, so donot set the insertion point of opBuilder
     
@@ -355,17 +462,20 @@ static void handleDesignateOp(TrackingInfo& tracking, OpBuilder &opBuilder, func
     //     << "\n\tsliceStrideVal: "  << getI64Val(sliceStrideVal) 
     //     << "\n";
     
-
+    std::reverse(sliceStartIdxVals.begin(),  sliceStartIdxVals.end()); 
+    std::reverse(sliceLimitIdxVals.begin(),  sliceLimitIdxVals.end());
+    std::reverse(sliceStrideIdxVals.begin(),  sliceStrideIdxVals.end());
+    
     assert(tracking.valueMap.contains(memRef) && "memRef should have corresponding value in StablehlO function!");
     auto memRefStablehlo = tracking.valueMap.lookup(memRef);
     auto stablehloSliceOp = stablehlo::SliceOp::create(
       opBuilder, 
       funcOp.getLoc(),
-      convertBufferTyToTensorTy(resultOperand.getType()),
+      toCorrespondingTensorTy(resultOperand.getType()),
       memRefStablehlo,
-      {getI64Val(sliceStartIdxVal) - 1}, // Need to transforming from fortran's index!
-      {getI64Val(sliceLimitIdxVal)},
-      {getI64Val(sliceStrideVal)} 
+      sliceStartIdxVals,
+      sliceLimitIdxVals,
+      sliceStrideIdxVals
     );
     tracking.valueMap.map(resultOperand, stablehloSliceOp.getResult());
   }
@@ -417,11 +527,6 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
   // Deciding if we're slicing the LHS
   if (LHSStablehloVal.getDefiningOp() && llvm::isa<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp())) {
     auto LHSStablehloSliceVal = llvm::dyn_cast<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp());
-    assert(
-      LHSStablehloSliceVal.getStrides().size() == 1 && 
-      LHSStablehloSliceVal.getStartIndices().size() == 1 && 
-      LHSStablehloSliceVal.getLimitIndices().size() == 1 && 
-      "Only deal with 1D tensor for now!");
     assert(LHSStablehloSliceVal.getStrides()[0] == 1 && "Only deal with continuous slice for now!");
     // in continuous case, we only need to patch once, so instead of:
     //
@@ -441,30 +546,90 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
     //      scatter_dims_to_operand_dims = [0] -> scatter indices to 
     //    }
     // ```
+    //
+    // In general, here is the rule:
+    // y[ya_0:yb_0, ..., ya_n-1: yb_n-1] = x
+    // x is already sliced, so we don't care about its starting and limiting idx
+    // Here's how we set indices, and scatter_dims_to_operand_dims.
+    // ```
+    // for (int i = 0; i < n; i++) {
+    //  update_window_dims.push_back(i); // if updating this dimension, we need this
+    //  if ((yb_i - ya_i) < y.dim[i].size()) {
+    //    // just updating part
+    //    indices.push_back(y_ai);
+    //    scatter_dims_to_operand_dims(i);
+    //  }
+    // }
+    //
     
-    int64_t lhsStartIdx = LHSStablehloSliceVal.getStartIndices()[0]; 
-    auto constOp = stablehlo::ConstantOp::create(
-      opBuilder, 
-      funcOp.getLoc(), 
-      DenseElementsAttr::get(RankedTensorType::get({}, opBuilder.getI64Type()), lhsStartIdx));
-    auto broadCastOp = stablehlo::BroadcastInDimOp::create(
-      opBuilder,
-      funcOp.getLoc(),
-      RankedTensorType::get({1}, opBuilder.getI64Type()), // from <i64> to <1xi64>
-      constOp.getResult(),
-      opBuilder.getDenseI64ArrayAttr({}));
 
+    llvm::DenseSet<int> startIndicesSet;
+    llvm::SmallVector<Value> updatesIndicesOfEachDim;
+    llvm::DenseMap<int, Value> idxToBroadcastRes;
+    llvm::SmallVector<int64_t> updateWindowDims;
+    llvm::SmallVector<int64_t> scatterDimsToOperandDims;
+    auto LHSUnderlineTensorShape = llvm::dyn_cast<mlir::ShapedType>(LHSStablehloSliceVal.getOperand().getType());
+    int updateDims = LHSStablehloSliceVal.getStartIndices().size();
+    assert(LHSUnderlineTensorShape.getRank() == updateDims && "UnderlineTensor should have rank the same with updateDims!");
+    for (int i = 0; i < updateDims; i++) {
+      auto sliceStartIdx = LHSStablehloSliceVal.getStartIndices()[i];  
+      auto sliceLimitIdx = LHSStablehloSliceVal.getLimitIndices()[i];
+      updateWindowDims.push_back(i);
+      
+      if (sliceStartIdx > 0 || (sliceLimitIdx - sliceStartIdx) < LHSUnderlineTensorShape.getDimSize(i)) {
+        // partial update in this dimension
+        //
+        if (!startIndicesSet.contains(sliceStartIdx)) {
+          auto constOp = stablehlo::ConstantOp::create(
+              opBuilder, 
+              funcOp.getLoc(), 
+              DenseElementsAttr::get(RankedTensorType::get({}, opBuilder.getI64Type()), sliceStartIdx));
+
+          auto broadCastOp = stablehlo::BroadcastInDimOp::create(
+              opBuilder,
+              funcOp.getLoc(),
+              RankedTensorType::get({1}, opBuilder.getI64Type()), // from <i64> to <1xi64>
+              constOp.getResult(),
+              opBuilder.getDenseI64ArrayAttr({}));
+
+          startIndicesSet.insert(sliceStartIdx);
+          idxToBroadcastRes[sliceStartIdx] = broadCastOp.getResult();
+        }
+        updatesIndicesOfEachDim.push_back(idxToBroadcastRes.at(sliceStartIdx)); 
+        scatterDimsToOperandDims.push_back(i);    
+      } 
+    }
+
+    Value scatterIndice;
+    if (scatterDimsToOperandDims.size() == 1) {
+      assert(startIndicesSet.size() == 1 || 
+             (llvm::dbgs() << "Should be smaller or equal to scatterDimsToOperandDims size: " << startIndicesSet.size() << "\n", false));
+      scatterIndice = updatesIndicesOfEachDim[0];
+    } else {
+      auto concatOp = stablehlo::ConcatenateOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        mlir::RankedTensorType::get(
+          updatesIndicesOfEachDim.size(), 
+          toCorrespondingTensorTy(updatesIndicesOfEachDim[0].getType()).getElementType()),// mlir::Type resultType0 
+        updatesIndicesOfEachDim,
+        opBuilder.getI64IntegerAttr(0)); // concat in dimension 0
+      scatterIndice = concatOp.getResult();
+    }
+    
     auto RHSStablehloVal = tracking.valueMap.lookup(RHS); 
     assert(RHSStablehloVal && ":( RHS of assignOP is not in valueMap, you have to put it in the valuemap!\n");
 
+    // static ScatterDimensionNumbersAttr get(::mlir::MLIRContext *context, ::llvm::ArrayRef<int64_t> updateWindowDims, ::llvm::ArrayRef<int64_t> insertedWindowDims, ::llvm::ArrayRef<int64_t> inputBatchingDims, ::llvm::ArrayRef<int64_t> scatterIndicesBatchingDims, ::llvm::ArrayRef<int64_t> scatterDimsToOperandDims, int64_t indexVectorDim);
+     
     auto scatterDimNums = stablehlo::ScatterDimensionNumbersAttr::get(
-      funcOp.getContext(),
-      {0},
-      {},
-      {},
-      {},
-      {0}, 
-      0
+      /*context*/ funcOp.getContext(),
+      /*updateWindowDims*/ updateWindowDims,
+      /*insertedWindowDims*/ {},
+      /*inputBatchingDims*/ {},
+      /*scatterIndicesBatchingDims*/ {},
+      /*scatterDimsToOperandDims*/ scatterDimsToOperandDims, 
+      /*indexVectorDim*/ 0
     );
 
     auto scatterOp = stablehlo::ScatterOp::create(
@@ -472,13 +637,36 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       funcOp.getLoc(),
       LHSStablehloSliceVal.getOperand().getType(), // result Type
       LHSStablehloSliceVal.getOperand(), // refer to the original array, which is the input
-      broadCastOp.getResult(),
+      scatterIndice,
       RHSStablehloVal,
       /*scatter_dimension_numbers=*/ scatterDimNums,
       /*indices_are_sorted*/ BoolAttr::get(funcOp.getContext(), true), // Following 2 are set to true because of referencing JAX generated, can be fixed after knowing more information
       /*unique_indices*/ BoolAttr::get(funcOp.getContext(), true)
     );
 
+    // // scatter is very bug prone, this is for debugging
+    // [&](){
+    //   llvm::dbgs() << "\n\nDebugging Info for scatterOp: \n";
+    //   llvm::dbgs() << "> Left side slice:\n";
+    //   LHSStablehloSliceVal.print(llvm::dbgs());
+    //   llvm::dbgs() << "\n> Right side slice:\n";
+    //   auto RHSStablehloSliceVal = llvm::dyn_cast<stablehlo::SliceOp>(RHSStablehloVal.getDefiningOp());
+    //   if (RHSStablehloSliceVal) {
+    //     RHSStablehloSliceVal.print(llvm::dbgs());
+    //   }
+    //
+    //   llvm::dbgs() << "\n Update Window Dims: ";
+    //   llvm::interleaveComma(updateWindowDims, llvm::dbgs());
+    //   llvm::dbgs() << "\n Scatter Dims To Operand Dims: ";
+    //   llvm::interleaveComma(scatterDimsToOperandDims, llvm::dbgs());
+    //
+    //   auto indices = llvm::dyn_cast<stablehlo::ConcatenateOp>(scatterIndice.getDefiningOp());
+    //   if (indices) {
+    //     llvm::dbgs() << "\n ScatterIndices(update indices): \n";
+    //     indices.print(llvm::dbgs());
+    //   }
+    // }(); 
+    //
     assert(scatterOp.getNumResults() == 1 && ":( I was thinking scatterOp should have one result here, but more?");
 
     // Insert computation block, in our case, just return the second one, which is the new created
@@ -487,7 +675,7 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
 
     auto& computeRegion = scatterOp.getUpdateComputation();
     auto computaeBlock = opBuilder.createBlock(&computeRegion);
-    auto elementTy = convertBufferTyToTensorTy(LHSStablehloSliceVal.getType().getElementType()); 
+    auto elementTy = toCorrespondingTensorTy(LHSStablehloSliceVal.getType().getElementType()); 
     computaeBlock->addArgument(elementTy, funcOp.getLoc());
     computaeBlock->addArgument(elementTy, funcOp.getLoc());
     stablehlo::ReturnOp::create(opBuilder, funcOp.getLoc(), {computaeBlock->getArgument(1)});
@@ -514,11 +702,12 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
 static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      OpBuilder &opBuilder, 
                                      func::FuncOp& funcOp, // TODO: do not need &
-                                     Operation *op) {
-  // llvm::dbgs() << "-> currOp: \n";
+                                     Operation *op,
+                                     llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
+  // llvm::dbgs() << "\n -> currOp: \n";
   // op->print(llvm::dbgs());
   // llvm::dbgs() << "\n";
-
+  //
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {
@@ -552,7 +741,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
-        handleDesignateOp(tracking, opBuilder, funcOp, designateOp);
+        handleDesignateOp(tracking, opBuilder, funcOp, designateOp, sliceShiftMap);
       })
       .Case<hlfir::ApplyOp>([&](hlfir::ApplyOp applyOp){
         // example: %445 = "hlfir.apply"(%443, %arg9)  
@@ -567,8 +756,14 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       .Case<arith::AddFOp>([&](arith::AddFOp addFOp) {
         handleArithBinaryOp(tracking, opBuilder, funcOp, addFOp);
       })
+      .Case<arith::SubFOp>([&](arith::SubFOp subFOp) {
+        handleArithBinaryOp(tracking, opBuilder, funcOp, subFOp);
+      })
       .Case<arith::MulFOp>([&](arith::MulFOp mulFOp){
         handleArithBinaryOp(tracking, opBuilder, funcOp, mulFOp);
+      })
+      .Case<arith::DivFOp>([&](arith::DivFOp divFOp){
+        handleArithBinaryOp(tracking, opBuilder, funcOp, divFOp);
       })
       .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
         handleBuiltinOperators(tracking, opBuilder, funcOp, matmulOp);
@@ -578,6 +773,11 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       })
       .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp transposeOp){
         handleBuiltinOperators(tracking, opBuilder, funcOp, transposeOp);
+      })
+      .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop){
+        assert(tracking.valueMap.contains(nrop.getOperand()) && "Operand of NoReassocOp is supposed to be in ValueMap!");
+        // just ignore and pass to the result
+        tracking.valueMap.map(nrop.getResult(), tracking.valueMap.lookup(nrop.getOperand()));
       })
       // TODO: including other cases!
       .Default([](auto) {});
@@ -602,7 +802,7 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 
 /// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 /// but should also be compatible with following code.
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp) {
+func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;
   func::FuncOp stableHLOFuncOp;
@@ -611,7 +811,7 @@ func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleO
     auto funcOp = createFunction(context, trackingInfo, inputOp);
     opBuilder.setInsertionPointToStart(&funcOp.front());
     inputOp->walk([&](Operation *op) {
-      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op);
+      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op, sliceShiftMap);
     });
     terminateFunction(trackingInfo, opBuilder, funcOp);
     stableHLOFuncOp = funcOp;
