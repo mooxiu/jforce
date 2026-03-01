@@ -687,6 +687,10 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
     auto defOp = llvm::dyn_cast<hlfir::DesignateOp>(LHS.getDefiningOp());
     assert(tracking.valueMap.contains(defOp.getMemref()) && "defOp's memref should be in valueMap!");
     assert(tracking.argsTrackingMap.contains(tracking.valueMap.lookup(defOp.getMemref())) && "Can find a tracking from arg!");
+    
+    // when using the LHS later, need to use corresponding value of RHS
+    tracking.valueMap.map(LHS, tracking.valueMap.lookup(RHS));
+
     tracking.valueMap.map(defOp.getMemref(), scatterOp.getResult(0));
   } else {
     // Old logic here when assignOp is to whole array, may also need to fix
