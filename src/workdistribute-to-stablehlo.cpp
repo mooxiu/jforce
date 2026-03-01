@@ -111,10 +111,10 @@ static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
     return RankedTensorType::get(expTy.getShape(), expTy.getEleTy());
   })
   .Case<fir::BoxType>([](fir::BoxType bTy){
-    return convertToTensorTy(bTy.getEleTy());
+    return convertBufferTyToTensorTy(bTy.getEleTy());
   })
   .Case<fir::ReferenceType>([](fir::ReferenceType refTy){
-    return convertToTensorTy(refTy.getEleTy());
+    return convertBufferTyToTensorTy(refTy.getEleTy());
   })
   .Case<fir::SequenceType>([](fir::SequenceType seqTy){
     return RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
