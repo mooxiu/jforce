@@ -8,7 +8,7 @@ cp ${XLA_PATH}/xla/pjrt/c/pjrt_c_api.h ./third_party/headers/
 ```
 But I think most header files are not needed, only `pjrt_c_api.h` is the single most important one.
 
-### Copy Protos and Compile Them
+### Copy Protos
 
 > Prerequest: need to have `protoc`
 > - Install using package manager is the simplest, just follow: https://protobuf.dev/installation/
@@ -57,7 +57,8 @@ bazel build --config=cuda -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
 ```
 
 ### Other things
-- `absl` is required by protobuf files
+- Protobufs are compiled by "FETCH_CONTENT" in CMAKE, therefore there's no need to manually configure protoc.
+    - Building the project will triggering building protoc, therefore the first building time is long.
 
 
 ## Preparation 2: LLVM, StableHLO and Others 
@@ -66,18 +67,80 @@ bazel build --config=cuda -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
 - Need to build StableHLO based on MLIR
 
 
-## Compile
+### Build LLVM && MLIR
+
+```sh
+cmake ../llvm \
+  -G Ninja \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DLLVM_ENABLE_PROJECTS="llvm;clang;lld;flang;mlir" \
+  -DLLVM_ENABLE_RUNTIMES="openmp;offload" \
+	-DLLVM_RUNTIME_TARGETS="default;amdgcn-amd-amdhsa;nvptx64-nvidia-cuda" \
+  -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU" \
+  -DRUNTIMES_nvptx64-nvidia-cuda_LLVM_ENABLE_RUNTIMES=openmp \
+  -DRUNTIMES_amdgcn-amd-amdhsa_LLVM_ENABLE_RUNTIMES=openmp \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_ENABLE_ASSERTIONS=OFF \
+  -DLLVM_USE_LINKER=lld \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DLLVM_OPTIMIZED_TABLEGEN=ON \
+  -DOMPTARGET_DEBUG=OFF \
+  -DLIBOMPTARGET_ENABLE_DEBUG=OFF \
+  -DCMAKE_INSTALL_PREFIX=$HOME/opt/llvm-project/release/install 
+
+# Remember to install!
+ninja install
+```
+
+
+
+### Build Stablehlo
+
+This is adpated from https://github.com/mooxiu/stablehlo.
+
+
+```sh
+mkdir -p build && cd build
+
+cmake .. -GNinja \
+  -DLLVM_ENABLE_LLD='ON' \
+  -DCMAKE_BUILD_TYPE='Release' \
+  -DLLVM_ENABLE_ASSERTIONS='OFF' \
+  -DSTABLEHLO_ENABLE_BINDINGS_PYTHON='OFF' \
+  -DMLIR_DIR=$HOME/projects/llvm-project/build/lib/cmake/mlir
+
+cmake --build .
+```
+
+This is built for release, we can check this by:
+```sh
+cd build/lib
+nm -u libStablehloOps.a | grep assert
+```
+should print nothing.
+
+
+### Compile This project
 
 ```sh
 mkdir build && cd build
 
-# this may fail if protoc not found
 cmake -G Ninja ./..
-# replace the path with the place protobuf installed
-cmake -G Ninja ./.. -DCMAKE_PREFIX_PATH=$HOME/opt/protobuf
 
 ninja
 ```
+
+The project is release type by default.
+If want to build in Debug mode, use `cmake --build build -DCMAKE_BUILD_TYPE="Debug"`.
+
+Confirm the build mode by:
+```sh
+nm -u libjit-code-executor.so | grep assert
+```
+if nothing is printed, then this is built in release mode.
+
 
 ## Run on GPU 
 

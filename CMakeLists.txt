@@ -21,7 +21,9 @@ set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C
 project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+if (no CMAKE_BUILD_TYPE) 
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 
 # -------------------- Find MLIR, LLVM, Clang, Flang --------------------  
