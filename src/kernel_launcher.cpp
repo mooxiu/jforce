@@ -477,23 +477,25 @@ void launchKernel(
   // Execute the kernel
   executeLoadedKernelExecutable(api, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
 
-  PJRT_Buffer_ReadyEvent_Args* eventArgs[offloadingArgs->inputArgCount];
-  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
-    PJRT_Buffer_ReadyEvent_Args eventArg = {};
-    eventArgs[i] = &eventArg;
-    eventArg.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
-    eventArg.buffer = argsBuffersList[0][i];
-    api->PJRT_Buffer_ReadyEvent(&eventArg);
-  }
-    
-  for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
-    // Wait for the event to complete
-    PJRT_Event_Await_Args waitArgs = {};
-    waitArgs.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
-    waitArgs.event = eventArgs[i]->event;
-    api->PJRT_Event_Await(&waitArgs); 
-  }
 
+  // Already wait in above execution!
+  // PJRT_Buffer_ReadyEvent_Args* eventArgs[offloadingArgs->inputArgCount];
+  // for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
+  //   PJRT_Buffer_ReadyEvent_Args eventArg = {};
+  //   eventArgs[i] = &eventArg;
+  //   eventArg.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
+  //   eventArg.buffer = argsBuffersList[0][i];
+  //   api->PJRT_Buffer_ReadyEvent(&eventArg);
+  // }
+  //
+  // for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
+  //   // Wait for the event to complete
+  //   PJRT_Event_Await_Args waitArgs = {};
+  //   waitArgs.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
+  //   waitArgs.event = eventArgs[i]->event;
+  //   api->PJRT_Event_Await(&waitArgs); 
+  // }
+  //
 
   // After Execution, the data may not be updated in-place!!!!!
   for (int i = 0; i < argsBuffers.size(); i++) {
