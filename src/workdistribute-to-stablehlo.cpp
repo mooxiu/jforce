@@ -249,16 +249,6 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
       );
       stablehloRes = stablehloAddOp.getResult();
     })
-    .Case<arith::SubFOp>([&](arith::SubFOp subOp){
-      auto stablehloSubOp = stablehlo::SubtractOp::create(
-        opBuilder,
-        funcOp.getLoc(),
-        targetType,
-        largerOperand,
-        smallerOperand
-      );
-      stablehloRes = stablehloSubOp.getResult();
-    })
     .Case<arith::MulFOp>([&](arith::MulFOp){
       auto stablehloMulOp = stablehlo::MulOp::create(
         opBuilder, 
@@ -269,15 +259,44 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
       );
       stablehloRes = stablehloMulOp.getResult();
     })
+    // Can not exchange
+    .Case<arith::SubFOp>([&](arith::SubFOp subOp){
+      if (o1Type.getRank() >= o2Type.getRank()){
+        stablehloRes = stablehlo::SubtractOp::create(
+          opBuilder,
+          funcOp.getLoc(),
+          targetType,
+          largerOperand,
+          smallerOperand
+        ).getResult();
+      } else {
+        stablehloRes = stablehlo::SubtractOp::create(
+          opBuilder,
+          funcOp.getLoc(),
+          targetType,
+          smallerOperand,
+          largerOperand
+        ).getResult();
+      }
+    })
     .Case<arith::DivFOp>([&](arith::DivFOp){
-      auto stablehloDivOp = stablehlo::DivOp::create(
-        opBuilder,
-        funcOp.getLoc(),
-        targetType,
-        operand1Src,
-        operand2Src
-      );
-      stablehloRes = stablehloDivOp.getResult();
+      if (o1Type.getRank() >= o2Type.getRank()) {
+        stablehloRes = stablehlo::DivOp::create(
+          opBuilder,
+          funcOp.getLoc(),
+          targetType,
+          largerOperand,
+          smallerOperand
+        ).getResult();
+      } else {
+        stablehloRes = stablehlo::DivOp::create(
+          opBuilder,
+          funcOp.getLoc(),
+          targetType,
+          smallerOperand,
+          largerOperand
+        ).getResult();
+      }
     })
     .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
