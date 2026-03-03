@@ -304,7 +304,6 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
     });
 
   tracking.valueMap.map(result, stablehloRes);
-  tracking.argsTrackingMap.map(stablehloRes, result);
   return;
 }
 

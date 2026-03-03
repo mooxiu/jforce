@@ -87,11 +87,13 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgNames) {
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
+  // llvm::dbgs() << "\nreceive a jit call\n";
   
   // Parse JitCode to ModuleOp
   MLIRContext* ctx = JitManager::getInstance().getContext();
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   ModuleOp moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
+  // llvm::dbgs() << "\nget its moduleOp\n";
 
 
   // std::cerr << "\nBefore inferShape: ---------------------------\n";
@@ -115,16 +117,19 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   llvm::DenseMap<Value, llvm::SmallVector<int>> sliceShiftMap; 
 
   inferShape(ctx, moduleOp, NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes, sliceShiftMap);
-
-  // std::cerr << "\nAfter Shape Infer: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(moduleOp) << "\n";
+  // llvm::dbgs() << "\n after shape infer\n";
+  // llvm::dbgs() << "\nAfter Shape Infer: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(moduleOp) << "\n";
 
   func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp, sliceShiftMap);
+  // llvm::dbgs() << "\n after lowering to workdistribute\n";
   // std::cerr << "\nAfter Workdistribute: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
 
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
+  // llvm::dbgs() << "\n after optimizing signature\n";
 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
-  llvm::dbgs() << "Transform the jit call into: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
+  // llvm::dbgs() << "\n after trim shape args\n";
+  // llvm::dbgs() << "Transform the jit call into: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
   
 
   // ------------------------------ Fill the kernel args ------------------------------ 

@@ -1,3 +1,4 @@
+#include "mlir/IR/BuiltinTypes.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -18,6 +19,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -43,25 +45,46 @@ static void preprocWithExistingPasses(
   func::FuncOp funcOp,
   const llvm::DenseMap<Value, int>& valueMap
 ) {
-  auto getSolidVal = [&](Value v) {
+  auto getSolidVal = [&](Value v) -> std::pair<int, bool> {
     auto it = valueMap.find(v);
     if (it != valueMap.end()) {
-      return it->getSecond();
+      return std::pair(it->getSecond(), true);
     }
-    return -1;
+    return std::pair(-1, false);
   };
 
   // Replace some known values with constant values, then lifiting the propagation task to existing mlir passes.
+  // llvm::dbgs() << "\n ## before replace known values\n";
+  // llvm::dbgs() << "curr funcOP: " << getMLIROperationAsString(funcOp) << "\n";
+
+  llvm::SmallVector<Operation*> opsToDelete;
   funcOp.walk([&](fir::LoadOp lop){
+
+    // llvm::dbgs() <<  "\n on lop: ";
+    // lop.print(llvm::dbgs());
+    // llvm::dbgs() <<  "\n";
+    
     opBuilder.setInsertionPoint(lop);
-    if (getSolidVal(lop.getOperand()) > 0) {
+    auto lopVal = getSolidVal(lop.getOperand());
+    if (lopVal.second) {
       auto resValue = lop.getResult();
-      arith::ConstantIntOp cop = arith::ConstantIntOp::create(opBuilder, funcOp.getLoc(), resValue.getType(), getSolidVal(lop.getOperand()));
+      auto resType = resValue.getType();
+      if (!llvm::isa<mlir::IntegerType>(resType) && !llvm::isa<mlir::IndexType>(resType)) {
+        return;
+      }
+
+      arith::ConstantIntOp cop = arith::ConstantIntOp::create(opBuilder, funcOp.getLoc(), resValue.getType(), lopVal.first);
       lop.replaceAllUsesWith(cop.getResult());
       assert(lop.use_empty() && "Still been used!");
-      lop.erase();
+      opsToDelete.push_back(lop);
     }
   });
+
+  for (auto* op: opsToDelete) {
+    op->erase();
+  }
+
+  // llvm::dbgs() << "\n ## after replace known values\n";
 
   // Run passes
   pm.addPass(mlir::createCanonicalizerPass());
@@ -277,6 +300,8 @@ void inferShape(
 
   // some parameters containing the shape info are passed as pointer like
   moduleOp.walk([&](func::FuncOp funcOp){
+
+    assert(NumHostArgs == funcOp.getNumArguments() && "NumHostArgs is not equal to funcOp args count!!");
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
       auto ty = ArgTypes[i];
       if (isLiteralTy(ty)) {
@@ -285,33 +310,36 @@ void inferShape(
       }
     };
   });
+  // llvm::dbgs() << "\n # after get arguments\n";
 
-  moduleOp->walk([&](Operation* op){
-    llvm::TypeSwitch<Operation *>(op)
-      .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop){
-        // Sometimes it's included in declare Op
-        // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
-        // ...
-        // %4 = fir.load %2#0 : !fir.ref<i32>
-        if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
-          valueMap.insert(std::pair<Value, int>(dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
-        }  
-      })
-      .Case<func::FuncOp>([&](func::FuncOp funcOp){
-        for (int i = 0; i < funcOp.getNumArguments(); i++) {
-          if (shapeConstMap.contains(i)) {
-            valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap.at(i)));
-          }
-        }
+  moduleOp->walk([&](hlfir::DeclareOp dop){
+    // Sometimes it's included in declare Op
+    // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
+    // ...
+    // %4 = fir.load %2#0 : !fir.ref<i32>
+    if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
+      valueMap.insert(std::pair<Value, int>(dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
+    } 
+  }); 
+  
+  // llvm::dbgs() << "\n # after walk dops\n";
 
-        // std::cerr << "\nBefore Prepro: ====================================\n";
-        preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
+  for (auto funcOp: moduleOp.getOps<func::FuncOp>()) {
+    for (int i = 0; i < funcOp.getNumArguments(); i++) {
+      if (shapeConstMap.contains(i)) {
+        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap.at(i)));
+      }
+    }
 
-        // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
+    // std::cerr << "\nBefore Prepro: ====================================\n";
+    preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
+    // llvm::dbgs() << "\n ## after preproc with exesiting passes\n";
 
-        shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
-      });
-  });
+    // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
+
+    shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
+    // llvm::dbgs() << "\n ## after shape inference internal\n";
+  }
   return;
 }
 
