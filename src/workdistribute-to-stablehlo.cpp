@@ -274,8 +274,8 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         opBuilder,
         funcOp.getLoc(),
         targetType,
-        largerOperand,
-        smallerOperand 
+        operand1Src,
+        operand2Src
       );
       stablehloRes = stablehloDivOp.getResult();
     })
