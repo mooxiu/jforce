@@ -304,67 +304,13 @@ static PJRT_Buffer *createLiteralBuffers(
   PJRT_Device *device, 
   const TensorDesc& inputArg
 ) {
-  
-  void* getLiteralData = [&]() -> void*{
-    auto raw = reinterpret_cast<uintptr_t>(inputArg.data);
-    switch (inputArg.dtype) {
-      case DType::I32: {
-        int32_t* dataptrI32 = (int32_t*)malloc(sizeof(int) * 1);
-        int32_t val = static_cast<int32_t>(raw);
-        *dataptrI32 = val;
-        return (void*)dataptrI32; 
-      }
-      case DType::I64: {
-        int64_t* dataptrI64 = (int64_t*)malloc(sizeof(int64_t) * 1);
-        int64_t val = static_cast<int64_t>(raw);
-        *dataptrI64 = val;
-        return (void*)dataptrI64; 
-      }
-      case DType::F64: {
-        double_t* dataptrF64 = (double_t*)malloc(sizeof(double) * 1);
-        memcpy(dataptrF64, &raw, sizeof(double));
-        return (void*)dataptrF64;
-      }
-      case DType::F32: {
-        uint32_t low_bits = static_cast<uint32_t>(raw);
-        float_t* dataptrF32 = (float_t*)malloc(sizeof(float) * 1);
-        memcpy(dataptrF32, &low_bits, sizeof(float));
-        return (void*)dataptrF32;
-      }
-      default:
-        return nullptr;
-    }
-  }();
-
-  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
-  buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
-  buffer_args.type = [&](){
-    if (inputArg.dtype == DType::F32){
-      return PJRT_Buffer_Type::PJRT_Buffer_Type_F32;
-    } else if (inputArg.dtype == DType::F64) {
-      return PJRT_Buffer_Type::PJRT_Buffer_Type_F64;
-    } else if (inputArg.dtype == DType::I32) {
-      return PJRT_Buffer_Type::PJRT_Buffer_Type_S32;
-    } else if (inputArg.dtype == DType::I64) {
-      return PJRT_Buffer_Type::PJRT_Buffer_Type_S64;
-    } else {
-      std::cerr << "Unknown Buffer Types!\n";
-      std::exit(EXIT_FAILURE);
-    }
-  }();
-  buffer_args.device = device;
-  buffer_args.client = client;
-  buffer_args.data = getLiteralData;
-  // TODO: should reconsider how to set the size and dimmension for general
-  buffer_args.num_dims = 0;
-  int64_t dims[1] = {};
-  buffer_args.dims = dims;
-  auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
-  if (!checkPJRTError(api, err, "Create Buffer From Host")) {
-    return nullptr;
+  auto raw = reinterpret_cast<uintptr_t>(inputArg.data);
+  auto b = JitManager::getInstance().getLiteralBuffer(api, client, device, raw, inputArg.dtype);
+  if (!b) {
+    std::cerr << "Fail to get buffer for literal ptr!\n";
+    std::exit(EXIT_FAILURE);
   }
-  free(getLiteralData);
-  return buffer_args.buffer;
+  return b;
 }
 
 static void manageInputBuffers(

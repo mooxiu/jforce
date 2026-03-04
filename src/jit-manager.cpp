@@ -240,3 +240,95 @@ PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
 }
 
 
+PJRT_Buffer* JitManager::getLiteralBuffer(
+  const PJRT_Api *api, 
+  PJRT_Client *client,
+  PJRT_Device* device,
+  uintptr_t rawPtr, 
+  DType dataType
+) {
+  
+  auto key = std::pair(rawPtr, dataType);
+  std::shared_lock<std::shared_mutex> rLock(literalPtrBufferCacheRWMtx);
+  auto it = literalPtrBufferCache.find(key);
+  if (it != literalPtrBufferCache.end()) {
+    return it->getSecond();
+  }
+
+  // not find
+  rLock.unlock();
+  int32_t val_i32;
+  int64_t val_i64;
+  float val_f32;
+  double val_f64;
+  
+  void* host_ptr = nullptr;
+
+  switch (dataType) {
+    case DType::I32: {
+      val_i32 = static_cast<int32_t>(rawPtr);
+      host_ptr = &val_i32;
+      break;
+    }
+    case DType::I64: {
+      val_i64 = static_cast<int64_t>(rawPtr);
+      host_ptr = &val_i64;
+      break;
+    }
+    case DType::F32: {
+      uint32_t low_bits = static_cast<uint32_t>(rawPtr);
+      std::memcpy(&val_f32, &low_bits, sizeof(float));
+      host_ptr = &val_f32;
+      break;
+    }
+    case DType::F64: {
+      std::memcpy(&val_f64, &rawPtr, sizeof(double));
+      host_ptr = &val_f64;
+      break;
+    }
+  }
+
+  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
+  buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+  buffer_args.type = [&](){
+    if (dataType == DType::F32){
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_F32;
+    } else if (dataType == DType::F64) {
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_F64;
+    } else if (dataType == DType::I32) {
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_S32;
+    } else if (dataType == DType::I64) {
+      return PJRT_Buffer_Type::PJRT_Buffer_Type_S64;
+    } else {
+      std::cerr << "Unknown Buffer Types!\n";
+      std::exit(EXIT_FAILURE);
+    }
+  }();
+
+  int64_t dims[1] = {};
+  buffer_args.client = client;
+  buffer_args.data = host_ptr;
+  buffer_args.dims = dims;
+  buffer_args.num_dims = 0; // TODO: should reconsider how to set the size and dimmension for general
+  buffer_args.device = device;
+ 
+  auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
+  if (err) {
+    std::cerr << "Fail to create literal buffer from host!\n";
+    return nullptr;  
+  }
+
+  std::unique_lock<std::shared_mutex> wLock(literalPtrBufferCacheRWMtx);
+  auto it2 = literalPtrBufferCache.find(key);
+  if (it2 != literalPtrBufferCache.end()) {
+    PJRT_Buffer_Destroy_Args destroy_args = {
+      .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+      .buffer = buffer_args.buffer
+    };
+    api->PJRT_Buffer_Destroy(&destroy_args);
+    return it2->getSecond();
+  }
+
+  literalPtrBufferCache[key] = buffer_args.buffer; 
+  return buffer_args.buffer;
+}

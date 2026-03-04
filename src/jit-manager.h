@@ -21,6 +21,11 @@ private:
 
   std::shared_mutex xlaKernelRWMtx;
   llvm::DenseMap<llvm::SmallVector<uint8_t>, PJRT_LoadedExecutable*> XLAKernelsMap;
+
+  
+  // literal pointer -> buffer
+  std::shared_mutex literalPtrBufferCacheRWMtx;
+  llvm::DenseMap<std::pair<uintptr_t, DType>, PJRT_Buffer*> literalPtrBufferCache;
   
   PJRT_LoadedExecutable* compilePJRTExecutable(
     const PJRT_Api *api, 
@@ -51,6 +56,14 @@ public:
     const std::string &func_code, 
     KernelArgs* offloadingArgs,
     uintptr_t JitCodePtr);
+
+  PJRT_Buffer* getLiteralBuffer(
+    const PJRT_Api *api, 
+    PJRT_Client *client,
+    PJRT_Device* device,
+    uintptr_t rawPtr, 
+    DType dataType
+  );
 };
 
 // Should be initialized at the beginning
