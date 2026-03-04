@@ -67,22 +67,16 @@ public:
 
   JitMetas* tryGetJitMetas(llvm::SmallVector<uint64_t, 128>& key); 
 
-  JitMetas* createJitMetasAndGetExec(
+  JitMetas* createJitMetas(
     llvm::SmallVector<uint64_t, 128>& key, 
     mlir::func::FuncOp kernelFunc, 
     llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
     TargetDevice td
   ); 
 
-
   PJRT_Buffer* getLiteralBuffer(PJRT_Device* device, uintptr_t rawPtr, DType dataType);
 
-  void launchKernel(
-    PJRT_LoadedExecutable* exec,
-    KernelArgs* kernelArgs, 
-    const uintptr_t JitCodePtr, 
-    const std::string& kernelFuncStr
-  );
+  void launchKernel(PJRT_LoadedExecutable* exec, KernelArgs* kernelArgs, const uintptr_t JitCodePtr, const std::string& kernelFuncStr);
 
   static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err);
   static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err, const std::string &eventName);

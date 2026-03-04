@@ -18,7 +18,7 @@
 /**
 -------------------- Tool Functions --------------------
  */
-static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
+std::string JitManager::getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   PJRT_Error_GetCode_Args code_args = {};
   code_args.struct_size = PJRT_Error_GetCode_Args_STRUCT_SIZE;
   code_args.error = err;
@@ -39,7 +39,7 @@ static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   return s;
 }
 
-static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
+bool JitManager::checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
                     const std::string &eventName) {
   auto msg = eventName;
   if (err) {
@@ -60,7 +60,7 @@ static void destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *buffer) {
     .buffer = buffer
   };
   auto err = api->PJRT_Buffer_Destroy(&args);
-  checkPJRTError(api, err, "Destroy Buffer");
+  JitManager::checkPJRTError(api, err, "Destroy Buffer");
   return;
 }
 
@@ -111,7 +111,7 @@ static PJRT_Buffer* createViewBuffers(
   cvodbArg.dims = inputArg.shape;
   auto doNothingCallback = [](void* a, void* b){};
   cvodbArg.on_delete_callback = doNothingCallback;
-  if (!checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer")) {
+  if (!JitManager::checkPJRTError(api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg), "Create View of Device Buffer")) {
     std::cerr << "Fail to create View of Device Buffer! Exit...\n";  
     std::exit(EXIT_FAILURE);
   };
@@ -183,7 +183,7 @@ static void executeLoadedKernelExecutable(
   };
   
   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
-  checkPJRTError(api, executeErr, "Execute LoadedExecutable");
+  JitManager::checkPJRTError(api, executeErr, "Execute LoadedExecutable");
 
   for(int i = 0; i < deviceCount; i++) {
     PJRT_Event_Await_Args waitArgs = {
@@ -308,7 +308,7 @@ static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
   }
   buffer_args.dims = dims_arr;
   auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
-  if (!checkPJRTError(api, err, "Create Buffer From Host")) {
+  if (!JitManager::checkPJRTError(api, err, "Create Buffer From Host")) {
     return nullptr;
   }
   return buffer_args.buffer;
@@ -328,14 +328,14 @@ static void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source, voi
   buffer_args.event = nullptr;
 
   auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
-  if (!checkPJRTError(api, err, "Save buffer to host")){
+  if (!JitManager::checkPJRTError(api, err, "Save buffer to host")){
     return;
   }
   if (buffer_args.event!= nullptr) {
     PJRT_Event_Await_Args await_args = {};
     await_args.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
     await_args.event = buffer_args.event;
-    checkPJRTError(api, api->PJRT_Event_Await(&await_args), "Waiting for host buffer copy");
+    JitManager::checkPJRTError(api, api->PJRT_Event_Await(&await_args), "Waiting for host buffer copy");
 
     PJRT_Event_Destroy_Args destroy_args = {};
     destroy_args.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE;

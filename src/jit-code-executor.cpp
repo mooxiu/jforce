@@ -133,7 +133,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   // llvm::dbgs() << "\nreceive a jit call\n";
   assert(NumArgs == NumHostArgs);
-  
+
 // #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
 // #define h(A)                                                                   \
 //   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
@@ -156,8 +156,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 //   }
 // #undef p
 // #undef h
-//
-//
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
 
@@ -217,7 +215,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // llvm::dbgs() << "\n after trim shape args\n";
   // llvm::dbgs() << "Transform the jit call into: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
   
-  jitMeta = JitManager::getInstance().createJitMetasAndGetExec(key, kernelFunc, argsIndicesMapping, getTargetDevice());
+  jitMeta = JitManager::getInstance().createJitMetas(key, kernelFunc, argsIndicesMapping, getTargetDevice());
   auto kernelFuncArgTypes = kernelFunc.getFunctionType().getInputs(); 
   TensorDesc newArgs[kernelFunc.getNumArguments()];  // args after being trimmed
 

@@ -380,7 +380,7 @@ JitMetas* JitManager::tryGetJitMetas(llvm::SmallVector<uint64_t, 128>& key){
   return nullptr;
 }
 
-JitMetas* JitManager::createJitMetasAndGetExec(
+JitMetas* JitManager::createJitMetas(
   llvm::SmallVector<uint64_t, 128>& key, 
   mlir::func::FuncOp kernelFunc, 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
@@ -388,11 +388,12 @@ JitMetas* JitManager::createJitMetasAndGetExec(
 ){
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
   auto exec = this->compilePJRTExecutable(kernelFuncStr, td);
+
   std::unique_lock<std::shared_mutex> wLock(this->metaRWMtx);
-  auto jitMetasOptional = tryGetJitMetas(key);
-  if (jitMetasOptional) {
+  auto it = this->jitMetaMap.find(key);
+  if (it != jitMetaMap.end()) {
     this->destroyLoadedExecutable(exec);
-    return jitMetasOptional;
+    return &(it->getSecond());
   }
   auto insertedPair = this->jitMetaMap.try_emplace(
     key,
