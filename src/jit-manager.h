@@ -1,4 +1,5 @@
 #include "../third_party/headers/pjrt_c_api.h"
+#include "utilities.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/DenseMap.h"
@@ -9,6 +10,11 @@
 #include "kernel_pointer_interface.h"
 #include "mlir/IR/OwningOpRef.h"
 
+struct JitMetas {
+  PJRT_LoadedExecutable* exe;
+};
+
+
 class JitManager {
 private:
 
@@ -16,13 +22,15 @@ private:
  
   const PJRT_Api *pjrtApi;
 
+  std::shared_mutex metaRWMtx;
+  llvm::DenseMap<llvm::SmallVector<uint64_t>, JitMetas*> jitMetaMap; 
+
   std::shared_mutex moduleOpRWMtx;
   llvm::DenseMap<uintptr_t, mlir::OwningOpRef<mlir::ModuleOp>> moduleOpMap;
 
   std::shared_mutex xlaKernelRWMtx;
   llvm::DenseMap<llvm::SmallVector<uint8_t>, PJRT_LoadedExecutable*> XLAKernelsMap;
 
-  
   // literal pointer -> buffer
   std::shared_mutex literalPtrBufferCacheRWMtx;
   llvm::DenseMap<std::pair<uintptr_t, DType>, PJRT_Buffer*> literalPtrBufferCache;
@@ -64,6 +72,11 @@ public:
     uintptr_t rawPtr, 
     DType dataType
   );
+
+  llvm::SmallVector<uint64_t, 128> getPJRTExecutableKey2(int64_t NumArgs, int64_t* ArgTypes, void** TgtArgs, int64_t* ArgSizes, void* JitCode);
+
+  JitMetas* getJitMeta(llvm::SmallVector<uint64_t, 128>& key); 
+
 };
 
 // Should be initialized at the beginning

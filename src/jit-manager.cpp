@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <mlir/IR/MLIRContext.h>
@@ -102,6 +103,22 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCode
   }
   this->moduleOpMap[JitCodePtr] = std::move(m);
   return this->moduleOpMap[JitCodePtr]->clone();
+}
+
+// Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs 
+llvm::SmallVector<uint64_t, 128> getPJRTExecutableKey2(int64_t NumArgs, int64_t* ArgTypes, void** TgtArgs, int64_t* ArgSizes, void* JitCode) {
+  llvm::SmallVector<uint64_t, 128> key;
+
+  key.push_back(reinterpret_cast<uintptr_t>(JitCode));
+
+  for (int i = 0; i < NumArgs; i++) {
+    key.push_back(ArgSizes[i]);
+    if (isLiteralTy(ArgTypes[i])) {
+      key.push_back(reinterpret_cast<uintptr_t>(TgtArgs[i]));
+    }
+  }
+
+  return key;
 }
 
 // Executable is uniquely identified by the pointer to the function and the shape of the function.
