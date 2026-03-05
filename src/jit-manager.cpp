@@ -1,5 +1,6 @@
 #include "jit-manager.h"
 #include "utility"
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -9,6 +10,7 @@
 #include <mlir/IR/MLIRContext.h>
 #include <string>
 #include <utility>
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -196,15 +198,20 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCode
 }
 
 // Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs 
-llvm::SmallVector<uint64_t, 128> JitManager::getJitMetasKey(
-  int64_t NumArgs, int64_t* ArgTypes, void** TgtArgs, int64_t* ArgSizes, uintptr_t JitCodePtr
+llvm::SmallVector<uint64_t, 128> JitManager::getL2JitMetasKey(
+  int64_t NumArgs, 
+  int64_t* ArgTypes, 
+  void** TgtArgs, 
+  int64_t* ArgSizes, 
+  uintptr_t JitCodePtr, 
+  llvm::DenseSet<int> argsIndices
 ){
   llvm::SmallVector<uint64_t, 128> key;
 
   key.push_back(JitCodePtr);
   for (int i = 0; i < NumArgs; i++) {
     key.push_back(ArgSizes[i]);
-    if (isLiteralTy(ArgTypes[i])) {
+    if (argsIndices.contains(i) && isLiteralTy(ArgTypes[i])) {
       key.push_back(reinterpret_cast<uintptr_t>(TgtArgs[i]));
     }
   }
@@ -239,6 +246,7 @@ PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(const std::string &func
     xla::ExecutableBuildOptionsProto *build_opts = opts.mutable_executable_build_options();
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
+    build_opts->set_device_memory_size(40LL << 30); // 40 GB
 
     // Special option for CUDA
     if (td == TargetDevice::CUDA) {
@@ -371,16 +379,34 @@ PJRT_Buffer* JitManager::getLiteralBuffer(
   return buffer_args.buffer;
 }
 
-JitMetas* JitManager::tryGetJitMetas(llvm::SmallVector<uint64_t, 128>& key){
-  std::shared_lock<std::shared_mutex> rLock(this->metaRWMtx);
-  auto it = this->jitMetaMap.find(key);
-  if (it != jitMetaMap.end()) {
+L1JitMetas* JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr){
+  std::shared_lock<std::shared_mutex> rLock(this->l1JitMetaRWMtx);
+  auto it = this->l1JitMetasMap.find(JitCodePtr);
+  if (it != this->l1JitMetasMap.end()) {
+    it->getSecond();
+  }
+  return nullptr;
+}
+
+void JitManager::saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseSet<int> argsIndicesToSave){
+  auto m = (L1JitMetas) {
+    .argsIndices = std::move(argsIndicesToSave)
+  };
+  std::unique_lock<std::shared_mutex> wLock(this->l1JitMetaRWMtx);
+  this->l1JitMetasMap.try_emplace(JitCodePtr, L1JitMetas{.argsIndices = std::move(argsIndicesToSave)});
+  return;
+}
+
+L2JitMetas* JitManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128>& key){
+  std::shared_lock<std::shared_mutex> rLock(this->l2JitMetaRWMtx);
+  auto it = this->l2JitMetasMap.find(key);
+  if (it != l2JitMetasMap.end()) {
     return &(it->getSecond());
   }
   return nullptr;
 }
 
-JitMetas* JitManager::createJitMetas(
+L2JitMetas* JitManager::createL2JitMetas(
   llvm::SmallVector<uint64_t, 128>& key, 
   mlir::func::FuncOp kernelFunc, 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
@@ -389,17 +415,21 @@ JitMetas* JitManager::createJitMetas(
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
   auto exec = this->compilePJRTExecutable(kernelFuncStr, td);
 
-  std::unique_lock<std::shared_mutex> wLock(this->metaRWMtx);
-  auto it = this->jitMetaMap.find(key);
-  if (it != jitMetaMap.end()) {
+  std::unique_lock<std::shared_mutex> wLock(this->l2JitMetaRWMtx);
+  auto it = this->l2JitMetasMap.find(key);
+  if (it != l2JitMetasMap.end()) {
     this->destroyLoadedExecutable(exec);
     return &(it->getSecond());
   }
-  auto insertedPair = this->jitMetaMap.try_emplace(
+
+  auto funcTypes = kernelFunc.getFunctionType().getInputs();
+  std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
+
+  auto insertedPair = this->l2JitMetasMap.try_emplace(
     key,
-    (JitMetas){
+    (L2JitMetas){
       .exe = exec,
-      .kernelFunc = kernelFunc,
+      .kernelFuncTypes = std::move(argTypesVec),
       .kernelFuncStr = std::move(kernelFuncStr),
       .argsIndicesMapping = std::move(argsIndicesMapping)
     }

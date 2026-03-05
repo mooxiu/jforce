@@ -282,8 +282,10 @@ void JitManager::launchKernel(
   }
 
   for (int i = 0; i < argsBuffers.size(); i++) {
-    PJRT_Buffer* b = argsBuffers.at(i);
-    destroyPJRTBuffer(this->pjrtApi, b);
+    if (offloadingArgs->inputArgs[i].isLiteral) {
+      PJRT_Buffer* b = argsBuffers.at(i);
+      destroyPJRTBuffer(this->pjrtApi, b);
+    }
   }
   return;
 }
