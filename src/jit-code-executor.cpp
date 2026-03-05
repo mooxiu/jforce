@@ -171,7 +171,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     auto l2JitMetas = JitManager::getInstance().tryGetL2JitMetas(l2Key);
 
     if (l2JitMetas != nullptr) {
-      llvm::dbgs() << "Hit Cache!\n";
       // auto kernelFunc = jitMeta->kernelFunc;
       std::vector<TensorDesc> newArgs(l2JitMetas->kernelFuncTypes.size()); 
       fillKernelFuncArgs(l2JitMetas->argsIndicesMapping, newArgs.data(), l2JitMetas->kernelFuncTypes, NumHostArgs, ArgTypes, TgtArgs);  
@@ -211,7 +210,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   if (l1JitMetas == nullptr) {
     llvm::DenseSet<int> argsIndices;
     for (int i = 0; i < NumArgs; i++) {
-      if (argsIndicesMapping.find(i) != argsIndicesMapping.end()) {
+      // not contains in argsIndicesMapping, meaning it's the shape arguments that been trimmed above
+      if (!argsIndicesMapping.contains(i)) {
         argsIndices.insert(i);
       }
     }
@@ -223,7 +223,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   std::vector<TensorDesc> newArgs(createdL2JitMetas->kernelFuncTypes.size());
 
   if (fillKernelFuncArgs(argsIndicesMapping, newArgs.data(), createdL2JitMetas->kernelFuncTypes, NumHostArgs, ArgTypes, TgtArgs)) {
-    llvm::dbgs() << "Not Hit Cache!\n";
     KernelArgs args = (struct KernelArgs){
       .inputArgCount = argsIndicesMapping.size(),
       .inputArgs = newArgs.data(),
