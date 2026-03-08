@@ -97,7 +97,7 @@ public:
   static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err, const std::string &eventName);
 };
 
-// Should be initialized at the beginning
-static JitManager& __dummy = JitManager::getInstance();
-
+// // Should be initialized at the beginning
+// static JitManager& __dummy = JitManager::getInstance();
+//
 #endif
