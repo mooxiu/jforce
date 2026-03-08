@@ -89,6 +89,30 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   // llvm::dbgs() << "\nreceive a jit call\n";
   
+// #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
+// #define h(A)                                                                   \
+//   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
+//   // for (unsigned I = 0; I < NumArgs; I++) {
+//   //   std::cerr << "Device Arg #" << I << ":\n";
+//   //   p(TgtArgs);
+//   //   p(TgtOffsets);
+//   // }
+//   for (unsigned I = 0; I < NumHostArgs; I++) {
+//     std::cerr << "Host Arg #" << I << ":\n";
+//     p(ArgBasePtrs);
+//     p(ArgPtrs);
+//     p(ArgSizes);
+//     h(ArgTypes);
+//     h(ArgNames);
+//
+//     std::cerr << "Device Arg #" << I << ":\n";
+//     p(TgtArgs);
+//     p(TgtOffsets);
+//   }
+// #undef p
+// #undef h
+//
+//
   // Parse JitCode to ModuleOp
   MLIRContext* ctx = JitManager::getInstance().getContext();
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);

@@ -3,14 +3,21 @@ cmake_minimum_required(VERSION 3.24)
 # I have to put here before "project" so it knows the place of Fortran Compiler
 set(HOME $ENV{HOME})
 set(CURR_ENV "REMOTE") # <- Change this for different environment
+set(CURR_DEVICE "CUDA") # <- Change this for different environment
+
 if (CURR_ENV STREQUAL "LOCAL")
   set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_cpu_plugin.so")
   set(TARGET_DEVICE_NAME "CPU")
   set(LLVM_INSTALL_PATH "${HOME}/Documents/workspace/projects/llvm-project/build")
   set(STABLEHLO_PROJECT "${HOME}/Documents/workspace/projects/stablehlo")
 elseif (CURR_ENV STREQUAL "REMOTE")
-  set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_gpu_plugin.so")
-  set(TARGET_DEVICE_NAME "CUDA")
+  if (CURR_DEVICE STREQUAL "CPU") 
+    set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_cpu_plugin.so")
+    set(TARGET_DEVICE_NAME "CPU")
+  else()
+    set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_gpu_plugin.so")
+    set(TARGET_DEVICE_NAME "CUDA")
+  endif()
   set(LLVM_INSTALL_PATH "${HOME}/projects/llvm-project/build")
   set(STABLEHLO_PROJECT "${HOME}/projects/stablehlo")
 endif()
