@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include "llvm/Support/raw_ostream.h"
+#include "../third_party/headers/pjrt_c_api.h"
 
 enum class DType : int32_t {
   F32 = 0,
@@ -13,6 +14,7 @@ enum class DType : int32_t {
 };
 
 size_t getDTypeSizeInByte(DType dtype); 
+PJRT_Buffer_Type getPJRTBufferType(DType dtype);
 
 enum class TargetDevice : int32_t {
   CPU = 0,

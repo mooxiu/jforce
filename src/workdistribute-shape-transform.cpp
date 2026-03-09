@@ -27,6 +27,10 @@ using namespace mlir;
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
   OpBuilder opBuilder(context);
   for (int i = 0; i < funcOp.getNumArguments(); i++) {
+    // do not donate literal buffers, as we will not reuse
+    if (funcOp.getArgument(i).getType().isSignlessIntOrIndexOrFloat()) {
+      continue;
+    }
     funcOp.setArgAttr(i, ALIASING_ATTRIBUTE, opBuilder.getI64IntegerAttr(i));
   }
   return;

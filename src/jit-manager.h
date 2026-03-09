@@ -44,10 +44,6 @@ private:
   // TODO: add to JitMetasLayer1
   std::shared_mutex moduleOpRWMtx;
   llvm::DenseMap<uintptr_t, mlir::OwningOpRef<mlir::ModuleOp>> moduleOpMap;
-
-  // literal pointer -> buffer
-  std::shared_mutex literalPtrBufferCacheRWMtx;
-  llvm::DenseMap<std::pair<uintptr_t, DType>, PJRT_Buffer*> literalPtrBufferCache;
   
   PJRT_Device* getPJRTDevice(TargetDevice td);
 
@@ -87,10 +83,6 @@ public:
     llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
     TargetDevice td
   ); 
-
-
-  PJRT_Buffer* getLiteralBuffer(PJRT_Device* device, uintptr_t rawPtr, DType dataType);
-  bool deleteLiteralBuffer(PJRT_Device* device, uintptr_t rawPtr, DType dataType);
 
   void launchKernel(PJRT_LoadedExecutable* exec, KernelArgs* kernelArgs, const uintptr_t JitCodePtr, const std::string& kernelFuncStr);
 

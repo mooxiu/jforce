@@ -16,7 +16,6 @@
 #include <numeric>
 #include <ostream>
 #include <string>
-#include <thread>
 #include <vector>
 
 /**
@@ -71,7 +70,7 @@ static bool destroyPJRTBuffer(
   return true;
 }
 
-static PJRT_Buffer* createViewBuffers(
+static PJRT_Buffer* createViewBuffer(
   const PJRT_Api *api,
   PJRT_Client* client,
   PJRT_Device* device,
@@ -81,21 +80,8 @@ static PJRT_Buffer* createViewBuffers(
   PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg= {};
   cvodbArg.client = client;
   cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
-  cvodbArg.element_type = [&](){
-    switch (inputArg.dtype) {
-      case DType::F32:
-        return PJRT_Buffer_Type_F32;
-      case DType::F64:
-        return PJRT_Buffer_Type_F64;
-      case DType::I32:
-        return PJRT_Buffer_Type_S32;
-      case DType::I64:
-        return PJRT_Buffer_Type_S64;
-      default:
-        std::cerr << "[Error] Unexecpted data type: " << std::to_string((int32_t)inputArg.dtype) << "\n";
-        exit(EXIT_FAILURE);
-    }
-  }();
+  cvodbArg.element_type = getPJRTBufferType(inputArg.dtype);
+
   // TODO: use memory instead of device
   cvodbArg.device = device;
   cvodbArg.device_buffer_ptr = inputArg.data;
@@ -110,20 +96,64 @@ static PJRT_Buffer* createViewBuffers(
   return cvodbArg.buffer;
 }
 
-// Creating Buffer for single number is not recommended, but preprocessing (folding) it in stableHLO!
-static PJRT_Buffer *createLiteralBuffers(
+static PJRT_Buffer* createLiteralBuffer(
   const PJRT_Api *api, 
   PJRT_Client *client,
   PJRT_Device *device, 
   const TensorDesc& inputArg
 ) {
-  auto raw = reinterpret_cast<uintptr_t>(inputArg.data);
-  auto b = JitManager::getInstance().getLiteralBuffer(device, raw, inputArg.dtype);
-  if (!b) {
-    std::cerr << "Fail to get buffer for literal ptr!\n";
-    std::exit(EXIT_FAILURE);
+  uintptr_t rawPtr = reinterpret_cast<uintptr_t>(inputArg.data);
+  DType dataType = inputArg.dtype;
+
+  int32_t val_i32;
+  int64_t val_i64;
+  float val_f32;
+  double val_f64;
+  
+  void* host_ptr = nullptr;
+
+  switch (dataType) {
+    case DType::I32: {
+      val_i32 = static_cast<int32_t>(rawPtr);
+      host_ptr = &val_i32;
+      break;
+    }
+    case DType::I64: {
+      val_i64 = static_cast<int64_t>(rawPtr);
+      host_ptr = &val_i64;
+      break;
+    }
+    case DType::F32: {
+      uint32_t low_bits = static_cast<uint32_t>(rawPtr);
+      std::memcpy(&val_f32, &low_bits, sizeof(float));
+      host_ptr = &val_f32;
+      break;
+    }
+    case DType::F64: {
+      std::memcpy(&val_f64, &rawPtr, sizeof(double));
+      host_ptr = &val_f64;
+      break;
+    }
   }
-  return b;
+
+  PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
+  buffer_args.struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE;
+  buffer_args.type = getPJRTBufferType(dataType);
+
+  int64_t dims[1] = {};
+  buffer_args.client = client;
+  buffer_args.data = host_ptr;
+  buffer_args.dims = dims;
+  buffer_args.num_dims = 0; // TODO: should reconsider how to set the size and dimmension for general
+  buffer_args.device = device;
+ 
+  auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
+  if (err) {
+    std::cerr << "Fail to create literal buffer from host!\n";
+    return nullptr;  
+  }
+
+  return buffer_args.buffer;
 }
 
 static void manageInputBuffers(
@@ -137,9 +167,9 @@ static void manageInputBuffers(
   assert(buffers.size() == inputArgCount && "Buffer size should be the same with arg counts");
   for (int i = 0; i < inputArgCount; i++) {
     if (inputArgs[i].isLiteral){
-      buffers[i] = createLiteralBuffers(api, client, device, inputArgs[i]);  
+      buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);  
     } else {
-      buffers[i] = createViewBuffers(api, client, device, inputArgs[i]);
+      buffers[i] = createViewBuffer(api, client, device, inputArgs[i]);
     }
   }
   return;
