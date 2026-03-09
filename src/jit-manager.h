@@ -91,6 +91,8 @@ public:
 
 
   PJRT_Buffer* getLiteralBuffer(PJRT_Device* device, uintptr_t rawPtr, DType dataType);
+  bool deleteLiteralBuffer(PJRT_Device* device, uintptr_t rawPtr, DType dataType);
+
   void launchKernel(PJRT_LoadedExecutable* exec, KernelArgs* kernelArgs, const uintptr_t JitCodePtr, const std::string& kernelFuncStr);
 
   static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err);

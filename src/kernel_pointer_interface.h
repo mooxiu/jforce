@@ -5,13 +5,14 @@
 #include <vector>
 #include "llvm/Support/raw_ostream.h"
 
-// TODO: all the tests are using f32 for now.
 enum class DType : int32_t {
   F32 = 0,
   F64 = 1,
   I32 = 2,
   I64 = 3,
 };
+
+size_t getDTypeSizeInByte(DType dtype); 
 
 enum class TargetDevice : int32_t {
   CPU = 0,

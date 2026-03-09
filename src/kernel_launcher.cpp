@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "kernel_pointer_interface.h"
 #include "llvm/Support/Debug.h"
 #include <cassert>
 #include <cctype>
@@ -14,6 +15,7 @@
 #include <numeric>
 #include <ostream>
 #include <string>
+#include <vector>
 
 /**
 -------------------- Tool Functions --------------------
@@ -54,31 +56,6 @@ bool JitManager::checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
 /**
 -------------------- End Tool Functions --------------------
  */
-static void destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *buffer) {
-  PJRT_Buffer_Destroy_Args args = {
-    .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-    .buffer = buffer
-  };
-  auto err = api->PJRT_Buffer_Destroy(&args);
-  JitManager::checkPJRTError(api, err, "Destroy Buffer");
-  return;
-}
-
-// TODO: should have a better implementation
-static size_t getSizeOf(PJRT_Buffer_Type type) {
-  switch (type) {
-    case PJRT_Buffer_Type_F32:
-    case PJRT_Buffer_Type_S32:
-      return size_t(4);
-    case PJRT_Buffer_Type_F64:
-    case PJRT_Buffer_Type_S64:
-      return size_t(8);
-    default:
-      logger::Log("Unknown Type", logLevel::ERROR);
-      exit(1);
-  }
-}
-
 static PJRT_Buffer* createViewBuffers(
   const PJRT_Api *api,
   PJRT_Client* client,
@@ -140,10 +117,9 @@ static void manageInputBuffers(
   PJRT_Device* device,
   const TensorDesc* inputArgs,
   const int32_t inputArgCount,
-  std::vector<PJRT_Buffer*>& buffers,
-  const std::vector<int32_t>& literalTypeArgsIndices) {
-
-  buffers.resize(inputArgCount);
+  std::vector<PJRT_Buffer*>& buffers
+) {
+  assert(buffers.size() == inputArgCount && "Buffer size should be the same with arg counts");
   for (int i = 0; i < inputArgCount; i++) {
     if (inputArgs[i].isLiteral){
       buffers[i] = createLiteralBuffers(api, client, device, inputArgs[i]);  
@@ -202,17 +178,42 @@ static void executeLoadedKernelExecutable(
   }
 }
 
-static void cpyMemOnDevice(void* dstPtr, void* srcPrt, size_t byteCount, TargetDevice deviceTy) {
-  if (deviceTy == TargetDevice::CPU) {
-    std::memcpy(dstPtr, srcPrt, byteCount);
-  } else if (deviceTy == TargetDevice::CUDA) {
-    // TODO: insert cudamemd2d 
-    llvm::dbgs() << "Device Allocated Ptr: " << dstPtr << ", Function OutputPtr: " << srcPrt << ". Size: " << byteCount << "\n";
-    std::cerr << "Not Implemented Yet!\n";
-    exit(EXIT_FAILURE);
-  } else {
-    logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(deviceTy)), logLevel::ERROR);
-    exit(EXIT_FAILURE);
+/// Ideally, the data should be updated in-place
+/// But if not, we need to copy the data
+static void manageOutputBuffers(
+  const PJRT_Api* api, 
+  const std::vector<PJRT_Buffer*>& argsBuffers,
+  PJRT_Buffer*** argsBuffersList,
+  TensorDesc* inputArgs,
+  TensorDesc* outputArgs,
+  TargetDevice targetDeviceTy
+) {
+  for (int i = 0; i < argsBuffers.size(); i++) {
+    auto inputArg = inputArgs[i];
+    // We don't care about literal arg, as we'll always get from cache or create them 
+    if (inputArg.isLiteral) {
+      return;
+    }
+    
+    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
+      .struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
+      .buffer = argsBuffersList[0][i],
+    };
+    api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
+    void* afterPtr = odmdpArgs.device_memory_ptr;
+    if (afterPtr != inputArg.data) {
+      if (targetDeviceTy == TargetDevice::CPU) {
+        llvm::dbgs() << "Data copied to " << outputArgs[i].data << "\n";
+        std::memcpy(outputArgs[i].data, afterPtr, inputArg.getEleSize() * getDTypeSizeInByte(inputArg.dtype));
+      } else if (targetDeviceTy == TargetDevice::CUDA) {
+        // TODO: insert cudamemd2d 
+        std::cerr << "Not Implemented Yet for CUDA!\n";
+        exit(EXIT_FAILURE);   
+      } else {
+        logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(targetDeviceTy)), logLevel::ERROR);
+        exit(EXIT_FAILURE);
+      }
+    }
   }
 }
 
@@ -224,70 +225,35 @@ void JitManager::launchKernel(
 ) {
   auto device = this->getPJRTDevice(offloadingArgs->targetDevice);
   
-  // PJRT_LoadedExecutable* exe = JitManager::getInstance().getPJRTExecutable(api, client, kernelFuncStr, offloadingArgs, JitCodePtr);
-
   // Create Buffer with memory managed by OpenMP
-  // For literal MapType, there's no memory been allocated, we have to allocate the memory and buffer by ourselves!!!! 
   std::vector<PJRT_Buffer*> argsBuffers;
-  std::vector<int> literalTypeArgsIndices;
-  literalTypeArgsIndices.reserve(offloadingArgs->inputArgCount);
-  for (int32_t i = 0; i < offloadingArgs->inputArgCount; i++) {
-    if (offloadingArgs->inputArgs[i].isLiteral) {
-      literalTypeArgsIndices.push_back(i);
-    }
-  }
-  manageInputBuffers(this->pjrtApi, this->pjrtClient, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers, literalTypeArgsIndices);
+  argsBuffers.resize(offloadingArgs->inputArgCount);
+
+  manageInputBuffers(this->pjrtApi, this->pjrtClient, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers);
   PJRT_Buffer** argsBuffersList[] = {argsBuffers.data()};
-
-
   // Execute the kernel
   executeLoadedKernelExecutable(this->pjrtApi, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
-
-
-  // Already wait in above execution!
-  // PJRT_Buffer_ReadyEvent_Args* eventArgs[offloadingArgs->inputArgCount];
-  // for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
-  //   PJRT_Buffer_ReadyEvent_Args eventArg = {};
-  //   eventArgs[i] = &eventArg;
-  //   eventArg.struct_size = PJRT_Buffer_ReadyEvent_Args_STRUCT_SIZE;
-  //   eventArg.buffer = argsBuffersList[0][i];
-  //   api->PJRT_Buffer_ReadyEvent(&eventArg);
-  // }
-  //
-  // for (int i = 0; i < offloadingArgs->inputArgCount; i++) {
-  //   // Wait for the event to complete
-  //   PJRT_Event_Await_Args waitArgs = {};
-  //   waitArgs.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
-  //   waitArgs.event = eventArgs[i]->event;
-  //   api->PJRT_Event_Await(&waitArgs); 
-  // }
-  //
-
-  // After Execution, the data may not be updated in-place!!!!!
-  for (int i = 0; i < argsBuffers.size(); i++) {
-    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
-      .struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
-      .buffer = argsBuffersList[0][i],
-    };
-    this->pjrtApi->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
-    void* afterPtr = odmdpArgs.device_memory_ptr;
-
-    auto inputArg = offloadingArgs->inputArgs[i];
-    if (!inputArg.isLiteral && afterPtr != inputArg.data) {
-      cpyMemOnDevice(offloadingArgs->outputArgs[i].data, 
-                  afterPtr, 
-                  sizeof(float_t) * inputArg.getEleSize(),
-                  offloadingArgs->targetDevice);
-    }
-  }
-
-  for (int i = 0; i < argsBuffers.size(); i++) {
-    if (offloadingArgs->inputArgs[i].isLiteral) {
-      PJRT_Buffer* b = argsBuffers.at(i);
-      destroyPJRTBuffer(this->pjrtApi, b);
-    }
-  }
+  
+  manageOutputBuffers(this->pjrtApi, argsBuffers, argsBuffersList, offloadingArgs->inputArgs, offloadingArgs->outputArgs, offloadingArgs->targetDevice);
   return;
+}
+
+
+/// ---------------------------------------------------------------------
+
+[[deprecated("Memory Allocation is done by OpenMP RT")]]
+static size_t getSizeOf(PJRT_Buffer_Type type) {
+  switch (type) {
+    case PJRT_Buffer_Type_F32:
+    case PJRT_Buffer_Type_S32:
+      return size_t(4);
+    case PJRT_Buffer_Type_F64:
+    case PJRT_Buffer_Type_S64:
+      return size_t(8);
+    default:
+      logger::Log("Unknown Type", logLevel::ERROR);
+      exit(1);
+  }
 }
 
 // TODO: This work should later be done by OpenMP runtime.

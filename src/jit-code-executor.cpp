@@ -82,7 +82,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::Fun
 bool fillKernelFuncArgs(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping, 
   TensorDesc* newArgs,
-  ArrayRef<Type> argTypes, 
+  ArrayRef<Type> kernelFuncTypes, 
   int64_t NumHostArgs, 
   int64_t *ArgTypes,
   void** TgtArgs 
@@ -92,7 +92,7 @@ bool fillKernelFuncArgs(
       continue;
     }
     auto newIdx = argsIndicesMapping.at(oldIdx);
-    auto thisTy = argTypes[newIdx]; 
+    auto thisTy = kernelFuncTypes[newIdx]; 
     assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
 
@@ -203,7 +203,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // llvm::dbgs() << "\n after optimizing signature\n";
 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
-  // llvm::dbgs() << "\n after trim shape args\n";
+  llvm::dbgs() << "\n after trim shape args\n";
   // llvm::dbgs() << "Transform the jit call into: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
   
 

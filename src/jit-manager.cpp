@@ -379,6 +379,18 @@ PJRT_Buffer* JitManager::getLiteralBuffer(
   return buffer_args.buffer;
 }
 
+/// not used for now as we do not set upper limit for literal buffer
+bool JitManager::deleteLiteralBuffer(PJRT_Device* device, uintptr_t rawPtr, DType dataType) {
+  auto key = std::pair(rawPtr, dataType);
+  std::unique_lock<std::shared_mutex> wLock(literalPtrBufferCacheRWMtx);
+  auto res = literalPtrBufferCache.find(key);
+  if (res == literalPtrBufferCache.end()) {
+    // not found, just return true
+    return true;
+  }
+  return literalPtrBufferCache.erase(key);
+}
+
 L1JitMetas* JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr){
   std::shared_lock<std::shared_mutex> rLock(this->l1JitMetaRWMtx);
   auto it = this->l1JitMetasMap.find(JitCodePtr);
