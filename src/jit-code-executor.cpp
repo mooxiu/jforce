@@ -3,13 +3,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
-#include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -17,7 +14,6 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Affine/Passes.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -48,12 +44,13 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
-#include <string>
 #include <sys/types.h>
 #include <utility>
 #include <vector>
 #include "kernel_pointer_interface.h"
 #include "jit-manager.h"
+#include "utilities.h"
+
 
 using namespace mlir;
 

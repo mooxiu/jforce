@@ -1,5 +1,6 @@
 #include "jit-manager.h"
 #include "kernel_pointer_interface.h"
+#include "utilities.h"
 #include "llvm/Support/Debug.h"
 #include <cassert>
 #include <cctype>
@@ -15,6 +16,7 @@
 #include <numeric>
 #include <ostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 /**
@@ -56,6 +58,19 @@ bool JitManager::checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
 /**
 -------------------- End Tool Functions --------------------
  */
+static bool destroyPJRTBuffer(
+  const PJRT_Api* api,
+  PJRT_Buffer* dataPtr
+) {
+  PJRT_Buffer_Destroy_Args args= {
+    .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+    .buffer = dataPtr
+  };
+
+  api->PJRT_Buffer_Destroy(&args);
+  return true;
+}
+
 static PJRT_Buffer* createViewBuffers(
   const PJRT_Api *api,
   PJRT_Client* client,
@@ -183,7 +198,7 @@ static void executeLoadedKernelExecutable(
 static void manageOutputBuffers(
   const PJRT_Api* api, 
   const std::vector<PJRT_Buffer*>& argsBuffers,
-  PJRT_Buffer*** argsBuffersList,
+  PJRT_Buffer*** outsBuffersList,
   TensorDesc* inputArgs,
   TensorDesc* outputArgs,
   TargetDevice targetDeviceTy
@@ -192,12 +207,12 @@ static void manageOutputBuffers(
     auto inputArg = inputArgs[i];
     // We don't care about literal arg, as we'll always get from cache or create them 
     if (inputArg.isLiteral) {
-      return;
+      continue;
     }
     
     PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
       .struct_size = PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
-      .buffer = argsBuffersList[0][i],
+      .buffer = outsBuffersList[0][i],
     };
     api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
     void* afterPtr = odmdpArgs.device_memory_ptr;
@@ -213,6 +228,9 @@ static void manageOutputBuffers(
         logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(targetDeviceTy)), logLevel::ERROR);
         exit(EXIT_FAILURE);
       }
+      // std::thread([&](){
+      //   destroyPJRTBuffer(api, odmdpArgs.buffer);
+      // }).detach();
     }
   }
 }
@@ -228,13 +246,17 @@ void JitManager::launchKernel(
   // Create Buffer with memory managed by OpenMP
   std::vector<PJRT_Buffer*> argsBuffers;
   argsBuffers.resize(offloadingArgs->inputArgCount);
-
   manageInputBuffers(this->pjrtApi, this->pjrtClient, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers);
   PJRT_Buffer** argsBuffersList[] = {argsBuffers.data()};
+
+  std::vector<PJRT_Buffer*> outsBuffers;
+  outsBuffers.resize(offloadingArgs->outputArgCount);
+  PJRT_Buffer** outsBuffersList[] = {outsBuffers.data()};
+
   // Execute the kernel
-  executeLoadedKernelExecutable(this->pjrtApi, exe, device, argsBuffersList, argsBuffersList, offloadingArgs->inputArgCount);
+  executeLoadedKernelExecutable(this->pjrtApi, exe, device, argsBuffersList, outsBuffersList, offloadingArgs->inputArgCount);
   
-  manageOutputBuffers(this->pjrtApi, argsBuffers, argsBuffersList, offloadingArgs->inputArgs, offloadingArgs->outputArgs, offloadingArgs->targetDevice);
+  manageOutputBuffers(this->pjrtApi, argsBuffers, outsBuffersList, offloadingArgs->inputArgs, offloadingArgs->outputArgs, offloadingArgs->targetDevice);
   return;
 }
 

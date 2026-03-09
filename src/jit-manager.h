@@ -1,7 +1,6 @@
 #ifndef JITMANAGER_H
 #define JITMANAGER_H
 #include "../third_party/headers/pjrt_c_api.h"
-#include "utilities.h"
 #include "kernel_pointer_interface.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -98,8 +97,4 @@ public:
   static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err);
   static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err, const std::string &eventName);
 };
-
-// // Should be initialized at the beginning
-// static JitManager& __dummy = JitManager::getInstance();
-//
 #endif
