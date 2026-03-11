@@ -93,9 +93,7 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
   int chosen_device_idx = -1;
   std::string desc = ""; // for logging purpose
   for (int i = 0; i < device_args.num_addressable_devices; i++) {
-    auto auto_device_desc =
-        getDeviceDescription(api, device_args.addressable_devices[i]);
-    std::string tmp = auto_device_desc;
+    std::string tmp = getDeviceDescription(api, device_args.addressable_devices[i]);
     std::transform(tmp.begin(), tmp.end(), tmp.begin(),
                    [](auto c) { return std::tolower(c); });
     if (tmp.find(deviceDescKeyword) != std::string::npos) {

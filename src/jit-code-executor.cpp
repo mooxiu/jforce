@@ -200,7 +200,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // llvm::dbgs() << "\n after optimizing signature\n";
 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
-  llvm::dbgs() << "\n after trim shape args\n";
+  // llvm::dbgs() << "\n after trim shape args\n";
   // llvm::dbgs() << "Transform the jit call into: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
   
 

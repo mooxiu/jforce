@@ -273,19 +273,19 @@ void JitManager::launchKernel(
   auto device = this->getPJRTDevice(offloadingArgs->targetDevice);
   
   // Create Buffer with memory managed by OpenMP
-  std::vector<PJRT_Buffer*> argsBuffers;
-  argsBuffers.resize(offloadingArgs->inputArgCount);
-  manageInputBuffers(this->pjrtApi, this->pjrtClient, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, argsBuffers);
-  PJRT_Buffer** argsBuffersList[] = {argsBuffers.data()};
+  std::vector<PJRT_Buffer*> inputArgsBufs;
+  inputArgsBufs.resize(offloadingArgs->inputArgCount);
+  manageInputBuffers(this->pjrtApi, this->pjrtClient, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputArgsBufs);
+  PJRT_Buffer** inputArgsBufsList[] = {inputArgsBufs.data()};
 
-  std::vector<PJRT_Buffer*> outsBuffers;
-  outsBuffers.resize(offloadingArgs->outputArgCount);
-  PJRT_Buffer** outsBuffersList[] = {outsBuffers.data()};
+  std::vector<PJRT_Buffer*> outputArgsBufs;
+  outputArgsBufs.resize(offloadingArgs->outputArgCount);
+  PJRT_Buffer** outputArgsBufsList[] = {outputArgsBufs.data()};
 
   // Execute the kernel
-  executeLoadedKernelExecutable(this->pjrtApi, exe, device, argsBuffersList, outsBuffersList, offloadingArgs->inputArgCount);
+  executeLoadedKernelExecutable(this->pjrtApi, exe, device, inputArgsBufsList, outputArgsBufsList, offloadingArgs->inputArgCount);
   
-  manageOutputBuffers(this->pjrtApi, argsBuffers, outsBuffersList, offloadingArgs->inputArgs, offloadingArgs->outputArgs, offloadingArgs->targetDevice);
+  manageOutputBuffers(this->pjrtApi, inputArgsBufs, outputArgsBufsList, offloadingArgs->inputArgs, offloadingArgs->outputArgs, offloadingArgs->targetDevice);
   return;
 }
 
