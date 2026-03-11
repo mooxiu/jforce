@@ -2,6 +2,7 @@
 #include "kernel_pointer_interface.h"
 #include "utilities.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cctype>
 #include <cmath>
@@ -235,8 +236,8 @@ static void manageOutputBuffers(
 ) {
   for (int i = 0; i < argsBuffers.size(); i++) {
     auto inputArg = inputArgs[i];
-    // We don't care about literal arg, as we'll always get from cache or create them 
     if (inputArg.isLiteral) {
+      destroyPJRTBuffer(api, outsBuffersList[0][i]);
       continue;
     }
     
@@ -248,7 +249,7 @@ static void manageOutputBuffers(
     void* afterPtr = odmdpArgs.device_memory_ptr;
     if (afterPtr != inputArg.data) {
       if (targetDeviceTy == TargetDevice::CPU) {
-        llvm::dbgs() << "Data copied to " << outputArgs[i].data << "\n";
+        // llvm::dbgs() << "Data copied to " << outputArgs[i].data << "\n";
         std::memcpy(outputArgs[i].data, afterPtr, inputArg.getEleSize() * getDTypeSizeInByte(inputArg.dtype));
       } else if (targetDeviceTy == TargetDevice::CUDA) {
         // TODO: insert cudamemd2d 
@@ -258,9 +259,7 @@ static void manageOutputBuffers(
         logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(targetDeviceTy)), logLevel::ERROR);
         exit(EXIT_FAILURE);
       }
-      // std::thread([&](){
-      //   destroyPJRTBuffer(api, odmdpArgs.buffer);
-      // }).detach();
+      destroyPJRTBuffer(api, outsBuffersList[0][i]);
     }
   }
 }

@@ -298,7 +298,9 @@ L1JitMetas* JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr){
 
 void JitManager::saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseSet<int> argsIndicesToSave){
   std::unique_lock<std::shared_mutex> wLock(this->l1JitMetaRWMtx);
-  this->l1JitMetasMap.try_emplace(JitCodePtr, L1JitMetas{.argsIndices = std::move(argsIndicesToSave)});
+  if (!this->l1JitMetasMap.contains(JitCodePtr)) {
+    this->l1JitMetasMap.try_emplace(JitCodePtr, L1JitMetas{.argsIndices = std::move(argsIndicesToSave)});
+  }
   return;
 }
 
