@@ -1,4 +1,6 @@
 #include "jit-manager.h"
+#include "utilities.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -8,6 +10,7 @@
 #include <mlir/IR/MLIRContext.h>
 #include <string>
 #include <utility>
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -32,6 +35,93 @@ std::string getPluginPath() {
   throw std::runtime_error(
       "PJRT plugin path not found. Please set PJRT_PLUGIN_PATH.");
 #endif
+}
+
+static PJRT_Client * getPJRTClient(const PJRT_Api *api) {
+  PJRT_Client_Create_Args args = {};
+  args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
+  auto error = api->PJRT_Client_Create(&args);
+  if (error) {
+    std::cerr << "Fail to create client!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return args.client;
+}
+
+// For filtering out the target device.
+static std::string getDeviceDescription(const PJRT_Api *api, PJRT_Device *device) {
+  PJRT_Device_GetDescription_Args args = {
+    .struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE,
+    .device = device,
+  };
+  auto err1 = api->PJRT_Device_GetDescription(&args);
+  if (err1) {
+    logger::Log("Fail to get description of device: " + JitManager::getErrMsg(api, err1),
+                logLevel::ERROR);
+    return nullptr;
+  }
+  PJRT_DeviceDescription_ToString_Args ts_args = {
+    .struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE,
+    .device_description = args.device_description,
+  };
+  auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
+  if (err2) {
+    logger::Log("Fail to get device description to string: " +
+                    JitManager::getErrMsg(api, err2),
+                logLevel::ERROR);
+    return nullptr;
+  }
+  return ts_args.to_string;
+}
+
+// Get the target device handle
+static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
+                        const std::string &deviceDescKeyword) {
+  PJRT_Client_AddressableDevices_Args device_args = {
+    .struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
+    .client = client,
+  };
+  auto err = api->PJRT_Client_AddressableDevices(&device_args);
+  if (!JitManager::checkPJRTError(api, err, "Find Device")) {
+    return nullptr;
+  }
+  if (device_args.num_addressable_devices < 1) {
+    logger::Log("Cannot find any device!", logLevel::ERROR);
+    return nullptr;
+  }
+
+  int chosen_device_idx = -1;
+  std::string desc = ""; // for logging purpose
+  for (int i = 0; i < device_args.num_addressable_devices; i++) {
+    std::string tmp = getDeviceDescription(api, device_args.addressable_devices[i]);
+    std::transform(tmp.begin(), tmp.end(), tmp.begin(),
+                   [](auto c) { return std::tolower(c); });
+    if (tmp.find(deviceDescKeyword) != std::string::npos) {
+      chosen_device_idx = i;
+      desc = tmp;
+      break;
+    }
+  }
+  if (chosen_device_idx == -1) {
+    logger::Log("Fail to find " + deviceDescKeyword + " device!",
+                logLevel::ERROR);
+    return nullptr;
+  }
+  return device_args.addressable_devices[chosen_device_idx];
+}
+
+PJRT_Device* JitManager::getPJRTDevice(TargetDevice td) {
+  if (this->pjrtDevice) {
+    return this->pjrtDevice;
+  }
+  if (td == TargetDevice::CPU) {
+    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cpu");
+  } else if (td == TargetDevice::CUDA){
+    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cuda");
+  } else {
+    return nullptr;
+  }
+  return this->pjrtDevice;
 }
 
 JitManager::JitManager() {
@@ -63,6 +153,7 @@ JitManager::JitManager() {
   auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
   // Theoretically need to close handle_ when exiting, but it will automatically be destroyed when exiting the program so intentionally leave it.
   this->pjrtApi = api;
+  this->pjrtClient = getPJRTClient(api);
 }
 
 JitManager& JitManager::getInstance() {
@@ -104,84 +195,38 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCode
   return this->moduleOpMap[JitCodePtr]->clone();
 }
 
-// Executable is uniquely identified by the pointer to the function and the shape of the function.
-// Example: 
-//  func.func(tensor<1000x1000xf32> arg0, tensor<1000X1000xf32> arg1, tensor<f64> arg2); unitptr_t pointer = 12345678
-//  Notice the the rank and element type of each arg will not change
-//  We encode it to `12345678,1000,1000,1000,1000,0` (`,` does not exists, just make it easier for eyes to parse) 
-//
-//  (tensor<f64> is been regarded rank 0, different from tensor<1xf64> which is rank 1)
-static llvm::SmallVector<uint8_t> getPJRTExecutableKey(KernelArgs* offloadingArgs, uintptr_t JitCodePtr) {
-  // we need 8 uint8_t to represents one uint64_t
-  // 256 elements vector can contain 32 numbers without realloc
-  // assume all shape size are uint64_t so delimiter is not needed
-  llvm::SmallVector<uint8_t, 256> key;
+// Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs 
+llvm::SmallVector<uint64_t, 128> JitManager::getL2JitMetasKey(
+  int64_t NumArgs, 
+  int64_t* ArgTypes, 
+  void** TgtArgs, 
+  int64_t* ArgSizes, 
+  uintptr_t JitCodePtr, 
+  llvm::DenseSet<int> argsIndices
+){
+  llvm::SmallVector<uint64_t, 128> key;
 
-  auto pushToKey = [&](uint64_t value)->void {
-    uint8_t* byteArr = reinterpret_cast<uint8_t*>(&value);      
-    for (int i = 0; i < sizeof(value); i++) {
-      key.push_back(byteArr[i]);
-    }
-  };
-  
-  pushToKey(JitCodePtr);
-  
-  auto argsCount = offloadingArgs->inputArgCount;
-  for (int i = 0; i < argsCount; i++) {
-    auto argInfo = offloadingArgs->inputArgs[i];
-    if (argInfo.rank == 0) {
-      pushToKey(0);
-      continue;
-    } else {
-      for (int i = 0; i < argInfo.rank; i++) {
-        pushToKey(argInfo.shape[i]);
-      }
+  key.push_back(JitCodePtr);
+  for (int i = 0; i < NumArgs; i++) {
+    key.push_back(ArgSizes[i]);
+    if (argsIndices.contains(i) && isLiteralTy(ArgTypes[i])) {
+      key.push_back(reinterpret_cast<uintptr_t>(TgtArgs[i]));
     }
   }
-
-  return key; 
+  return key;
 }
 
-
-// Simple RWLock implementation.
-// One problem is that multiple threads might be compiling the same executable and could waste some CPU cycle.
-// TODO: use an extra set to control which executable is being compiled. 
-PJRT_LoadedExecutable* JitManager::getPJRTExecutable( 
-    const PJRT_Api *api, 
-    PJRT_Client *client,
-    const std::string &func_code, 
-    KernelArgs* offloadingArgs,
-    uintptr_t JitCodePtr
-){
-  auto key = getPJRTExecutableKey(offloadingArgs, JitCodePtr); 
-
-  std::shared_lock<std::shared_mutex> rLock(xlaKernelRWMtx);
-  auto it = this->XLAKernelsMap.find(key);
-  if (it != XLAKernelsMap.end()) {
-    return it->second;
+void JitManager::destroyLoadedExecutable(PJRT_LoadedExecutable *exe) {
+  PJRT_LoadedExecutable_Destroy_Args ledargs = {
+    .struct_size = PJRT_LoadedExecutable_Destroy_Args_STRUCT_SIZE,
+    .executable = exe,
   };
-
-  rLock.unlock();
-  auto compiled = this->compilePJRTExecutable(api, client, func_code, offloadingArgs, JitCodePtr);
-  
-  std::unique_lock<std::shared_mutex> wLock(xlaKernelRWMtx);
-  // other threads might alredy compiled and insert this one
-  auto it2 = this->XLAKernelsMap.find(key);
-  if (it2 != XLAKernelsMap.end()) {
-    return it2->second;
-  };
-  // if really not found, insert
-  XLAKernelsMap.insert(std::pair(key, compiled)); 
-  return compiled;
+  auto destroyErr = this->pjrtApi->PJRT_LoadedExecutable_Destroy(&ledargs);
+  checkPJRTError(this->pjrtApi, destroyErr, "Destroy LoadedExecutable");
+  return;
 }
 
-PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
-  const PJRT_Api *api, 
-  PJRT_Client *client,
-  const std::string &func_code, 
-  KernelArgs* offloadingArgs,
-  uintptr_t JitCodePtr
-){
+PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(const std::string &func_code, TargetDevice td){
   PJRT_Program program = (struct PJRT_Program){
     .struct_size = PJRT_Program_STRUCT_SIZE,
     .code = (char*) func_code.c_str(),
@@ -199,9 +244,10 @@ PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
     xla::ExecutableBuildOptionsProto *build_opts = opts.mutable_executable_build_options();
     build_opts->set_num_replicas(1);
     build_opts->set_num_partitions(1);
+    build_opts->set_device_memory_size(40LL << 30); // 40 GB
 
     // Special option for CUDA
-    if (offloadingArgs->targetDevice == TargetDevice::CUDA) {
+    if (td == TargetDevice::CUDA) {
       // TODO: this might make compiled code slower!!!
       auto debugOptions = build_opts->mutable_debug_options();
       debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
@@ -225,13 +271,13 @@ PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
   auto buf =  getCompileOptionsProto();
   PJRT_Client_Compile_Args compile_args = (struct PJRT_Client_Compile_Args){
     .struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,
-    .client = client,
+    .client = this->pjrtClient,
     .program = &program,
     .compile_options = (char *)buf.c_str(),
     .compile_options_size = (size_t)buf.size()
   };
 
-  auto error = api->PJRT_Client_Compile(&compile_args);
+  auto error = this->pjrtApi->PJRT_Client_Compile(&compile_args);
   if (error) {
     llvm::errs() << "Fail to compile XLA Executable!\n";
     std::exit(EXIT_FAILURE);
@@ -239,4 +285,60 @@ PJRT_LoadedExecutable* JitManager::compilePJRTExecutable(
   return compile_args.executable;
 }
 
+L1JitMetas* JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr){
+  std::shared_lock<std::shared_mutex> rLock(this->l1JitMetaRWMtx);
+  auto it = this->l1JitMetasMap.find(JitCodePtr);
+  if (it != this->l1JitMetasMap.end()) {
+    return &(it->getSecond());
+  }
+  return nullptr;
+}
+
+void JitManager::saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseSet<int> argsIndicesToSave){
+  std::unique_lock<std::shared_mutex> wLock(this->l1JitMetaRWMtx);
+  if (!this->l1JitMetasMap.contains(JitCodePtr)) {
+    this->l1JitMetasMap.try_emplace(JitCodePtr, L1JitMetas{.argsIndices = std::move(argsIndicesToSave)});
+  }
+  return;
+}
+
+L2JitMetas* JitManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128>& key){
+  std::shared_lock<std::shared_mutex> rLock(this->l2JitMetaRWMtx);
+  auto it = this->l2JitMetasMap.find(key);
+  if (it != l2JitMetasMap.end()) {
+    return &(it->getSecond());
+  }
+  return nullptr;
+}
+
+L2JitMetas* JitManager::createL2JitMetas(
+  llvm::SmallVector<uint64_t, 128>& key, 
+  mlir::func::FuncOp kernelFunc, 
+  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
+  TargetDevice td
+){
+  auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
+  auto exec = this->compilePJRTExecutable(kernelFuncStr, td);
+
+  std::unique_lock<std::shared_mutex> wLock(this->l2JitMetaRWMtx);
+  auto it = this->l2JitMetasMap.find(key);
+  if (it != l2JitMetasMap.end()) {
+    this->destroyLoadedExecutable(exec);
+    return &(it->getSecond());
+  }
+
+  auto funcTypes = kernelFunc.getFunctionType().getInputs();
+  std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
+
+  auto insertedPair = this->l2JitMetasMap.try_emplace(
+    key,
+    (L2JitMetas){
+      .exe = exec,
+      .kernelFuncTypes = std::move(argTypesVec),
+      .kernelFuncStr = std::move(kernelFuncStr),
+      .argsIndicesMapping = std::move(argsIndicesMapping)
+    }
+  );
+  return &(insertedPair.first->getSecond());
+}; 
 

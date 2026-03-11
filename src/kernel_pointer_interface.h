@@ -4,14 +4,17 @@
 #include <cstdint>
 #include <vector>
 #include "llvm/Support/raw_ostream.h"
+#include "../third_party/headers/pjrt_c_api.h"
 
-// TODO: all the tests are using f32 for now.
 enum class DType : int32_t {
   F32 = 0,
   F64 = 1,
   I32 = 2,
   I64 = 3,
 };
+
+size_t getDTypeSizeInByte(DType dtype); 
+PJRT_Buffer_Type getPJRTBufferType(DType dtype);
 
 enum class TargetDevice : int32_t {
   CPU = 0,
@@ -40,7 +43,7 @@ struct TensorDesc {
     }
     size_t acc = 1;
     for (int i = 0; i < rank; i++) {
-      return acc *= shape[i];
+      acc *= shape[i];
     }
     return acc;
   }

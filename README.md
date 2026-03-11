@@ -42,18 +42,21 @@ In total, here are the protos I copied to `./third_party/protos/xla`:
 ### library
 seems we have build by ourseleves:
 ```sh
-# under xla project
-bazel build //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
+> cd {PATH OF XLA}
 
-# if build for GPU
-python3.11 ./configure.py --backend CUDA
+# Building for CPU
+> bazel build -c opt //xla/pjrt/c:pjrt_c_api_cpu_plugin.so
+
+
+# Building for GPU
+> python3.11 ./configure.py --backend CUDA
 # output be something like:
 # INFO:root:Trying to find path to nvidia-smi...
 # INFO:root:Found path to nvidia-smi at /usr/bin/nvidia-smi
 # INFO:root:Found CUDA compute capabilities: ['8.0']
 # INFO:root:Writing bazelrc to /home/muyao/projects/xla/xla_configure.bazelrc...
 
-bazel build --config=cuda -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
+> bazel build --config=cuda -c opt //xla/pjrt/c:pjrt_c_api_gpu_plugin.so
 ```
 
 ### Other things
@@ -76,7 +79,7 @@ cmake ../llvm \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DLLVM_ENABLE_PROJECTS="llvm;clang;lld;flang;mlir" \
   -DLLVM_ENABLE_RUNTIMES="openmp;offload" \
-	-DLLVM_RUNTIME_TARGETS="default;amdgcn-amd-amdhsa;nvptx64-nvidia-cuda" \
+  -DLLVM_RUNTIME_TARGETS="default;amdgcn-amd-amdhsa;nvptx64-nvidia-cuda" \
   -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU" \
   -DRUNTIMES_nvptx64-nvidia-cuda_LLVM_ENABLE_RUNTIMES=openmp \
   -DRUNTIMES_amdgcn-amd-amdhsa_LLVM_ENABLE_RUNTIMES=openmp \
