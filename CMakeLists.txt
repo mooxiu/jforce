@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
 set(HOME $ENV{HOME})
-set(CURR_ENV "REMOTE") # <- Change this for different environment
-set(CURR_DEVICE "CUDA") # <- Change this for different environment
+set(CURR_ENV "LOCAL") # <- Change this for different environment
+set(CURR_DEVICE "CPU") # <- Change this for different environment
 
 if (CURR_ENV STREQUAL "LOCAL")
   set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_cpu_plugin.so")
@@ -87,6 +87,7 @@ add_library(jit-code-executor SHARED
   src/kernel_pointer_interface.cpp
   src/utilities.cpp
   src/jit-manager.cpp
+  src/profiler.cpp
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
