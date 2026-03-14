@@ -1,5 +1,6 @@
 #include "jit-manager.h"
 #include "kernel_pointer_interface.h"
+#include "profiler.h"
 #include "utilities.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -165,6 +166,7 @@ static void manageInputBuffers(
   const int32_t inputArgCount,
   std::vector<PJRT_Buffer*>& buffers
 ) {
+  PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE)
   assert(buffers.size() == inputArgCount && "Buffer size should be the same with arg counts");
   for (int i = 0; i < inputArgCount; i++) {
     if (inputArgs[i].isLiteral){
@@ -184,6 +186,8 @@ static void executeLoadedKernelExecutable(
   PJRT_Buffer ***outLists,
   const int in_args_count
 ) {
+  PROFILE_SCOPE("executeExecutable", Phase::EXECUTION_RUN)
+
   PJRT_ExecuteOptions execute_options = {
     .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
   };
@@ -234,6 +238,7 @@ static void manageOutputBuffers(
   TensorDesc* outputArgs,
   TargetDevice targetDeviceTy
 ) {
+  PROFILE_SCOPE("manageOutputBuffers", Phase::EXECUTION_BUFFER_CLEARUP)
   for (int i = 0; i < argsBuffers.size(); i++) {
     auto inputArg = inputArgs[i];
     if (inputArg.isLiteral) {

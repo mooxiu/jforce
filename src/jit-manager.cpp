@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "profiler.h"
 #include "utilities.h"
 #include <algorithm>
 #include <cstdint>
@@ -317,6 +318,8 @@ L2JitMetas* JitManager::createL2JitMetas(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
   TargetDevice td
 ){
+  PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE) 
+
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
   auto exec = this->compilePJRTExecutable(kernelFuncStr, td);
 

@@ -1,4 +1,5 @@
 #include "mlir/IR/BuiltinTypes.h"
+#include "profiler.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -291,6 +292,7 @@ void inferShape(
   int64_t* ArgTypes,
   llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap 
 ) {
+  PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER)
   // Key: index of the arguments of the function, value: if the argment is literal type, we know the value of the arg 
   llvm::DenseMap<uint, uint> shapeConstMap;
   llvm::DenseMap<Value, int> valueMap;

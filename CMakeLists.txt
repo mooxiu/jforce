@@ -31,6 +31,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if (NOT CMAKE_BUILD_TYPE) 
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
+option(ENABLE_PROFILING "Profiling the execution or not, default off" OFF)
 set(CMAKE_CXX_STANDARD 17)
 
 # -------------------- Find MLIR, LLVM, Clang, Flang --------------------  
@@ -116,10 +117,16 @@ target_link_libraries(jit-code-executor PRIVATE
 )
 
 # Pass flags
-target_compile_definitions(jit-code-executor PRIVATE
-  DEFAULT_PJRT_PLUGIN_PATH="${DEFAULT_PJRT_PLUGIN_PATH}"
+target_compile_definitions(jit-code-executor 
+  PRIVATE DEFAULT_PJRT_PLUGIN_PATH="${DEFAULT_PJRT_PLUGIN_PATH}"
+  PRIVATE TARGET_DEVICE="${TARGET_DEVICE_NAME}"
 )
 
-target_compile_definitions(jit-code-executor PRIVATE
-  TARGET_DEVICE="${TARGET_DEVICE_NAME}"
-)
+if (ENABLE_PROFILING)
+  target_compile_definitions(jit-code-executor
+    PRIVATE ENABLE_PROFILING
+  )
+endif()
+
+
+
