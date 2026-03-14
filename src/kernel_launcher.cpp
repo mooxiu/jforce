@@ -190,6 +190,7 @@ static void executeLoadedKernelExecutable(
 
   PJRT_ExecuteOptions execute_options = {
     .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
+    .num_non_donatable_input_indices = 0,
   };
 
   const int deviceCount = 1;
@@ -254,6 +255,7 @@ static void manageOutputBuffers(
     void* afterPtr = odmdpArgs.device_memory_ptr;
     if (afterPtr != inputArg.data) {
       if (targetDeviceTy == TargetDevice::CPU) {
+        DEBUG_PRINT("Data copied! arg idx: " + std::to_string(i));
         // llvm::dbgs() << "Data copied to " << outputArgs[i].data << "\n";
         std::memcpy(outputArgs[i].data, afterPtr, inputArg.getEleSize() * getDTypeSizeInByte(inputArg.dtype));
       } else if (targetDeviceTy == TargetDevice::CUDA) {

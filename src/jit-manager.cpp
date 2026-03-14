@@ -137,6 +137,7 @@ JitManager::JitManager() {
 
 
   // Iniialize PJRT_API
+  SET_XLA_FLAG();
   auto handle_ = dlopen(getPluginPath().c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
   if (!handle_) {
     std::cerr << "error loading plugin: " << dlerror() << std::endl;
