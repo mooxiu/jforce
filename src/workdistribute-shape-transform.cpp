@@ -1,3 +1,4 @@
+#include "profiler.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -25,6 +26,7 @@ using namespace mlir;
 // XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
 // function: `ConvertToHloModule::RunOnFunction`
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
+  PROFILE_SCOPE("memory donate", Phase::LOWERING_EXTRA)
   OpBuilder opBuilder(context);
   for (int i = 0; i < funcOp.getNumArguments(); i++) {
     // do not donate literal buffers, as we will not reuse
@@ -39,7 +41,12 @@ void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp)
 
 /// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
 /// Return a map mapping original Index -> new Index;
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes) {
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
+  MLIRContext* context, 
+  func::FuncOp& funcOp, 
+  int64_t* ArgTypes
+) {
+  PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA)
   OpBuilder opBuilder(context);
 
 
