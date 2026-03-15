@@ -98,6 +98,30 @@ static PJRT_Buffer* createViewBuffer(
   return cvodbArg.buffer;
 }
 
+
+static PJRT_Buffer* createCPUBuffer(
+  const PJRT_Api *api,
+  PJRT_Client* client,
+  PJRT_Device* device,
+  const TensorDesc& inputArg
+) {
+  PJRT_Client_BufferFromHostBuffer_Args args = {
+    .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+    .client = client,
+    .data = inputArg.data,
+    .type = getPJRTBufferType(inputArg.dtype), 
+    .dims = inputArg.shape,
+    .num_dims = size_t(inputArg.rank),
+    .host_buffer_semantics = PJRT_HostBufferSemantics_kMutableZeroCopy,
+    .device = device
+  };
+  if (!JitManager::checkPJRTError(api,api->PJRT_Client_BufferFromHostBuffer(&args), "Create CPU Buffer")) {
+    std::cerr << "Fail to create Buffer for CPU offloading! Exit...\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return args.buffer;
+}
+
 static PJRT_Buffer* createLiteralBuffer(
   const PJRT_Api *api, 
   PJRT_Client *client,
@@ -162,6 +186,7 @@ static void manageInputBuffers(
   const PJRT_Api *api,
   PJRT_Client* client,
   PJRT_Device* device,
+  TargetDevice targetDevice,
   const TensorDesc* inputArgs,
   const int32_t inputArgCount,
   std::vector<PJRT_Buffer*>& buffers
@@ -172,7 +197,11 @@ static void manageInputBuffers(
     if (inputArgs[i].isLiteral){
       buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);  
     } else {
-      buffers[i] = createViewBuffer(api, client, device, inputArgs[i]);
+      if (targetDevice == TargetDevice::CPU) {
+        buffers[i] = createCPUBuffer(api, client, device, inputArgs[i]);
+      } else {
+        buffers[i] = createViewBuffer(api, client, device, inputArgs[i]);
+      }
     }
   }
   return;
@@ -190,7 +219,6 @@ static void executeLoadedKernelExecutable(
 
   PJRT_ExecuteOptions execute_options = {
     .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
-    .num_non_donatable_input_indices = 0,
   };
 
   const int deviceCount = 1;
@@ -282,7 +310,10 @@ void JitManager::launchKernel(
   // Create Buffer with memory managed by OpenMP
   std::vector<PJRT_Buffer*> inputArgsBufs;
   inputArgsBufs.resize(offloadingArgs->inputArgCount);
-  manageInputBuffers(this->pjrtApi, this->pjrtClient, device, offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputArgsBufs);
+  manageInputBuffers(
+    this->pjrtApi, this->pjrtClient, 
+    device, offloadingArgs->targetDevice,
+    offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputArgsBufs);
   PJRT_Buffer** inputArgsBufsList[] = {inputArgsBufs.data()};
 
   std::vector<PJRT_Buffer*> outputArgsBufs;
