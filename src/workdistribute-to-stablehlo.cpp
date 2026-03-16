@@ -326,7 +326,7 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
         exit(1);
       }
       auto scalarType = RankedTensorType::get({}, lhsTy.getElementType());
-      stablehlo::DotDimensionNumbersAttr attr = {};
+      stablehlo::DotDimensionNumbersAttr attr = stablehlo::DotDimensionNumbersAttr::get(funcOp.getContext(), {}, {}, {0}, {0});
       ArrayAttr precisionConfig = {};
       stablehlo::DotAlgorithmAttr algoAttr = {};
       auto stablehloDotProductOp = stablehlo::DotGeneralOp::create(opBuilder, funcOp->getLoc(), scalarType, lhs, rhs, attr, precisionConfig, algoAttr);

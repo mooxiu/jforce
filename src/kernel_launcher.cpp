@@ -98,7 +98,6 @@ static PJRT_Buffer* createViewBuffer(
   return cvodbArg.buffer;
 }
 
-
 static PJRT_Buffer* createCPUBuffer(
   const PJRT_Api *api,
   PJRT_Client* client,
@@ -172,6 +171,7 @@ static PJRT_Buffer* createLiteralBuffer(
   buffer_args.dims = dims;
   buffer_args.num_dims = 0; // TODO: should reconsider how to set the size and dimmension for general
   buffer_args.device = device;
+  // buffer_args.host_buffer_semantics = PJRT_HostBufferSemantics_kMutableZeroCopy;
  
   auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
   if (err) {
@@ -193,12 +193,18 @@ static void manageInputBuffers(
 ) {
   PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE)
   assert(buffers.size() == inputArgCount && "Buffer size should be the same with arg counts");
-  for (int i = 0; i < inputArgCount; i++) {
-    if (inputArgs[i].isLiteral){
-      buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);  
-    } else {
-      if (targetDevice == TargetDevice::CPU) {
+  if (targetDevice == TargetDevice::CPU) {
+    for (int i = 0; i < inputArgCount; i++) {
+      if (inputArgs[i].isLiteral){
+        buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);  
+      } else {
         buffers[i] = createCPUBuffer(api, client, device, inputArgs[i]);
+      }
+    }
+  } else {
+    for (int i = 0; i < inputArgCount; i++) {
+      if (inputArgs[i].isLiteral){
+        buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);  
       } else {
         buffers[i] = createViewBuffer(api, client, device, inputArgs[i]);
       }

@@ -72,7 +72,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   // Usually 2 contains 1, and we may have false negative (should have trimmed but not), Reasons:
   // - But slow than incorrect
   // - If a buffer not been used, but it's already been moved to device by OpenMP, we will not move extra memory
-  auto argsBeenUsed = [&]() -> llvm::DenseSet<Value> {
+  auto argsToKeep = [&]() -> llvm::DenseSet<Value> {
     llvm::DenseSet<Value> res;
     funcOp.walk([&](Operation* op){
       if (llvm::isa<func::FuncOp>(op) || llvm::isa<func::ReturnOp>(op)){
@@ -89,6 +89,23 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
     return res;
   }();
 
+   // If result returns a different arg, it should be kept. 
+  // For example, arg0 in the following dot product is the return value!
+  //
+  //  func.func @main(%arg0: tensor<f64>, %arg1: tensor<4000000xf64>, %arg2: tensor<4000000xf64>, %arg3: tensor<i32>, %arg4: tensor<i32>) -> (tensor<f64>, tensor<4000000xf64>, tensor<4000000xf64>, tensor<i32>, tensor<i32>) {
+  //  %0 = stablehlo.dot_general %arg1, %arg2, contracting_dims = [0] x [0] : (tensor<4000000xf64>, tensor<4000000xf64>) -> tensor<f64>
+  //  return %0, %arg1, %arg2, %arg3, %arg4 : tensor<f64>, tensor<4000000xf64>, tensor<4000000xf64>, tensor<i32>, tensor<i32>
+  //
+  auto& entryBlock = funcOp.front();
+  auto rOp = mlir::dyn_cast<func::ReturnOp>(entryBlock.getTerminator());
+  assert(rOp && "We should be able to get returnOp!");
+  for (int i = 0; i < funcOp.getNumArguments(); i++) {
+    auto argOprand = funcOp.getArgument(i);
+    if (rOp.getOperand(i) != argOprand) {
+      argsToKeep.insert(argOprand);
+    }
+  };
+
   // Example: 
   // - old indices of args: [0, 1, 2, 3, 4, 5];
   // - indicesToKeep: [1, 3, 4];
@@ -97,7 +114,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
   int currNewIdx = 0;
   for (int oldIdx = 0; oldIdx < funcOp.getNumArguments(); oldIdx++) {
-    if (!isLiteralTy(ArgTypes[oldIdx]) || argsBeenUsed.contains(funcOp.getArgument(oldIdx))) {
+    if (!isLiteralTy(ArgTypes[oldIdx]) || argsToKeep.contains(funcOp.getArgument(oldIdx))) {
       argsIndicesMapping.insert(std::pair(oldIdx, currNewIdx));
       currNewIdx += 1;
     };

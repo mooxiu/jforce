@@ -193,17 +193,15 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   llvm::DenseMap<Value, llvm::SmallVector<int>> sliceShiftMap; 
   inferShape(ctx, moduleOp.get(), NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes, sliceShiftMap);
-  // llvm::dbgs() << "\n after shape infer\n";
-  // llvm::dbgs() << "\nAfter Shape Infer: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(moduleOp) << "\n";
+  DEBUG_PRINT("\nAfter shape Infer:\n" + getMLIROperationAsString(moduleOp.get()));
+  
   func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp.get(), sliceShiftMap);
-  // llvm::dbgs() << "\n after lowering to workdistribute\n";
-  // std::cerr << "\nAfter Workdistribute: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
+  DEBUG_PRINT("\nAfter lowering to wd:\n" + getMLIROperationAsString(kernelFunc));
+
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
-  // llvm::dbgs() << "\n after optimizing signature\n";
 
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
-  // llvm::dbgs() << "\n after trim shape args\n";
-  // llvm::dbgs() << "Transform the jit call into: >>>>>>>>>>>>>>>>>>>>>>>>>>>\n" << getMLIROperationAsString(kernelFunc) << "\n";
+  DEBUG_PRINT("\nAfter trim shape args:\n" + getMLIROperationAsString(kernelFunc));
   
 
   if (l1JitMetas == nullptr) {
