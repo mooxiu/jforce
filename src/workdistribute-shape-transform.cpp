@@ -26,7 +26,7 @@ using namespace mlir;
 // XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`, 
 // function: `ConvertToHloModule::RunOnFunction`
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp) {
-  PROFILE_SCOPE("memory donate", Phase::LOWERING_EXTRA)
+  PROFILE_SCOPE("memory donate", Phase::LOWERING_EXTRA);
   OpBuilder opBuilder(context);
   for (int i = 0; i < funcOp.getNumArguments(); i++) {
     // do not donate literal buffers, as we will not reuse
@@ -46,7 +46,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   func::FuncOp& funcOp, 
   int64_t* ArgTypes
 ) {
-  PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA)
+  PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
   OpBuilder opBuilder(context);
 
 

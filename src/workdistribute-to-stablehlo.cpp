@@ -826,7 +826,7 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 /// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 /// but should also be compatible with following code.
 func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
-  PROFILE_SCOPE("workdistributeToStableHLO", Phase::LOWERING_TO_STABLEHLO)
+  PROFILE_SCOPE("workdistributeToStableHLO", Phase::LOWERING_TO_STABLEHLO);
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;
   func::FuncOp stableHLOFuncOp;

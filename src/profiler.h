@@ -57,9 +57,10 @@ public:
 };
 
   #define CONCAT_IMPL(x, y) x##y
+  #define MACRO_CONCAT(x, y) CONCAT_IMPL(x, y)
 
   #define PROFILE_SCOPE(kernelName, phase) \
-    ProfilerRecorder CONCAT_IMPL(rec_, __LINE__)(kernelName, phase);
+    ProfilerRecorder MACRO_CONCAT(rec_, __LINE__)(kernelName, phase)
   
 #else
 

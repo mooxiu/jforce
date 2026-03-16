@@ -319,7 +319,7 @@ L2JitMetas* JitManager::createL2JitMetas(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
   TargetDevice td
 ){
-  PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE) 
+  PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE);
 
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
   auto exec = this->compilePJRTExecutable(kernelFuncStr, td);

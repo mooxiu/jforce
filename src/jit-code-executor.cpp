@@ -132,7 +132,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgBasePtrs, void **ArgPtrs,
                                    int64_t *ArgSizes, int64_t *ArgTypes,
                                    void **ArgNames) {
-  PROFILE_SCOPE("total", Phase::TOTAL)
+  PROFILE_SCOPE("total", Phase::TOTAL);
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   // llvm::dbgs() << "\nreceive a jit call\n";
