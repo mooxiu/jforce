@@ -136,16 +136,15 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   // llvm::dbgs() << "\nreceive a jit call\n";
-  assert(NumArgs == NumHostArgs);
 
 // #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
 // #define h(A)                                                                   \
 //   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
-//   // for (unsigned I = 0; I < NumArgs; I++) {
-//   //   std::cerr << "Device Arg #" << I << ":\n";
-//   //   p(TgtArgs);
-//   //   p(TgtOffsets);
-//   // }
+//   for (unsigned I = 0; I < NumArgs; I++) {
+//     std::cerr << "Device Arg #" << I << ":\n";
+//     p(TgtArgs);
+//     p(TgtOffsets);
+//   }
 //   for (unsigned I = 0; I < NumHostArgs; I++) {
 //     std::cerr << "Host Arg #" << I << ":\n";
 //     p(ArgBasePtrs);
@@ -153,13 +152,11 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 //     p(ArgSizes);
 //     h(ArgTypes);
 //     h(ArgNames);
-//
-//     std::cerr << "Device Arg #" << I << ":\n";
-//     p(TgtArgs);
-//     p(TgtOffsets);
 //   }
 // #undef p
 // #undef h
+  
+  assert(NumArgs == NumHostArgs);
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCodePtrUint);
@@ -189,7 +186,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   MLIRContext* ctx = JitManager::getInstance().getContext();
   // Use OweningOpRef so RAII can help to destroy the tree
   mlir::OwningOpRef<mlir::ModuleOp> moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
-  // llvm::dbgs() << "\nget its moduleOp\n";
+  DEBUG_PRINT("\nThe module we got: \n" + getMLIROperationAsString(moduleOp.get()));
 
   llvm::DenseMap<Value, llvm::SmallVector<int>> sliceShiftMap; 
   inferShape(ctx, moduleOp.get(), NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes, sliceShiftMap);
