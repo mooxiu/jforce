@@ -1,5 +1,7 @@
+#include "kernel_pointer_interface.h"
 #include "profiler.h"
 #include "utilities.h"
+#include "workdistribute-transform.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -17,6 +19,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <vector>
 
 using namespace mlir;
 
@@ -44,7 +47,7 @@ void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp)
 llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   MLIRContext* context, 
   func::FuncOp& funcOp, 
-  int64_t* ArgTypes
+  const std::vector<RegularizedTgtArg>& deviceArgs
 ) {
   PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
   OpBuilder opBuilder(context);
@@ -114,7 +117,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
   int currNewIdx = 0;
   for (int oldIdx = 0; oldIdx < funcOp.getNumArguments(); oldIdx++) {
-    if (!isLiteralTy(ArgTypes[oldIdx]) || argsToKeep.contains(funcOp.getArgument(oldIdx))) {
+    if ((!deviceArgs[oldIdx].isLiteral) || argsToKeep.contains(funcOp.getArgument(oldIdx))) {
       argsIndicesMapping.insert(std::pair(oldIdx, currNewIdx));
       currNewIdx += 1;
     };

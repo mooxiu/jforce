@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "kernel_pointer_interface.h"
 #include "profiler.h"
 #include "utilities.h"
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <mlir/IR/MLIRContext.h>
 #include <string>
 #include <utility>
+#include <vector>
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -199,20 +201,17 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr, const char* JitCode
 
 // Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs 
 llvm::SmallVector<uint64_t, 128> JitManager::getL2JitMetasKey(
-  int64_t NumArgs, 
-  int64_t* ArgTypes, 
-  void** TgtArgs, 
-  int64_t* ArgSizes, 
+  const std::vector<RegularizedTgtArg>& deviceArgs, 
   uintptr_t JitCodePtr, 
   llvm::DenseSet<int> argsIndices
 ){
   llvm::SmallVector<uint64_t, 128> key;
 
   key.push_back(JitCodePtr);
-  for (int i = 0; i < NumArgs; i++) {
-    key.push_back(ArgSizes[i]);
-    if (argsIndices.contains(i) && isLiteralTy(ArgTypes[i])) {
-      key.push_back(reinterpret_cast<uintptr_t>(TgtArgs[i]));
+  for (int i = 0; i < deviceArgs.size(); i++) {
+    key.push_back(deviceArgs[i].size);
+    if (argsIndices.contains(i) && deviceArgs[i].isLiteral) {
+      key.push_back(reinterpret_cast<uintptr_t>(deviceArgs[i].dataRawPtr));
     }
   }
   return key;

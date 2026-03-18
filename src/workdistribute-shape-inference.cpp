@@ -1,6 +1,8 @@
+#include "kernel_pointer_interface.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "profiler.h"
 #include "utilities.h"
+#include "workdistribute-transform.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
@@ -286,10 +288,7 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp, llv
 void inferShape(
   MLIRContext* ctx,
   ModuleOp moduleOp,
-  int64_t NumHostArgs, 
-  void** ArgBasePtrs, 
-  int64_t* ArgSizes, 
-  int64_t* ArgTypes,
+  const std::vector<RegularizedTgtArg>& deviceArgs,
   llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap 
 ) {
   PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
@@ -303,11 +302,10 @@ void inferShape(
   // some parameters containing the shape info are passed as pointer like
   moduleOp.walk([&](func::FuncOp funcOp){
 
-    assert(NumHostArgs == funcOp.getNumArguments() && "NumHostArgs is not equal to funcOp args count!!");
+    assert(deviceArgs.size() == funcOp.getNumArguments() && "NumArgs is not equal to funcOp args count!!");
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      auto ty = ArgTypes[i];
-      if (isLiteralTy(ty)) {
-        int constVal = (int)reinterpret_cast<std::uintptr_t>(ArgBasePtrs[i]);
+      if (deviceArgs[i].isLiteral) {
+        int constVal = (int)reinterpret_cast<std::uintptr_t>(deviceArgs[i].dataRawPtr);
         valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constVal));
       }
     };

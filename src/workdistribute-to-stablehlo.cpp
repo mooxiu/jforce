@@ -55,6 +55,7 @@
 #include <omp.h>
 #include <string>
 #include "utilities.h"
+#include "workdistribute-transform.h"
 
 using namespace mlir;
 

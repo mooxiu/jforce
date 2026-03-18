@@ -6,6 +6,14 @@
 #include "llvm/Support/raw_ostream.h"
 #include "../third_party/headers/pjrt_c_api.h"
 
+struct RegularizedTgtArg {
+  void* dataRawPtr;
+  int64_t size;
+  int64_t type;
+  bool isLiteral;
+};
+
+
 enum class DType : int32_t {
   F32 = 0,
   F64 = 1,

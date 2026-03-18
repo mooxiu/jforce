@@ -28,6 +28,9 @@ public:
 };
 
 bool isLiteralTy(int64_t argType);
+bool isMappedTy(int64_t argType);
+bool isPartOfStructTy(int64_t argType); 
+bool isPointerAndPointeeTy(int64_t argType); 
 
 bool isDynamicShape(mlir::Type type);
 

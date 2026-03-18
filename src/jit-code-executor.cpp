@@ -44,6 +44,7 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
+#include <string>
 #include <sys/types.h>
 #include <utility>
 #include <vector>
@@ -51,10 +52,9 @@
 #include "jit-manager.h"
 #include "profiler.h"
 #include "utilities.h"
-
+#include "workdistribute-transform.h"
 
 using namespace mlir;
-
 
 static TargetDevice getTargetDevice() {
 #ifdef TARGET_DEVICE 
@@ -68,24 +68,48 @@ static TargetDevice getTargetDevice() {
 }
 
 
-void inferShape(MLIRContext* ctx, ModuleOp moduleOp, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap); 
-void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
+std::vector<RegularizedTgtArg> getTgtArgsVec(
+  int64_t NumArgs,
+  void **TgtArgs, 
+  int64_t NumHostArgs,
+  int64_t *ArgSizes, 
+  int64_t *ArgTypes
+) {
+  assert(NumHostArgs >= NumArgs && "Suppose Host Args Should be larger or equal to device args");
+  std::vector<RegularizedTgtArg> regularTgtArgs;
+  regularTgtArgs.resize(NumArgs);  
+  int currTgtIdx = -1;
 
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap);
-
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes);
-
+  for (int i = 0; i < NumHostArgs; i++) {
+    auto ty = ArgTypes[i];
+    if (isMappedTy(ty)) {
+      // This is the start of a new Target Struct
+      currTgtIdx += 1;
+      regularTgtArgs[currTgtIdx].dataRawPtr = TgtArgs[currTgtIdx];
+      regularTgtArgs[currTgtIdx].type = ArgTypes[i];
+      regularTgtArgs[currTgtIdx].size = ArgSizes[i];
+      if (isLiteralTy(ty)) {
+        regularTgtArgs[currTgtIdx].isLiteral = true;
+      }
+    } else {
+      assert(isPartOfStructTy(ty) && "Host arg should either be beginning of a target or part of it!");
+      if (isPartOfStructTy(ty) && isPointerAndPointeeTy(ty)) {
+        // Update the size to this real size 
+        regularTgtArgs[currTgtIdx].size = ArgSizes[i]; 
+      }
+    }
+  }
+  return regularTgtArgs;
+}
 
 
 bool fillKernelFuncArgs(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping, 
   TensorDesc* newArgs,
   ArrayRef<Type> kernelFuncTypes, 
-  int64_t NumHostArgs, 
-  int64_t *ArgTypes,
-  void** TgtArgs 
+  const std::vector<RegularizedTgtArg>& deviceArgs
 ) {
-  for (int oldIdx = 0; oldIdx < NumHostArgs ; oldIdx++){
+  for (int oldIdx = 0; oldIdx < deviceArgs.size(); oldIdx++){
     if (!argsIndicesMapping.contains(oldIdx)) {
       continue;
     }
@@ -95,7 +119,7 @@ bool fillKernelFuncArgs(
     auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
 
     newArgs[newIdx] = (struct TensorDesc){
-      .data = TgtArgs[oldIdx],
+      .data = deviceArgs[oldIdx].dataRawPtr,
       .shape = rtType.getShape().data(),
       .rank = (int32_t)rtType.getRank(),
       .dtype = [&](){
@@ -115,7 +139,7 @@ bool fillKernelFuncArgs(
           exit(EXIT_FAILURE);
         }
       }(),
-      .isLiteral = isLiteralTy(ArgTypes[oldIdx]),
+      .isLiteral = deviceArgs[oldIdx].isLiteral,
     };
   }
   return true;
@@ -136,43 +160,42 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" << JitCodeC << "\n";
   // llvm::dbgs() << "\nreceive a jit call\n";
-  assert(NumArgs == NumHostArgs);
 
-// #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
-// #define h(A)                                                                   \
-//   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
-//   // for (unsigned I = 0; I < NumArgs; I++) {
-//   //   std::cerr << "Device Arg #" << I << ":\n";
-//   //   p(TgtArgs);
-//   //   p(TgtOffsets);
-//   // }
-//   for (unsigned I = 0; I < NumHostArgs; I++) {
-//     std::cerr << "Host Arg #" << I << ":\n";
-//     p(ArgBasePtrs);
-//     p(ArgPtrs);
-//     p(ArgSizes);
-//     h(ArgTypes);
-//     h(ArgNames);
-//
-//     std::cerr << "Device Arg #" << I << ":\n";
-//     p(TgtArgs);
-//     p(TgtOffsets);
-//   }
-// #undef p
-// #undef h
+#define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
+#define h(A)                                                                   \
+  std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
+  for (unsigned I = 0; I < NumArgs; I++) {
+    std::cerr << "Device Arg #" << I << ":\n";
+    p(TgtArgs);
+    p(TgtOffsets);
+  }
+  for (unsigned I = 0; I < NumHostArgs; I++) {
+    std::cerr << "Host Arg #" << I << ":\n";
+    p(ArgBasePtrs);
+    p(ArgPtrs);
+    p(ArgSizes);
+    h(ArgTypes);
+    h(ArgNames);
+  }
+#undef p
+#undef h
+
+
+  std::vector<RegularizedTgtArg> regularTgtArgs = getTgtArgsVec(NumArgs, TgtArgs, NumHostArgs, ArgSizes, ArgTypes);
+  assert(NumArgs == regularTgtArgs.size());
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCodePtrUint);
   llvm::SmallVector<uint64_t, 128> l2Key;
 
   if (l1JitMetas != nullptr) {
-    l2Key = JitManager::getInstance().getL2JitMetasKey(NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, l1JitMetas->argsIndices);
+    l2Key = JitManager::getInstance().getL2JitMetasKey(regularTgtArgs, JitCodePtrUint, l1JitMetas->argsIndices);
     auto l2JitMetas = JitManager::getInstance().tryGetL2JitMetas(l2Key);
 
     if (l2JitMetas != nullptr) {
       // auto kernelFunc = jitMeta->kernelFunc;
       std::vector<TensorDesc> newArgs(l2JitMetas->kernelFuncTypes.size()); 
-      fillKernelFuncArgs(l2JitMetas->argsIndicesMapping, newArgs.data(), l2JitMetas->kernelFuncTypes, NumHostArgs, ArgTypes, TgtArgs);  
+      fillKernelFuncArgs(l2JitMetas->argsIndicesMapping, newArgs.data(), l2JitMetas->kernelFuncTypes, regularTgtArgs);  
       auto kArgs = (KernelArgs){
         .inputArgCount = l2JitMetas->argsIndicesMapping.size(),
         .inputArgs = newArgs.data(),
@@ -189,10 +212,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   MLIRContext* ctx = JitManager::getInstance().getContext();
   // Use OweningOpRef so RAII can help to destroy the tree
   mlir::OwningOpRef<mlir::ModuleOp> moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
-  // llvm::dbgs() << "\nget its moduleOp\n";
+  DEBUG_PRINT("\nThe module we got: \n" + getMLIROperationAsString(moduleOp.get()));
 
   llvm::DenseMap<Value, llvm::SmallVector<int>> sliceShiftMap; 
-  inferShape(ctx, moduleOp.get(), NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes, sliceShiftMap);
+  inferShape(ctx, moduleOp.get(), regularTgtArgs, sliceShiftMap);
   DEBUG_PRINT("\nAfter shape Infer:\n" + getMLIROperationAsString(moduleOp.get()));
   
   func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp.get(), sliceShiftMap);
@@ -200,19 +223,19 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
 
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
+  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, regularTgtArgs);
   DEBUG_PRINT("\nAfter trim shape args:\n" + getMLIROperationAsString(kernelFunc));
   
 
   if (l1JitMetas == nullptr) {
     llvm::DenseSet<int> argsIndices;
-    for (int i = 0; i < NumArgs; i++) {
+    for (int i = 0; i < regularTgtArgs.size(); i++) {
       // not contains in argsIndicesMapping, meaning it's the shape arguments that been trimmed above
       if (!argsIndicesMapping.contains(i)) {
         argsIndices.insert(i);
       }
     }
-    l2Key = JitManager::getInstance().getL2JitMetasKey(NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, argsIndices);
+    l2Key = JitManager::getInstance().getL2JitMetasKey(regularTgtArgs, JitCodePtrUint, argsIndices);
     JitManager::getInstance().saveL1JitMetas(JitCodePtrUint, std::move(argsIndices));
   }
   
@@ -220,7 +243,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   std::vector<TensorDesc> newArgs(createdL2JitMetas->kernelFuncTypes.size());
 
-  if (fillKernelFuncArgs(argsIndicesMapping, newArgs.data(), createdL2JitMetas->kernelFuncTypes, NumHostArgs, ArgTypes, TgtArgs)) {
+  if (fillKernelFuncArgs(argsIndicesMapping, newArgs.data(), createdL2JitMetas->kernelFuncTypes, regularTgtArgs)) {
     KernelArgs args = (struct KernelArgs){
       .inputArgCount = argsIndicesMapping.size(),
       .inputArgs = newArgs.data(),

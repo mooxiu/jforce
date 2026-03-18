@@ -79,10 +79,7 @@ public:
   void saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseSet<int> argsIndices);
  
   llvm::SmallVector<uint64_t, 128> getL2JitMetasKey(
-    int64_t NumArgs, 
-    int64_t* ArgTypes, 
-    void** TgtArgs, 
-    int64_t* ArgSizes, 
+    const std::vector<RegularizedTgtArg>& deviceArgs, 
     uintptr_t JitCodePtr, 
     llvm::DenseSet<int> argsIndices
   );
