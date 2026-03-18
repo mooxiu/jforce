@@ -1,3 +1,4 @@
+#include "jit-manager.h"
 #include "kernel_pointer_interface.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "profiler.h"
@@ -29,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
@@ -292,53 +294,43 @@ void inferShape(
   llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap 
 ) {
   PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
-  // Key: index of the arguments of the function, value: if the argment is literal type, we know the value of the arg 
-  llvm::DenseMap<uint, uint> shapeConstMap;
-  llvm::DenseMap<Value, int> valueMap;
+  llvm::DenseMap<Value, int> constValueMap;
 
   mlir::PassManager pm(ctx);
   OpBuilder opBuilder(ctx);
 
-  // some parameters containing the shape info are passed as pointer like
-  moduleOp.walk([&](func::FuncOp funcOp){
-
-    assert(deviceArgs.size() == funcOp.getNumArguments() && "NumArgs is not equal to funcOp args count!!");
-    for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      if (deviceArgs[i].isLiteral) {
-        int constVal = (int)reinterpret_cast<std::uintptr_t>(deviceArgs[i].dataRawPtr);
-        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constVal));
-      }
-    };
+  moduleOp.walk([&](Operation* op){
+    mlir::TypeSwitch<Operation*>(op)
+      .Case([&](hlfir::DeclareOp dop){
+        // Sometimes it's included in declare Op
+        // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
+        // ...
+        // %4 = fir.load %2#0 : !fir.ref<i32>
+        if (dop.getNumOperands() == 1 && constValueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
+          constValueMap.insert(std::pair<Value, int>(dop.getResults()[0], constValueMap.lookup(dop.getOperand(0))));
+        }
+      })
+      .Case([&](func::FuncOp funcOp){
+        assert(deviceArgs.size() <= funcOp.getNumArguments() && "FunctionOp's args can over capture. For array, it can capture box and raw pointer!");
+        for (int i = 0; i < deviceArgs.size(); i++) {
+          if (deviceArgs[i].isLiteral) {
+            int constVal = (int)reinterpret_cast<std::uintptr_t>(deviceArgs[i].dataRawPtr);
+            constValueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constVal));
+          }
+        };
+      }); 
   });
-  // llvm::dbgs() << "\n # after get arguments\n";
 
-  moduleOp->walk([&](hlfir::DeclareOp dop){
-    // Sometimes it's included in declare Op
-    // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
-    // ...
-    // %4 = fir.load %2#0 : !fir.ref<i32>
-    if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
-      valueMap.insert(std::pair<Value, int>(dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
-    } 
-  }); 
-  
-  // llvm::dbgs() << "\n # after walk dops\n";
+  DEBUG_PRINT("Printing constValueMap:");
+  for (const auto& pair: constValueMap) {
+    llvm::dbgs() << "Key: ";
+    pair.getFirst().printAsOperand(llvm::dbgs(), {});
+    llvm::dbgs() << "; Value: " << pair.getSecond() << "\n";
+  };
 
   for (auto funcOp: moduleOp.getOps<func::FuncOp>()) {
-    for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      if (shapeConstMap.contains(i)) {
-        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), shapeConstMap.at(i)));
-      }
-    }
-
-    // std::cerr << "\nBefore Prepro: ====================================\n";
-    preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
-    // llvm::dbgs() << "\n ## after preproc with exesiting passes\n";
-
-    // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
-
+    preprocWithExistingPasses(opBuilder, pm, funcOp, constValueMap);
     shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
-    // llvm::dbgs() << "\n ## after shape inference internal\n";
   }
   return;
 }
