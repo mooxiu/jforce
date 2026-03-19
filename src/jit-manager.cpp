@@ -26,6 +26,7 @@
 #include "mlir/Parser/Parser.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 
 
 std::string getPluginPath() {
@@ -133,7 +134,8 @@ JitManager::JitManager() {
     fir::FIROpsDialect, 
     hlfir::hlfirDialect,
     mlir::arith::ArithDialect, 
-    mlir::stablehlo::StablehloDialect>();
+    mlir::stablehlo::StablehloDialect,
+    mlir::math::MathDialect>();
 
 
   // Iniialize PJRT_API

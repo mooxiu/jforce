@@ -4,7 +4,9 @@
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "flang/Optimizer/Transforms/Passes.h"
+#include "jit-manager.h"
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Value.h"
@@ -192,6 +194,32 @@ static func::FuncOp createFunction(mlir::MLIRContext* context,
   return funcOp;
 }
 
+
+static void handleArithUnaryOp(
+  TrackingInfo& tracking, 
+  OpBuilder& opBuilder, 
+  func::FuncOp& funcOp, 
+  Operation* unaryOp
+) {
+  assert(unaryOp->hasTrait<mlir::OpTrait::OneResult>());
+  assert(unaryOp->hasTrait<mlir::OpTrait::OneOperand>());
+  auto operand = unaryOp->getOperand(0);
+  auto result = unaryOp->getResult(0);
+  auto operandSrc = tracking.valueMap.lookup(operand);
+  assert(operandSrc && "OperandSource should exist!");
+  llvm::TypeSwitch<Operation*>(unaryOp)
+    .Case([&](mlir::math::SinOp sop){
+      // should have same type
+      auto resTy = toCorrespondingTensorTy(operandSrc.getType());   
+      auto sinOp = stablehlo::SineOp::create(opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
+      tracking.valueMap.map(result, sinOp.getResult());       
+    })
+    .Case([&](mlir::math::ExpOp eop){
+      auto resTy = toCorrespondingTensorTy(operandSrc.getType());
+      auto stablehloExOp = stablehlo::ExpOp::create(opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
+      tracking.valueMap.map(result, stablehloExOp.getResult());
+    });
+}
 
 /// Only support increase one dimension right now, for example:
 /// - tensor<f32> -> tensor<10xf32>
@@ -388,6 +416,7 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
 }
 
 
+/// DesignateOp can generate slice
 static void handleDesignateOp(
   TrackingInfo& tracking, 
   OpBuilder &opBuilder, 
@@ -727,10 +756,7 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
                                      func::FuncOp& funcOp, // TODO: do not need &
                                      Operation *op,
                                      llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
-  // llvm::dbgs() << "\n -> currOp: \n";
-  // op->print(llvm::dbgs());
-  // llvm::dbgs() << "\n";
-  //
+  DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {
@@ -787,6 +813,12 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       })
       .Case<arith::DivFOp>([&](arith::DivFOp divFOp){
         handleArithBinaryOp(tracking, opBuilder, funcOp, divFOp);
+      })
+      .Case<math::SinOp>([&](math::SinOp sop){
+        handleArithUnaryOp(tracking, opBuilder, funcOp, sop);
+      })
+      .Case<math::ExpOp>([&](math::ExpOp eop){
+        handleArithUnaryOp(tracking, opBuilder, funcOp, eop);
       })
       .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
         handleBuiltinOperators(tracking, opBuilder, funcOp, matmulOp);
