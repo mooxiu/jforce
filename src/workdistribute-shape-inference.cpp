@@ -295,43 +295,48 @@ void inferShape(
 ) {
   PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
   llvm::DenseMap<Value, int> constValueMap;
-
   mlir::PassManager pm(ctx);
   OpBuilder opBuilder(ctx);
 
-  moduleOp.walk([&](Operation* op){
-    mlir::TypeSwitch<Operation*>(op)
-      .Case([&](hlfir::DeclareOp dop){
-        // Sometimes it's included in declare Op
-        // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
-        // ...
-        // %4 = fir.load %2#0 : !fir.ref<i32>
-        if (dop.getNumOperands() == 1 && constValueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
-          constValueMap.insert(std::pair<Value, int>(dop.getResults()[0], constValueMap.lookup(dop.getOperand(0))));
-        }
-      })
-      .Case([&](func::FuncOp funcOp){
-        assert(deviceArgs.size() <= funcOp.getNumArguments() && "FunctionOp's args can over capture. For array, it can capture box and raw pointer!");
-        for (int i = 0; i < deviceArgs.size(); i++) {
-          if (deviceArgs[i].isLiteral) {
-            int constVal = (int)reinterpret_cast<std::uintptr_t>(deviceArgs[i].dataRawPtr);
-            constValueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constVal));
-          }
-        };
-      }); 
-  });
-
-  DEBUG_PRINT("Printing constValueMap:");
-  for (const auto& pair: constValueMap) {
-    llvm::dbgs() << "Key: ";
-    pair.getFirst().printAsOperand(llvm::dbgs(), {});
-    llvm::dbgs() << "; Value: " << pair.getSecond() << "\n";
-  };
 
   for (auto funcOp: moduleOp.getOps<func::FuncOp>()) {
-    preprocWithExistingPasses(opBuilder, pm, funcOp, constValueMap);
-    shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
+    if (deviceArgs.size() == funcOp.getNumArguments()) {
+      // Called in subroutine, shape are passed in extra arguments.
+      // Do Shape inference.
+      funcOp.walk([&](Operation* op){
+        mlir::TypeSwitch<Operation*>(op)
+        .Case([&](hlfir::DeclareOp dop){
+          // Sometimes it's included in declare Op
+          // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
+          // ...
+          // %4 = fir.load %2#0 : !fir.ref<i32>
+          if (dop.getNumOperands() == 1 && constValueMap.contains(dop.getOperand(0)) && dop.getNumResults() > 0) {
+            constValueMap.insert(std::pair<Value, int>(dop.getResults()[0], constValueMap.lookup(dop.getOperand(0))));
+          }
+        })
+        .Case([&](func::FuncOp funcOp){
+          assert(deviceArgs.size() <= funcOp.getNumArguments() && "FunctionOp's args can over capture. For array, it can capture box and raw pointer!");
+          for (int i = 0; i < deviceArgs.size(); i++) {
+            if (deviceArgs[i].isLiteral) {
+              int constVal = (int)reinterpret_cast<std::uintptr_t>(deviceArgs[i].dataRawPtr);
+              constValueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), constVal));
+            }
+          };
+        }); 
+      });
+      DEBUG_PRINT("Printing constValueMap:");
+      for (const auto& pair: constValueMap) {
+        llvm::dbgs() << "Key: ";
+        pair.getFirst().printAsOperand(llvm::dbgs(), {});
+        llvm::dbgs() << "; Value: " << pair.getSecond() << "\n";
+      };
+
+      preprocWithExistingPasses(opBuilder, pm, funcOp, constValueMap);
+      shapeInferenceInternal(opBuilder, funcOp, sliceShiftMap);
+    } else {
+      // Shape info are already known, we need to do injection 
+      
+    }
   }
-  return;
 }
 

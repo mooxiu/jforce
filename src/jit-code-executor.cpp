@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include "flang/ISO_Fortran_binding.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
@@ -72,6 +73,7 @@ std::vector<RegularizedTgtArg> getTgtArgsVec(
   int64_t NumArgs,
   void **TgtArgs, 
   int64_t NumHostArgs,
+  void **ArgPtrs,
   int64_t *ArgSizes, 
   int64_t *ArgTypes
 ) {
@@ -90,7 +92,9 @@ std::vector<RegularizedTgtArg> getTgtArgsVec(
       regularTgtArgs[currTgtIdx].size = ArgSizes[i];
       if (isLiteralTy(ty)) {
         regularTgtArgs[currTgtIdx].isLiteral = true;
-      }
+      } else if (ArgSizes[i] == 72) {
+        auto desc = static_cast<CFI_cdesc_t*>(ArgPtrs[i]);
+      } 
     } else {
       assert(isPartOfStructTy(ty) && "Host arg should either be beginning of a target or part of it!");
       if (isPartOfStructTy(ty) && isPointerAndPointeeTy(ty)) {
@@ -181,7 +185,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 #undef h
 
 
-  std::vector<RegularizedTgtArg> regularTgtArgs = getTgtArgsVec(NumArgs, TgtArgs, NumHostArgs, ArgSizes, ArgTypes);
+  std::vector<RegularizedTgtArg> regularTgtArgs = getTgtArgsVec(NumArgs, TgtArgs, NumHostArgs, ArgPtrs, ArgSizes, ArgTypes);
   assert(NumArgs == regularTgtArgs.size());
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
