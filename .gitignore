@@ -2,6 +2,7 @@
 *.venv
 build
 build_debug
+build_memkf01
 third_party/pjrt_plugins/*.so
 third_party/pjrt_plugins/*.so_bk*
 third_party/libs
