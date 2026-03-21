@@ -98,7 +98,7 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
     std::string tmp = getDeviceDescription(api, device_args.addressable_devices[i]);
     DEBUG_PRINT("Read device description: " + tmp);
     std::transform(tmp.begin(), tmp.end(), tmp.begin(),
-                   [](auto c) { return std::tolower(c); });
+                   [](unsigned char c) { return std::tolower(c); });
     DEBUG_PRINT("After lower: " + tmp);
     if (tmp.find(deviceDescKeyword) != std::string::npos) {
       chosen_device_idx = i;
@@ -118,6 +118,8 @@ PJRT_Device* JitManager::getPJRTDevice(TargetDevice td) {
   if (this->pjrtDevice) {
     return this->pjrtDevice;
   }
+
+  DEBUG_PRINT("Trying to get device: " + std::to_string(td));
   if (td == TargetDevice::CPU) {
     this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cpu");
   } else if (td == TargetDevice::CUDA){
