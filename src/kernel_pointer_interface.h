@@ -19,6 +19,7 @@ PJRT_Buffer_Type getPJRTBufferType(DType dtype);
 enum class TargetDevice : int32_t {
   CPU = 0,
   CUDA = 1,
+  ROCM = 2,
 };
 
 /**

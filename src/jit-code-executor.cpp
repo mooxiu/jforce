@@ -44,6 +44,7 @@
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <omp.h>
 #include <ostream>
+#include <string_view>
 #include <sys/types.h>
 #include <utility>
 #include <vector>
@@ -60,6 +61,8 @@ static TargetDevice getTargetDevice() {
 #ifdef TARGET_DEVICE 
   if constexpr (std::string_view(TARGET_DEVICE) == "CUDA") {
     return TargetDevice::CUDA;
+  } else if constexpr (std::string_view(TARGET_DEVICE) == "ROCM") {
+    return TargetDevice::ROCM; 
   }
   return TargetDevice::CPU;
 #else

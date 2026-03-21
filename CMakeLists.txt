@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # I have to put here before "project" so it knows the place of Fortran Compiler
 set(HOME $ENV{HOME})
 set(CURR_ENV "REMOTE") # <- Change this for different environment
-set(CURR_DEVICE "CPU") # <- Change this for different environment
+set(CURR_DEVICE "ROCM") # CPU/CUDA/ROCM <- Change this for different environment
 set(MACHINE_NAME "memfk01")
 
 if (CURR_ENV STREQUAL "LOCAL")
@@ -11,17 +11,24 @@ if (CURR_ENV STREQUAL "LOCAL")
   set(TARGET_DEVICE_NAME "CPU")
   set(LLVM_INSTALL_PATH "${HOME}/Documents/workspace/projects/llvm-project/build")
   set(STABLEHLO_PROJECT "${HOME}/Documents/workspace/projects/stablehlo")
+
 elseif (CURR_ENV STREQUAL "REMOTE")
   if (CURR_DEVICE STREQUAL "CPU") 
     set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_cpu_plugin.so")
     set(TARGET_DEVICE_NAME "CPU")
-  else()
+  elseif (CURR_DEVICE STREQUAL "CUDA") 
     set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_gpu_plugin.so")
     set(TARGET_DEVICE_NAME "CUDA")
+  elseif (CURR_DEVICE STREQUAL "ROCM")
+    set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_gpu_plugin.rocm.memkf01-20260321.so")
+    set(TARGET_DEVICE_NAME "ROCM")
   endif()
 
   if (MACHINE_NAME STREQUAL "memfk01") 
     set(LLVM_INSTALL_PATH "${HOME}/projects/llvm-project/build-memkf01")
+    set(STABLEHLO_PROJECT "${HOME}/projects/stablehlo")
+  elseif(MACHINE_NAME STREQUAL "memfk03")
+    set(LLVM_INSTALL_PATH "${HOME}/projects/llvm-project/build-memkf03")
     set(STABLEHLO_PROJECT "${HOME}/projects/stablehlo")
   else()
     set(LLVM_INSTALL_PATH "${HOME}/projects/llvm-project/build")
@@ -30,7 +37,7 @@ elseif (CURR_ENV STREQUAL "REMOTE")
 endif()
 
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
-set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
+# set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 
 project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
