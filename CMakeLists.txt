@@ -36,6 +36,7 @@ elseif (CURR_ENV STREQUAL "REMOTE")
   endif()
 endif()
 
+# When commenting this line, need also to assign spack env on remote machines! 
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
 # set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 

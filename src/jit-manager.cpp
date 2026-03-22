@@ -96,7 +96,7 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
   std::string desc = ""; // for logging purpose
   for (int i = 0; i < device_args.num_addressable_devices; i++) {
     std::string tmp = getDeviceDescription(api, device_args.addressable_devices[i]);
-    DEBUG_PRINT("Read device description: " + tmp);
+    DEBUG_PRINT("Read device description: " + tmp + ", and trying to find device: " + deviceDescKeyword);
     std::transform(tmp.begin(), tmp.end(), tmp.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     DEBUG_PRINT("After lower: " + tmp);
@@ -119,14 +119,14 @@ PJRT_Device* JitManager::getPJRTDevice(TargetDevice td) {
     return this->pjrtDevice;
   }
 
-  DEBUG_PRINT("Trying to get device: " + std::to_string(td));
+  DEBUG_PRINT("Trying to get device: " + std::to_string((int32_t)td));
   if (td == TargetDevice::CPU) {
     this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cpu");
-  } else if (td == TargetDevice::CUDA){
+  } else if (td == TargetDevice::CUDA) {
     this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cuda");
-  } else if (td == TargetDevice::ROCM){
+  } else if (td == TargetDevice::ROCM) {
     this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "rocm");
-  }{
+  } else {
     std::cerr << "Fail to find device!\n";
     std::exit(EXIT_FAILURE);
   }
