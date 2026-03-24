@@ -201,8 +201,7 @@ static void handleArithUnaryOp(
   func::FuncOp& funcOp, 
   Operation* unaryOp
 ) {
-  assert(unaryOp->hasTrait<mlir::OpTrait::OneResult>());
-  assert(unaryOp->hasTrait<mlir::OpTrait::OneOperand>());
+  assert(unaryOp->getNumResults() == 1 && unaryOp->getNumOperands() == 1);
   auto operand = unaryOp->getOperand(0);
   auto result = unaryOp->getResult(0);
   auto operandSrc = tracking.valueMap.lookup(operand);
@@ -232,8 +231,7 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
                                 Operation* arithOp) {
   // llvm::dbgs() << "\n Handling Arith Binary OP: " << getMLIROperationAsString(arithOp) << "\n";
 
-  assert(arithOp->hasTrait<mlir::OpTrait::OneResult>());
-  assert(arithOp->hasTrait<mlir::OpTrait::NOperands<2>::Impl>());
+  assert(arithOp->getNumOperands() == 2 && arithOp->getNumResults() == 1);
   Value operand1 = arithOp->getOperand(0);
   Value operand2 = arithOp->getOperand(1);
   Value result = arithOp->getResult(0);
