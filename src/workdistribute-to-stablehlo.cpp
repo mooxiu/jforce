@@ -800,33 +800,21 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
         tracking.valueMap.map(loadOp->getResult(0), tracking.valueMap.lookup(loadOp->getOperand(0)));
       })
-      .Case<arith::AddFOp>([&](arith::AddFOp addFOp) {
-        handleArithBinaryOp(tracking, opBuilder, funcOp, addFOp);
-      })
-      .Case<arith::SubFOp>([&](arith::SubFOp subFOp) {
-        handleArithBinaryOp(tracking, opBuilder, funcOp, subFOp);
-      })
-      .Case<arith::MulFOp>([&](arith::MulFOp mulFOp){
-        handleArithBinaryOp(tracking, opBuilder, funcOp, mulFOp);
-      })
-      .Case<arith::DivFOp>([&](arith::DivFOp divFOp){
-        handleArithBinaryOp(tracking, opBuilder, funcOp, divFOp);
-      })
-      .Case<math::SinOp>([&](math::SinOp sop){
-        handleArithUnaryOp(tracking, opBuilder, funcOp, sop);
-      })
-      .Case<math::ExpOp>([&](math::ExpOp eop){
-        handleArithUnaryOp(tracking, opBuilder, funcOp, eop);
-      })
-      .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
-        handleBuiltinOperators(tracking, opBuilder, funcOp, matmulOp);
-      })
-      .Case<hlfir::DotProductOp>([&](hlfir::DotProductOp dotProductOp){
-        handleBuiltinOperators(tracking, opBuilder, funcOp, dotProductOp);
-      })
-      .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp transposeOp){
-        handleBuiltinOperators(tracking, opBuilder, funcOp, transposeOp);
-      })
+      .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp>(
+        [&](auto arithBinaryOp) {
+          handleArithBinaryOp(tracking, opBuilder, funcOp, arithBinaryOp);
+        }
+      )
+      .Case<math::SinOp, math::ExpOp>(
+        [&](auto arithUnaryOp){
+          handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
+        }
+      )
+      .Case<hlfir::MatmulOp, hlfir::DotProductOp, hlfir::TransposeOp>(
+        [&](auto builtInOp) {
+          handleBuiltinOperators(tracking, opBuilder, funcOp, builtInOp);
+        }
+      )
       .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop){
         assert(tracking.valueMap.contains(nrop.getOperand()) && "Operand of NoReassocOp is supposed to be in ValueMap!");
         // just ignore and pass to the result
