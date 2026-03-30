@@ -45,14 +45,15 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   MLIRContext* context, 
   func::FuncOp& funcOp, 
   int64_t* ArgTypes,
-  llvm::DenseSet<int>& shapeArgsIndices
+  llvm::DenseSet<int>& shapeArgsIndices,
+  const llvm::DenseSet<Value>& privateValSet
 ) {
   PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
   OpBuilder opBuilder(context);
 
 
   // There are 2 types of arguments we have to keep:
-  // type 1: Those who are not literal type, thoese are usually allocated buffer;
+  // type 1: Those who are not literal type, thoese are usually allocated buffer; --> Why? probably can trim. Why am i so stupid?
   // type 2: Those who are been referred to in the function body;
   //
   // For example:

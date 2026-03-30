@@ -7,6 +7,7 @@
 #include "jit-manager.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Value.h"
@@ -54,8 +55,8 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <numeric>
-#include <omp.h>
 #include <string>
+#include <unordered_map>
 #include "utilities.h"
 
 using namespace mlir;
@@ -72,29 +73,10 @@ public:
   // Value: value in FIR function
   mlir::IRMapping argsTrackingMap;
 
-  // void debug() {
-  //   llvm::dbgs() << "\n===== Start TrackingInfo:====\n";
-  //
-  //   llvm::dbgs() << "value map:\n";
-  //   for (const auto& pair: valueMap.getValueMap()) {
-  //     llvm::dbgs() << "key: ";
-  //     pair.getFirst().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << ", value: ";
-  //     pair.getSecond().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << "\n";
-  //   }
-  //
-  //   llvm::dbgs() << "\nargs tracking map:\n";
-  //   for (const auto& pair: argsTrackingMap.getValueMap()) {
-  //     llvm::dbgs() << "key: ";
-  //     pair.getFirst().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << ", value: ";
-  //     pair.getSecond().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << "\n";
-  //   }
-  //
-  //   llvm::dbgs() << "\n=====End TrackingInfo:=====\n";
-  // };
+  // Key: unique name
+  // Value: corresponding StableHLO Value the definition mapping to   
+  // Purpose: for tracking private variables, they are temporary variables, and should be dropped in later transformation
+  mlir::DenseMap<mlir::StringAttr, mlir::Value> uniqueNamesMap;
 };
 
 ///  Example of source type:
@@ -420,7 +402,7 @@ static void handleDesignateOp(
   OpBuilder &opBuilder, 
   func::FuncOp funcOp, 
   hlfir::DesignateOp designateOp, 
-  llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
 ) {
   auto isTriplet = designateOp.getIsTriplet();
   auto resultOperand = designateOp.getResult();
@@ -749,11 +731,14 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
   return;
 }
 
-static void scanOperationsAndInserts(TrackingInfo& tracking,
-                                     OpBuilder &opBuilder, 
-                                     func::FuncOp& funcOp, // TODO: do not need &
-                                     Operation *op,
-                                     llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
+static void scanOperationsAndInserts(
+  TrackingInfo& tracking,
+  OpBuilder &opBuilder, 
+  func::FuncOp& funcOp, // TODO: do not need &
+  Operation *op,
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap,
+  llvm::DenseSet<Value>& privateValSet
+) {
   DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
@@ -781,11 +766,41 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
         handleAssignOp(tracking, opBuilder, funcOp, assignOp);
       })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
-        auto declaredOprand = declareOp.getOperand(0);
-        for (unsigned int i = 0; i < declareOp->getNumResults(); i++) {
-          tracking.valueMap.map(declareOp->getOpResult(i), tracking.valueMap.lookup(declaredOprand));
+        // To process private, we need to record the binded name to see if there's another one will shadow this
+        auto uniqueName = declareOp.getUniqName();
+        assert(uniqueName && "DeclareOp should have UniqueName!\n");
+        if (tracking.uniqueNamesMap.contains(uniqueName)) {  
+          // This is shadowing created by a private construct, thus in a teams
+          // Example: 
+          //    "omp.teams"() <{operandSegmentSizes = array<i32: 0, 0, 0, 0, 0, 0, 0, 0>}> ({
+          //    %5 = "fir.alloca"(%0) <{bindc_name = "z", in_type = !fir.array<?xf64>, operandSegmentSizes = array<i32: 0, 1>, pinned, uniq_name = "_QFFrun_benchmarkEz"}> : (index) -> !fir.ref<!fir.array<?xf64>>
+          //    %6:2 = "hlfir.declare"(%5, %1) <{operandSegmentSizes = array<i32: 1, 1, 0, 0, 0>, storage_offset = 0 : ui64, uniq_name = "_QFFrun_benchmarkEz"}> : (!fir.ref<!fir.array<?xf64>>, !fir.shape<1>) -> (!fir.box<!fir.array<100xf64>>, !fir.ref<!fir.array<100xf64>>)
+          assert(mlir::isa<omp::TeamsOp>(declareOp->getParentOp()) 
+                 && "The declareOp because of private construct shoulded be contained in a TeamsOP!\n");
+          auto defOpOfOperand = declareOp.getOperand(0).getDefiningOp();
+          assert(mlir::isa<fir::AllocaOp>(defOpOfOperand)
+                 && "The defining Op of the operand should be an fir::AllocaOp!\n");
+
+
+          // declared result should be mapped as the original mapping   
+          auto stableHLOValIt = tracking.uniqueNamesMap.find(uniqueName);
+          assert(stableHLOValIt != tracking.uniqueNamesMap.end() 
+                 && "Original FIR Val Arg should have set!\n");
+          Value stableHLOVal = stableHLOValIt ->second;
+          for (unsigned int i = 0; i < declareOp.getNumResults(); i++) {
+            tracking.valueMap.map(declareOp->getOpResult(i), stableHLOVal);  
+          } 
+          tracking.argsTrackingMap.map(stableHLOVal, declareOp.getResult(0));
+          privateValSet.insert(stableHLOVal);
+        } else {
+          // This is a new declaration
+          auto declaredOprand = declareOp.getOperand(0);
+          for (unsigned int i = 0; i < declareOp->getNumResults(); i++) {
+            tracking.valueMap.map(declareOp->getOpResult(i), tracking.valueMap.lookup(declaredOprand));
+          }
+          tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
+          tracking.uniqueNamesMap[uniqueName] = tracking.valueMap.lookup(declaredOprand);
         }
-        tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
         handleDesignateOp(tracking, opBuilder, funcOp, designateOp, sliceShiftMap);
@@ -843,7 +858,11 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 
 /// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 /// but should also be compatible with following code.
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
+func::FuncOp workdistributeToStableHLO(
+  MLIRContext* context, const mlir::ModuleOp& moduleOp, 
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap,
+  llvm::DenseSet<Value>& privateValSet
+) {
   PROFILE_SCOPE("workdistributeToStableHLO", Phase::LOWERING_TO_STABLEHLO);
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;
@@ -853,7 +872,7 @@ func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleO
     auto funcOp = createFunction(context, trackingInfo, inputOp);
     opBuilder.setInsertionPointToStart(&funcOp.front());
     inputOp->walk([&](Operation *op) {
-      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op, sliceShiftMap);
+      scanOperationsAndInserts(trackingInfo, opBuilder, funcOp, op, sliceShiftMap, privateValSet);
     });
     terminateFunction(trackingInfo, opBuilder, funcOp);
     stableHLOFuncOp = funcOp;

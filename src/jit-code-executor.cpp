@@ -70,14 +70,23 @@ static TargetDevice getTargetDevice() {
 }
 
 
-void inferShape(MLIRContext* ctx, ModuleOp moduleOp, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap); 
+void inferShape(
+  MLIRContext* ctx, ModuleOp moduleOp, int64_t NumHostArgs, void** ArgBasePtrs, 
+  int64_t* ArgSizes, int64_t* ArgTypes, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap); 
+
 void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
 
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap);
+func::FuncOp workdistributeToStableHLO(
+  MLIRContext* context, 
+  const mlir::ModuleOp& moduleOp, 
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap,
+  llvm::DenseSet<Value>& privateValSet 
+);
 
 llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes,
-  llvm::DenseSet<int>& shapeArgsIndices
+  llvm::DenseSet<int>& shapeArgsIndices,
+  const llvm::DenseSet<Value>& privateValSet 
 );
 
 
@@ -197,14 +206,16 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   inferShape(ctx, moduleOp.get(), NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes, sliceShiftMap);
   DEBUG_PRINT("\nAfter shape Infer:\n" + getMLIROperationAsString(moduleOp.get()));
   
-  func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp.get(), sliceShiftMap);
+  // Temporary Values marked with private construct after translating to StableHLO
+  llvm::DenseSet<Value> privateStableHLOArgs; 
+  func::FuncOp kernelFunc = workdistributeToStableHLO(ctx, moduleOp.get(), sliceShiftMap, privateStableHLOArgs);
   DEBUG_PRINT("\nAfter lowering to wd:\n" + getMLIROperationAsString(kernelFunc));
 
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
 
   // shape arguments indices
   llvm::DenseSet<int> shapeArgsIndices;
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes, shapeArgsIndices);
+  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes, shapeArgsIndices, privateStableHLOArgs);
   DEBUG_PRINT("\nAfter trim shape args:\n" + getMLIROperationAsString(kernelFunc));
   
 
