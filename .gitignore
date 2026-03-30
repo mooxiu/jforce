@@ -1,9 +1,7 @@
 .vscode
 *.venv
 build
-build_debug
-build_memkf01
-build_memkf03
+build_*
 third_party/pjrt_plugins/*.so
 third_party/pjrt_plugins/*.so_bk*
 third_party/libs
@@ -13,3 +11,4 @@ leak_report.txt
 err.log
 xla_dump/
 tests/
+private/
