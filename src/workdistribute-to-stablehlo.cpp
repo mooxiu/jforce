@@ -628,6 +628,20 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       } 
     }
 
+    // LHS is slicing of full size, do not need to use scatter logic!
+    if (updatesIndicesOfEachDim.empty()) {
+      auto RHSStablehloVal = tracking.valueMap.lookup(RHS); 
+      assert(RHSStablehloVal && "RHS is not in valueMap!\n");
+
+      auto defOp = llvm::dyn_cast<hlfir::DesignateOp>(LHS.getDefiningOp());
+      assert(defOp && "LHS should be defined by designateOp!");
+      
+      tracking.valueMap.map(LHS, RHSStablehloVal);
+      tracking.valueMap.map(defOp.getMemref(), RHSStablehloVal);
+      return;
+    }
+
+
     Value scatterIndice;
     if (scatterDimsToOperandDims.size() == 1) {
       assert(startIndicesSet.size() == 1 || 
@@ -739,7 +753,7 @@ static void scanOperationsAndInserts(
   const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap,
   llvm::DenseSet<Value>& privateValSet
 ) {
-  // DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
+  DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {
@@ -768,15 +782,12 @@ static void scanOperationsAndInserts(
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
         // To process private, we need to record the binded name to see if there's another one will shadow this
         auto uniqueName = declareOp.getUniqName();
-        assert(uniqueName && "DeclareOp should have UniqueName!\n");
-        if (tracking.uniqueNamesMap.contains(uniqueName)) {  
+        if (uniqueName && tracking.uniqueNamesMap.contains(uniqueName)) {  
           // This is shadowing created by a private construct, thus in a teams
           // Example: 
           //    "omp.teams"() <{operandSegmentSizes = array<i32: 0, 0, 0, 0, 0, 0, 0, 0>}> ({
           //    %5 = "fir.alloca"(%0) <{bindc_name = "z", in_type = !fir.array<?xf64>, operandSegmentSizes = array<i32: 0, 1>, pinned, uniq_name = "_QFFrun_benchmarkEz"}> : (index) -> !fir.ref<!fir.array<?xf64>>
           //    %6:2 = "hlfir.declare"(%5, %1) <{operandSegmentSizes = array<i32: 1, 1, 0, 0, 0>, storage_offset = 0 : ui64, uniq_name = "_QFFrun_benchmarkEz"}> : (!fir.ref<!fir.array<?xf64>>, !fir.shape<1>) -> (!fir.box<!fir.array<100xf64>>, !fir.ref<!fir.array<100xf64>>)
-          assert(mlir::isa<omp::TeamsOp>(declareOp->getParentOp()) 
-                 && "The declareOp because of private construct shoulded be contained in a TeamsOP!\n");
           auto defOpOfOperand = declareOp.getOperand(0).getDefiningOp();
           assert(mlir::isa<fir::AllocaOp>(defOpOfOperand)
                  && "The defining Op of the operand should be an fir::AllocaOp!\n");

@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "mlir/Transforms/Passes.h"
 #include "profiler.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -18,6 +19,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 
 using namespace mlir;
 
@@ -163,9 +165,7 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
   auto shapeMetaFilter = trimShapeMeta(context, funcOp, ArgTypes, shapeArgsIndices);
   auto argsIndicesMapping = trimPrivateArgs(context, funcOp, privateValSet, shapeMetaFilter);
-  
 
-  
   OpBuilder opBuilder(context);
   // Trim arguments whose indices not in `indicesToKeep`, we only need to do the trim for the FuncOP and ReturnOp,
   // because if they appear in other places, they should be already in `indicesToKeep`.
@@ -175,13 +175,33 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   // Trim return values
   opBuilder.setInsertionPoint(retOp);
   llvm::SmallVector<Value> retOperands; 
+  llvm::SmallVector<Type> newResultTypes;
   for (int i = 0; i < retOp.getNumOperands(); i++) {
     if (argsIndicesMapping.contains(i)) {
       retOperands.push_back(retOp.getOperand(i));
+      newResultTypes.push_back(retOp.getOperand(i).getType());
     }
   }
   func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
   retOp.erase(); 
+
+  // Before run DCE, need to make this function signature validate,
+  // update the return type of the function
+  auto currentArgTypes = llvm::to_vector(funcOp.getFunctionType().getInputs());
+  auto tempFuncType = FunctionType::get(context, currentArgTypes, newResultTypes);
+  funcOp.setType(tempFuncType);
+
+  // Because changes of private values (temporary values) may be in return list,
+  // after we have deleted the value of the return list,
+  // places will it refering to is now dead code,
+  // we could run a DCE to kill them all
+  mlir::PassManager pm(context); 
+  pm.addPass(mlir::createCanonicalizerPass()); 
+  if (mlir::failed(pm.run(funcOp))) {
+    std::cerr << "Fail to run canonicalizer pass!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  
   // Trim arguments, first set entryblock type, then set func type
   llvm::SmallVector<Type> oldArgsTypes = llvm::to_vector(funcOp.getFunctionType().getInputs());
   llvm::SmallVector<Type> newArgsTypes;
@@ -200,9 +220,6 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   // set func type
   auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes); // Input types and output types are the same in our case
   funcOp.setType(newFuncType);
-  
-  DEBUG_PRINT("After TrimShape: \n" + getMLIROperationAsString(funcOp));
-  
   return argsIndicesMapping;  
 }
 
