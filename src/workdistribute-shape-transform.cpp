@@ -1,3 +1,4 @@
+#include "jit-manager.h"
 #include "profiler.h"
 #include "utilities.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -38,19 +39,12 @@ void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp)
   return;
 }
 
-
-/// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
-/// Return a map mapping original Index -> new Index;
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
+llvm::DenseMap<unsigned, unsigned> trimShapeMeta(
   MLIRContext* context, 
   func::FuncOp& funcOp, 
   int64_t* ArgTypes,
-  llvm::DenseSet<int>& shapeArgsIndices,
-  const llvm::DenseSet<Value>& privateValSet
+  llvm::DenseSet<int>& shapeArgsIndices
 ) {
-  PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
-  OpBuilder opBuilder(context);
-
 
   // There are 2 types of arguments we have to keep:
   // type 1: Those who are not literal type, thoese are usually allocated buffer; --> Why? probably can trim. Why am i so stupid?
@@ -126,6 +120,23 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
     };
   }
 
+  return argsIndicesMapping;
+}
+
+/// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
+/// Return a map mapping original Index -> new Index;
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
+  MLIRContext* context, 
+  func::FuncOp& funcOp, 
+  int64_t* ArgTypes,
+  llvm::DenseSet<int>& shapeArgsIndices,
+  const llvm::DenseSet<Value>& privateValSet
+) {
+  PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
+  auto argsIndicesMapping = trimShapeMeta(context, funcOp, ArgTypes, shapeArgsIndices);
+
+  
+  OpBuilder opBuilder(context);
   // Trim arguments whose indices not in `indicesToKeep`, we only need to do the trim for the FuncOP and ReturnOp,
   // because if they appear in other places, they should be already in `indicesToKeep`.
   funcOp.walk([&](Operation * op){
@@ -165,6 +176,9 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
       // DO NOTHING
     };
   });
+
+  
+  DEBUG_PRINT("After TrimShape: \n" + getMLIROperationAsString(funcOp));
   
   return argsIndicesMapping;  
 }
