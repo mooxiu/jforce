@@ -44,7 +44,8 @@ void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp)
 llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   MLIRContext* context, 
   func::FuncOp& funcOp, 
-  int64_t* ArgTypes
+  int64_t* ArgTypes,
+  llvm::DenseSet<int>& shapeArgsIndices
 ) {
   PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
   OpBuilder opBuilder(context);
@@ -115,8 +116,12 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   int currNewIdx = 0;
   for (int oldIdx = 0; oldIdx < funcOp.getNumArguments(); oldIdx++) {
     if (!isLiteralTy(ArgTypes[oldIdx]) || argsToKeep.contains(funcOp.getArgument(oldIdx))) {
+      // is not shape indices
       argsIndicesMapping.insert(std::pair(oldIdx, currNewIdx));
       currNewIdx += 1;
+    } else {
+      // is shape indices
+      shapeArgsIndices.insert(oldIdx);
     };
   }
 

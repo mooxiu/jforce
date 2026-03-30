@@ -42,7 +42,6 @@
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
-#include <omp.h>
 #include <ostream>
 #include <string_view>
 #include <sys/types.h>
@@ -76,7 +75,10 @@ void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp)
 
 func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap);
 
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes);
+llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
+  MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes,
+  llvm::DenseSet<int>& shapeArgsIndices
+);
 
 
 
@@ -200,20 +202,15 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   optimizeSignatureForXLAAliasing(ctx, kernelFunc);
 
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes);
+  // shape arguments indices
+  llvm::DenseSet<int> shapeArgsIndices;
+  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping = trimShapeArgs(ctx, kernelFunc, ArgTypes, shapeArgsIndices);
   DEBUG_PRINT("\nAfter trim shape args:\n" + getMLIROperationAsString(kernelFunc));
   
 
   if (l1JitMetas == nullptr) {
-    llvm::DenseSet<int> argsIndices;
-    for (int i = 0; i < NumArgs; i++) {
-      // not contains in argsIndicesMapping, meaning it's the shape arguments that been trimmed above
-      if (!argsIndicesMapping.contains(i)) {
-        argsIndices.insert(i);
-      }
-    }
-    l2Key = JitManager::getInstance().getL2JitMetasKey(NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, argsIndices);
-    JitManager::getInstance().saveL1JitMetas(JitCodePtrUint, std::move(argsIndices));
+    l2Key = JitManager::getInstance().getL2JitMetasKey(NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, shapeArgsIndices);
+    JitManager::getInstance().saveL1JitMetas(JitCodePtrUint, std::move(shapeArgsIndices));
   }
   
   auto createdL2JitMetas = JitManager::getInstance().createL2JitMetas(l2Key, kernelFunc, argsIndicesMapping, getTargetDevice());
