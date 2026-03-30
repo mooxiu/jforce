@@ -870,6 +870,25 @@ static void scanOperationsAndInserts(
           handleArithBinaryOp(tracking, opBuilder, funcOp, arithBinaryOp);
         }
       )
+      .Case<arith::SelectOp>([&](arith::SelectOp sop){
+        // %190 = "arith.select"(%189, %186, %187) : (i1, f64, f64) -> f64
+        assert(sop.getNumOperands() == 3 && "Unexpected select oeprands size!");
+        auto firCond = sop.getOperand(0); 
+        auto firOnTrue = sop.getOperand(1); 
+        auto firOnFalse = sop.getOperand(2); 
+        assert(tracking.valueMap.contains(firCond) && "Should contain firCond!");
+        assert(tracking.valueMap.contains(firOnTrue) && "Should contain firOnTrue!");
+        assert(tracking.valueMap.contains(firOnFalse) && "Should contain firOnFalse!");
+
+        auto stableHLOSelectRes = stablehlo::SelectOp::create(
+          opBuilder, 
+          funcOp.getLoc(), 
+          tracking.valueMap.lookup(firCond),
+          tracking.valueMap.lookup(firOnTrue),
+          tracking.valueMap.lookup(firOnFalse)
+        );
+        tracking.valueMap.map(sop.getResult(), stableHLOSelectRes.getResult()); 
+      })
       .Case<math::SinOp, math::ExpOp>(
         [&](auto arithUnaryOp){
           handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
@@ -880,6 +899,7 @@ static void scanOperationsAndInserts(
           handleBuiltinOperators(tracking, opBuilder, funcOp, builtInOp);
         }
       )
+
       .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop){
         assert(tracking.valueMap.contains(nrop.getOperand()) && "Operand of NoReassocOp is supposed to be in ValueMap!");
         // just ignore and pass to the result
