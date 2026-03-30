@@ -307,6 +307,45 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         ).getResult();
       }
     })
+    .Case<arith::CmpFOp>([&](arith::CmpFOp cmpfOp) {
+      stablehlo::ComparisonDirection direction;
+      switch (cmpfOp.getPredicate()) {
+        case arith::CmpFPredicate::OEQ:
+        case arith::CmpFPredicate::UEQ:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpFPredicate::ONE:
+        case arith::CmpFPredicate::UNE:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        case arith::CmpFPredicate::OGT:
+        case arith::CmpFPredicate::UGT:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpFPredicate::OGE:
+        case arith::CmpFPredicate::UGE:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpFPredicate::OLT:
+        case arith::CmpFPredicate::ULT:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpFPredicate::OLE:
+        case arith::CmpFPredicate::ULE:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        default:
+          llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      stablehloRes = stablehlo::CompareOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        operand1Src,
+        operand2Src,
+        direction,
+        mlir::stablehlo::ComparisonType::FLOAT
+      );
+    })
     .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
       return;
