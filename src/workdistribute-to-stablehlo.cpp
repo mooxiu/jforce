@@ -739,7 +739,7 @@ static void scanOperationsAndInserts(
   const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap,
   llvm::DenseSet<Value>& privateValSet
 ) {
-  DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
+  // DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {

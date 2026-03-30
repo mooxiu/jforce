@@ -107,12 +107,12 @@ llvm::DenseMap<unsigned, unsigned> trimShapeMeta(
   // - indicesToKeep: [1, 3, 4];
   // - argsIndicesMapping: {1: 0, 3: 1, 4: 2}; (old idx_0 is gone, so old idx_1 became new idx_0; for the same reason, old idx_3 became new idx_1)
   // Mapping of Index Before Trimming: Index After Trimming
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
+  llvm::DenseMap<unsigned, unsigned> argsIndicesShapeMetaFilter;
   int currNewIdx = 0;
   for (int oldIdx = 0; oldIdx < funcOp.getNumArguments(); oldIdx++) {
     if (!isLiteralTy(ArgTypes[oldIdx]) || argsToKeep.contains(funcOp.getArgument(oldIdx))) {
       // is not shape indices
-      argsIndicesMapping.insert(std::pair(oldIdx, currNewIdx));
+      argsIndicesShapeMetaFilter.insert(std::pair(oldIdx, currNewIdx));
       currNewIdx += 1;
     } else {
       // is shape indices
@@ -120,8 +120,36 @@ llvm::DenseMap<unsigned, unsigned> trimShapeMeta(
     };
   }
 
+  return argsIndicesShapeMetaFilter;
+}
+
+llvm::DenseMap<unsigned, unsigned> trimPrivateArgs(
+  MLIRContext* context,
+  func::FuncOp& funcOp,
+  const llvm::DenseSet<Value>& privateValSet,
+  const llvm::DenseMap<unsigned, unsigned>& shapeMetaFilter
+) {
+  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
+  unsigned currNewIdx = 0;
+  for (int i = 0; i < funcOp.getNumArguments(); i++) {
+    if (shapeMetaFilter.contains(i)) {
+      if (!privateValSet.contains(funcOp.getArgument(i))) {
+        // should not be filtered out, save
+        argsIndicesMapping[i] = currNewIdx;
+        currNewIdx += 1;
+      } else {
+        // Should be trimmed
+        DEBUG_PRINT("trim private args trim idx: " + std::to_string(i));
+      }    
+    } else {
+      if (privateValSet.contains(funcOp.getArgument(i))) {
+        DEBUG_PRINT("trim private should have trimed by already not used: " + std::to_string(i));
+      }
+    }
+  }
   return argsIndicesMapping;
 }
+
 
 /// Some arguments are there just meant to be shape meta data, need to drop them for better performance.
 /// Return a map mapping original Index -> new Index;
@@ -133,50 +161,45 @@ llvm::DenseMap<unsigned, unsigned> trimShapeArgs(
   const llvm::DenseSet<Value>& privateValSet
 ) {
   PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
-  auto argsIndicesMapping = trimShapeMeta(context, funcOp, ArgTypes, shapeArgsIndices);
+  auto shapeMetaFilter = trimShapeMeta(context, funcOp, ArgTypes, shapeArgsIndices);
+  auto argsIndicesMapping = trimPrivateArgs(context, funcOp, privateValSet, shapeMetaFilter);
+  
 
   
   OpBuilder opBuilder(context);
   // Trim arguments whose indices not in `indicesToKeep`, we only need to do the trim for the FuncOP and ReturnOp,
   // because if they appear in other places, they should be already in `indicesToKeep`.
-  funcOp.walk([&](Operation * op){
-    if (llvm::isa<func::FuncOp>(op)){
-      llvm::SmallVector<Type> oldArgsTypes = llvm::to_vector(funcOp.getFunctionType().getInputs());
-      llvm::SmallVector<Type> newArgsTypes;
-      newArgsTypes.reserve(oldArgsTypes.size());
-      for (int i = 0; i < funcOp.getNumArguments(); i++) {
-        if (argsIndicesMapping.contains(i)) {
-          newArgsTypes.push_back(oldArgsTypes[i]); 
-        }      
-      }
-
-      // set entry block type
-      Block &entryBlock = funcOp.front();
-      for (int i = entryBlock.getNumArguments() - 1; i >= 0; --i) {
-        if (!argsIndicesMapping.contains(i)) {
-          entryBlock.eraseArgument(i);
-        }
-      }
-
-      // set func type
-      auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes); // Input types and output types are the same in our case
-      funcOp.setType(newFuncType);
-    } else if (auto retOp = llvm::dyn_cast<func::ReturnOp>(op)) {
-      opBuilder.setInsertionPoint(retOp);
-
-      llvm::SmallVector<Value> retOperands; 
-      for (int i = 0; i < retOp.getNumOperands(); i++) {
-        if (argsIndicesMapping.contains(i)) {
-          retOperands.push_back(retOp.getOperand(i));
-        }
-      }
-      func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
-      retOp.erase();   
-    } else {
-      // DO NOTHING
-    };
-  });
-
+  auto& entryBlock = funcOp.front();
+  auto retOp = llvm::dyn_cast<func::ReturnOp>(entryBlock.getTerminator());
+  assert(retOp && "Should be able to get return Op!\n");
+  // Trim return values
+  opBuilder.setInsertionPoint(retOp);
+  llvm::SmallVector<Value> retOperands; 
+  for (int i = 0; i < retOp.getNumOperands(); i++) {
+    if (argsIndicesMapping.contains(i)) {
+      retOperands.push_back(retOp.getOperand(i));
+    }
+  }
+  func::ReturnOp::create(opBuilder, funcOp.getLoc(), retOperands);
+  retOp.erase(); 
+  // Trim arguments, first set entryblock type, then set func type
+  llvm::SmallVector<Type> oldArgsTypes = llvm::to_vector(funcOp.getFunctionType().getInputs());
+  llvm::SmallVector<Type> newArgsTypes;
+  newArgsTypes.reserve(oldArgsTypes.size());
+  for (int i = 0; i < funcOp.getNumArguments(); i++) {
+    if (argsIndicesMapping.contains(i)) {
+      newArgsTypes.push_back(oldArgsTypes[i]); 
+    }      
+  }
+  // set entry block type
+  for (int i = entryBlock.getNumArguments() - 1; i >= 0; --i) {
+    if (!argsIndicesMapping.contains(i)) {
+      entryBlock.eraseArgument(i);
+    }
+  }
+  // set func type
+  auto newFuncType = FunctionType::get(funcOp.getContext(), newArgsTypes, newArgsTypes); // Input types and output types are the same in our case
+  funcOp.setType(newFuncType);
   
   DEBUG_PRINT("After TrimShape: \n" + getMLIROperationAsString(funcOp));
   
