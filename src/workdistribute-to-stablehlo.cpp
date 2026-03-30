@@ -865,7 +865,7 @@ static void scanOperationsAndInserts(
       .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
         tracking.valueMap.map(loadOp->getResult(0), tracking.valueMap.lookup(loadOp->getOperand(0)));
       })
-      .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp>(
+      .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp, arith::CmpFOp>(
         [&](auto arithBinaryOp) {
           handleArithBinaryOp(tracking, opBuilder, funcOp, arithBinaryOp);
         }
