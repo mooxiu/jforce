@@ -813,9 +813,8 @@ static void scanOperationsAndInserts(
         handleAssignOp(tracking, opBuilder, funcOp, assignOp);
       })
       .Case<fir::AllocaOp>([&](fir::AllocaOp allocaOp){
-        auto shape = allocaOp.getShape(); 
         auto resTy = toCorrespondingTensorTy(allocaOp.getResult().getType());
-        auto typedAttr = opBuilder.getZeroAttr(resTy);
+        auto typedAttr = llvm::cast<DenseElementsAttr>(opBuilder.getZeroAttr(resTy));
         auto constOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), typedAttr);  
         tracking.valueMap.map(allocaOp.getResult(), constOp.getResult());
       })
