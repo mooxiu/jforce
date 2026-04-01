@@ -338,14 +338,25 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         default:
           llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
       }
-      stablehloRes = stablehlo::CompareOp::create(
-        opBuilder, 
-        funcOp.getLoc(), 
-        operand1Src,
-        operand2Src,
-        direction,
-        mlir::stablehlo::ComparisonType::FLOAT
-      ).getResult();
+      if (o1Type.getRank() > o2Type.getRank()) {
+        stablehloRes = stablehlo::CompareOp::create(
+          opBuilder, 
+          funcOp.getLoc(), 
+          largerOperand,
+          smallerOperand,
+          direction,
+          mlir::stablehlo::ComparisonType::FLOAT
+        ).getResult();
+      } else {
+        stablehloRes = stablehlo::CompareOp::create(
+          opBuilder, 
+          funcOp.getLoc(), 
+          smallerOperand,
+          largerOperand,
+          direction,
+          mlir::stablehlo::ComparisonType::FLOAT
+        ).getResult();
+      }
     })
     .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
@@ -859,12 +870,37 @@ static void scanOperationsAndInserts(
         assert(tracking.valueMap.contains(firOnTrue) && "Should contain firOnTrue!");
         assert(tracking.valueMap.contains(firOnFalse) && "Should contain firOnFalse!");
 
+        // Consider example when comparing a tensor with a scalar 0: ReLU(x) = MAX(x, 0)
+        // In such a case, we have to broadcast the operand!
+        Value trueSrc = tracking.valueMap.lookup(firOnTrue);
+        Value falseSrc = tracking.valueMap.lookup(firOnFalse);
+
+        RankedTensorType trueTy = llvm::dyn_cast<RankedTensorType>(trueSrc.getType());
+        RankedTensorType falseTy = llvm::dyn_cast<RankedTensorType>(falseSrc.getType());
+
+        // StableHLO select requires true and false operands to have the same shape.
+        // Insert BroadcastInDim if there is a scalar vs tensor mismatch.
+        if (trueTy.getRank() != falseTy.getRank()) {
+          Value largerOperand = (trueTy.getRank() > falseTy.getRank()) ? trueSrc : falseSrc;
+          Value smallerOperand = (trueTy.getRank() > falseTy.getRank()) ? falseSrc : trueSrc;
+          RankedTensorType targetTy = llvm::dyn_cast<RankedTensorType>(largerOperand.getType());
+
+          DenseI64ArrayAttr diaa = opBuilder.getDenseI64ArrayAttr({});
+          auto broadcastOp = stablehlo::BroadcastInDimOp::create(opBuilder, funcOp.getLoc(), targetTy, smallerOperand, diaa);
+
+          if (trueTy.getRank() > falseTy.getRank()) {
+            falseSrc = broadcastOp.getResult();
+          } else {
+            trueSrc = broadcastOp.getResult();
+          }
+        } 
+
         auto stableHLOSelectRes = stablehlo::SelectOp::create(
           opBuilder, 
           funcOp.getLoc(), 
           tracking.valueMap.lookup(firCond),
-          tracking.valueMap.lookup(firOnTrue),
-          tracking.valueMap.lookup(firOnFalse)
+          trueSrc,
+          falseSrc
         );
         tracking.valueMap.map(sop.getResult(), stableHLOSelectRes.getResult()); 
       })
