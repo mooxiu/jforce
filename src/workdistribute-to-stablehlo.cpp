@@ -194,7 +194,13 @@ static void handleArithUnaryOp(
       auto resTy = toCorrespondingTensorTy(operandSrc.getType());
       auto stablehloExOp = stablehlo::ExpOp::create(opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
       tracking.valueMap.map(result, stablehloExOp.getResult());
-    });
+    })
+    .Case([&](mlir::math::SqrtOp sop){
+      auto resTy = toCorrespondingTensorTy(operandSrc.getType());
+      auto stablehloSqrtOp = stablehlo::SqrtOp::create(opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
+      tracking.valueMap.map(result, stablehloSqrtOp.getResult());
+    })
+  ;
 }
 
 /// Only support increase one dimension right now, for example:
@@ -339,7 +345,7 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         operand2Src,
         direction,
         mlir::stablehlo::ComparisonType::FLOAT
-      );
+      ).getResult();
     })
     .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
@@ -862,7 +868,7 @@ static void scanOperationsAndInserts(
         );
         tracking.valueMap.map(sop.getResult(), stableHLOSelectRes.getResult()); 
       })
-      .Case<math::SinOp, math::ExpOp>(
+      .Case<math::SinOp, math::ExpOp, math::SqrtOp>(
         [&](auto arithUnaryOp){
           handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
         }
@@ -872,7 +878,14 @@ static void scanOperationsAndInserts(
           handleBuiltinOperators(tracking, opBuilder, funcOp, builtInOp);
         }
       )
-
+      .Case<fir::ConvertOp>([&](fir::ConvertOp convertOp){
+        auto firOprand = convertOp.getOperand();
+        auto stablehloOperand = tracking.valueMap.lookup(firOprand);
+        assert(stablehloOperand && "Operand of convertOp should exist!\n");
+        auto resTy = convertOp.getResult().getType();
+        auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), stablehloOperand, resTy);
+        tracking.valueMap.map(convertOp.getResult(), stableHLOConvertOp);
+      })
       .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop){
         assert(tracking.valueMap.contains(nrop.getOperand()) && "Operand of NoReassocOp is supposed to be in ValueMap!");
         // just ignore and pass to the result
