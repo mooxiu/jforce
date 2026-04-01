@@ -398,7 +398,7 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
       auto op0Ty = toCorrespondingTensorTy(op0.getType());
       auto op1Ty = toCorrespondingTensorTy(op1.getType());
       auto resTy = RankedTensorType::get(
-        llvm::SmallVector<int64_t>{op0Ty.getShape()[0], op1Ty.getShape()[1]}, 
+        llvm::SmallVector<int64_t>{op1Ty.getShape()[0], op0Ty.getShape()[1]}, 
         op0Ty.getElementType()
       );
 
