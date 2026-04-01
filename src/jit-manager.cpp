@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "profiler.h"
 #include "utilities.h"
 #include <algorithm>

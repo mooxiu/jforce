@@ -7,6 +7,7 @@
 #include "jit-manager.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Value.h"
@@ -54,8 +55,8 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 #include <numeric>
-#include <omp.h>
 #include <string>
+#include <unordered_map>
 #include "utilities.h"
 
 using namespace mlir;
@@ -71,30 +72,6 @@ public:
   // Key: value of one of StableHLO function's arguments 
   // Value: value in FIR function
   mlir::IRMapping argsTrackingMap;
-
-  // void debug() {
-  //   llvm::dbgs() << "\n===== Start TrackingInfo:====\n";
-  //
-  //   llvm::dbgs() << "value map:\n";
-  //   for (const auto& pair: valueMap.getValueMap()) {
-  //     llvm::dbgs() << "key: ";
-  //     pair.getFirst().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << ", value: ";
-  //     pair.getSecond().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << "\n";
-  //   }
-  //
-  //   llvm::dbgs() << "\nargs tracking map:\n";
-  //   for (const auto& pair: argsTrackingMap.getValueMap()) {
-  //     llvm::dbgs() << "key: ";
-  //     pair.getFirst().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << ", value: ";
-  //     pair.getSecond().printAsOperand(llvm::dbgs(), {});
-  //     llvm::dbgs() << "\n";
-  //   }
-  //
-  //   llvm::dbgs() << "\n=====End TrackingInfo:=====\n";
-  // };
 };
 
 ///  Example of source type:
@@ -325,6 +302,45 @@ static void handleArithBinaryOp(TrackingInfo& tracking,
         ).getResult();
       }
     })
+    .Case<arith::CmpFOp>([&](arith::CmpFOp cmpfOp) {
+      stablehlo::ComparisonDirection direction;
+      switch (cmpfOp.getPredicate()) {
+        case arith::CmpFPredicate::OEQ:
+        case arith::CmpFPredicate::UEQ:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpFPredicate::ONE:
+        case arith::CmpFPredicate::UNE:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        case arith::CmpFPredicate::OGT:
+        case arith::CmpFPredicate::UGT:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpFPredicate::OGE:
+        case arith::CmpFPredicate::UGE:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpFPredicate::OLT:
+        case arith::CmpFPredicate::ULT:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpFPredicate::OLE:
+        case arith::CmpFPredicate::ULE:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        default:
+          llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      stablehloRes = stablehlo::CompareOp::create(
+        opBuilder, 
+        funcOp.getLoc(), 
+        operand1Src,
+        operand2Src,
+        direction,
+        mlir::stablehlo::ComparisonType::FLOAT
+      );
+    })
     .Default([](auto){
       llvm::errs() << "Unknown arith operation! \n";
       return;
@@ -420,7 +436,7 @@ static void handleDesignateOp(
   OpBuilder &opBuilder, 
   func::FuncOp funcOp, 
   hlfir::DesignateOp designateOp, 
-  llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
 ) {
   auto isTriplet = designateOp.getIsTriplet();
   auto resultOperand = designateOp.getResult();
@@ -646,6 +662,20 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
       } 
     }
 
+    // LHS is slicing of full size, do not need to use scatter logic!
+    if (updatesIndicesOfEachDim.empty()) {
+      auto RHSStablehloVal = tracking.valueMap.lookup(RHS); 
+      assert(RHSStablehloVal && "RHS is not in valueMap!\n");
+
+      auto defOp = llvm::dyn_cast<hlfir::DesignateOp>(LHS.getDefiningOp());
+      assert(defOp && "LHS should be defined by designateOp!");
+      
+      tracking.valueMap.map(LHS, RHSStablehloVal);
+      tracking.valueMap.map(defOp.getMemref(), RHSStablehloVal);
+      return;
+    }
+
+
     Value scatterIndice;
     if (scatterDimsToOperandDims.size() == 1) {
       assert(startIndicesSet.size() == 1 || 
@@ -749,11 +779,13 @@ static void handleAssignOp(TrackingInfo& tracking, OpBuilder &opBuilder, func::F
   return;
 }
 
-static void scanOperationsAndInserts(TrackingInfo& tracking,
-                                     OpBuilder &opBuilder, 
-                                     func::FuncOp& funcOp, // TODO: do not need &
-                                     Operation *op,
-                                     llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
+static void scanOperationsAndInserts(
+  TrackingInfo& tracking,
+  OpBuilder &opBuilder, 
+  func::FuncOp& funcOp, // TODO: do not need &
+  Operation *op,
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
+) {
   DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
@@ -780,12 +812,18 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       .Case<hlfir::AssignOp>([&](hlfir::AssignOp assignOp) {
         handleAssignOp(tracking, opBuilder, funcOp, assignOp);
       })
+      .Case<fir::AllocaOp>([&](fir::AllocaOp allocaOp){
+        auto resTy = toCorrespondingTensorTy(allocaOp.getResult().getType());
+        auto typedAttr = llvm::cast<DenseElementsAttr>(opBuilder.getZeroAttr(resTy));
+        auto constOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), typedAttr);  
+        tracking.valueMap.map(allocaOp.getResult(), constOp.getResult());
+      })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
         auto declaredOprand = declareOp.getOperand(0);
         for (unsigned int i = 0; i < declareOp->getNumResults(); i++) {
           tracking.valueMap.map(declareOp->getOpResult(i), tracking.valueMap.lookup(declaredOprand));
+          tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
         }
-        tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), declareOp->getOpResult(0));
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
         handleDesignateOp(tracking, opBuilder, funcOp, designateOp, sliceShiftMap);
@@ -800,33 +838,41 @@ static void scanOperationsAndInserts(TrackingInfo& tracking,
       .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
         tracking.valueMap.map(loadOp->getResult(0), tracking.valueMap.lookup(loadOp->getOperand(0)));
       })
-      .Case<arith::AddFOp>([&](arith::AddFOp addFOp) {
-        handleArithBinaryOp(tracking, opBuilder, funcOp, addFOp);
+      .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp, arith::CmpFOp>(
+        [&](auto arithBinaryOp) {
+          handleArithBinaryOp(tracking, opBuilder, funcOp, arithBinaryOp);
+        }
+      )
+      .Case<arith::SelectOp>([&](arith::SelectOp sop){
+        // %190 = "arith.select"(%189, %186, %187) : (i1, f64, f64) -> f64
+        assert(sop.getNumOperands() == 3 && "Unexpected select oeprands size!");
+        auto firCond = sop.getOperand(0); 
+        auto firOnTrue = sop.getOperand(1); 
+        auto firOnFalse = sop.getOperand(2); 
+        assert(tracking.valueMap.contains(firCond) && "Should contain firCond!");
+        assert(tracking.valueMap.contains(firOnTrue) && "Should contain firOnTrue!");
+        assert(tracking.valueMap.contains(firOnFalse) && "Should contain firOnFalse!");
+
+        auto stableHLOSelectRes = stablehlo::SelectOp::create(
+          opBuilder, 
+          funcOp.getLoc(), 
+          tracking.valueMap.lookup(firCond),
+          tracking.valueMap.lookup(firOnTrue),
+          tracking.valueMap.lookup(firOnFalse)
+        );
+        tracking.valueMap.map(sop.getResult(), stableHLOSelectRes.getResult()); 
       })
-      .Case<arith::SubFOp>([&](arith::SubFOp subFOp) {
-        handleArithBinaryOp(tracking, opBuilder, funcOp, subFOp);
-      })
-      .Case<arith::MulFOp>([&](arith::MulFOp mulFOp){
-        handleArithBinaryOp(tracking, opBuilder, funcOp, mulFOp);
-      })
-      .Case<arith::DivFOp>([&](arith::DivFOp divFOp){
-        handleArithBinaryOp(tracking, opBuilder, funcOp, divFOp);
-      })
-      .Case<math::SinOp>([&](math::SinOp sop){
-        handleArithUnaryOp(tracking, opBuilder, funcOp, sop);
-      })
-      .Case<math::ExpOp>([&](math::ExpOp eop){
-        handleArithUnaryOp(tracking, opBuilder, funcOp, eop);
-      })
-      .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
-        handleBuiltinOperators(tracking, opBuilder, funcOp, matmulOp);
-      })
-      .Case<hlfir::DotProductOp>([&](hlfir::DotProductOp dotProductOp){
-        handleBuiltinOperators(tracking, opBuilder, funcOp, dotProductOp);
-      })
-      .Case<hlfir::TransposeOp>([&](hlfir::TransposeOp transposeOp){
-        handleBuiltinOperators(tracking, opBuilder, funcOp, transposeOp);
-      })
+      .Case<math::SinOp, math::ExpOp>(
+        [&](auto arithUnaryOp){
+          handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
+        }
+      )
+      .Case<hlfir::MatmulOp, hlfir::DotProductOp, hlfir::TransposeOp>(
+        [&](auto builtInOp) {
+          handleBuiltinOperators(tracking, opBuilder, funcOp, builtInOp);
+        }
+      )
+
       .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop){
         assert(tracking.valueMap.contains(nrop.getOperand()) && "Operand of NoReassocOp is supposed to be in ValueMap!");
         // just ignore and pass to the result
@@ -855,7 +901,10 @@ static void terminateFunction(const TrackingInfo& tracking, OpBuilder& opBuilder
 
 /// Parse the string into moduleOp and lowering, although the input is supposed to be a omp::targetOp,
 /// but should also be compatible with following code.
-func::FuncOp workdistributeToStableHLO(MLIRContext* context, const mlir::ModuleOp& moduleOp, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap) {
+func::FuncOp workdistributeToStableHLO(
+  MLIRContext* context, const mlir::ModuleOp& moduleOp, 
+  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
+) {
   PROFILE_SCOPE("workdistributeToStableHLO", Phase::LOWERING_TO_STABLEHLO);
   OpBuilder opBuilder(context);
   TrackingInfo trackingInfo;

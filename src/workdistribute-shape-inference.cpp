@@ -206,6 +206,37 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp, llv
           dop.erase();
         }
       })
+      .Case<fir::AllocaOp>([&](fir::AllocaOp allocaOp){
+        if (isDynamicShape(allocaOp.getResult().getType())) {
+          llvm::SmallVector<int64_t> staticShape;
+          auto shapeOperands = allocaOp.getShape();
+          staticShape.reserve(shapeOperands.size());
+
+          for (auto opr : shapeOperands) {
+            assert(constTrackingMap.contains(opr) && "Operand static value for allocaOp should be known!");
+            staticShape.push_back(constTrackingMap.at(opr));
+          }
+
+          shapeMap.insert(std::pair(allocaOp.getResult(), staticShape));
+
+          Type newInType = convertToStaticShape(allocaOp.getInType(), staticShape);
+
+          opBuilder.setInsertionPoint(allocaOp);
+          auto staticAllocaOp = fir::AllocaOp::create(
+            opBuilder,
+            allocaOp.getLoc(),
+            newInType,
+            allocaOp.getUniqName().value_or(""),
+            allocaOp.getBindcName().value_or(""),
+            allocaOp.getPinned(), 
+            allocaOp.getTypeparams(),
+            ValueRange{} 
+          );
+
+          allocaOp.replaceAllUsesWith(staticAllocaOp.getResult());
+          allocaOp.erase();
+        }
+      })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp dop){
         // %5 = hlfir.designate %3#0 (%c1:%c5:%c1)  shape %4 : (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>) -> !fir.box<!fir.array<?xf64>>
         // In the above example, it creates a part-ref of %3#0, with starting index %c1, end index %c5 and stride %c1
