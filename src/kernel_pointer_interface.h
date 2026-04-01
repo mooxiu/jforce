@@ -20,6 +20,7 @@ enum class TargetDevice : int32_t {
   CPU = 0,
   CUDA = 1,
   ROCM = 2,
+  TPU = 3,
 };
 
 /**
