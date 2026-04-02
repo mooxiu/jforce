@@ -200,6 +200,11 @@ static void handleArithUnaryOp(
       auto stablehloSqrtOp = stablehlo::SqrtOp::create(opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
       tracking.valueMap.map(result, stablehloSqrtOp.getResult());
     })
+    .Case([&](mlir::arith::NegFOp nop){
+      auto resTy = toCorrespondingTensorTy(operandSrc.getType());
+      auto stablehloNegOp = stablehlo::NegOp::create(opBuilder, funcOp.getLoc(), resTy, operandSrc);
+      tracking.valueMap.map(result, stablehloNegOp.getResult());
+    })
   ;
 }
 
@@ -904,7 +909,7 @@ static void scanOperationsAndInserts(
         );
         tracking.valueMap.map(sop.getResult(), stableHLOSelectRes.getResult()); 
       })
-      .Case<math::SinOp, math::ExpOp, math::SqrtOp>(
+      .Case<math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp>(
         [&](auto arithUnaryOp){
           handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
         }
