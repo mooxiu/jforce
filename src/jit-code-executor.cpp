@@ -42,7 +42,6 @@
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
-#include <omp.h>
 #include <ostream>
 #include <string_view>
 #include <sys/types.h>
@@ -63,6 +62,8 @@ static TargetDevice getTargetDevice() {
     return TargetDevice::CUDA;
   } else if constexpr (std::string_view(TARGET_DEVICE) == "ROCM") {
     return TargetDevice::ROCM; 
+  } else if constexpr (std::string_view(TARGET_DEVICE) == "TPU") {
+    return TargetDevice::TPU; 
   }
   return TargetDevice::CPU;
 #else
