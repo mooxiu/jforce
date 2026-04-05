@@ -445,6 +445,63 @@ static void handleBuiltinOperators(TrackingInfo& tracking,
       );
       tracking.valueMap.map(tOp.getResult(), stablehloTransposeOp.getResult());
     })
+    .Case<hlfir::SumOp>([&](hlfir::SumOp sumOp){
+      // %17 = "hlfir.sum"(%16, %2) <{fastmath = #arith.fastmath<contract>, operandSegmentSizes = array<i32: 1, 1, 0>}> : (!hlfir.expr<100x128xf64>, i32) -> !hlfir.expr<?xf64>
+      auto inputFir = sumOp.getArray();
+      auto inputHlo = tracking.valueMap.lookup(inputFir);
+      
+      auto inputTy = llvm::dyn_cast<RankedTensorType>(inputHlo.getType());
+      assert(inputTy && "hlfir.sum input must be a ranked tensor in StableHLO");
+      auto eleTy = inputTy.getElementType();
+
+      auto zeroAttr = opBuilder.getZeroAttr(eleTy);
+      // accum of the sum result
+      auto initValOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(),DenseElementsAttr::get(RankedTensorType::get({}, eleTy), zeroAttr));
+      Value initVal = initValOp.getResult();
+
+      llvm::SmallVector<int64_t> reduceDims;
+      if (sumOp.getDim()) { // %2
+        auto constOp = llvm::dyn_cast_or_null<arith::ConstantOp>(sumOp.getDim().getDefiningOp());
+        assert(constOp && "the dim must be known!");
+        int64_t fortranDimVal = llvm::cast<IntegerAttr>(constOp.getValue()).getInt();
+        int64_t stableHloDim = inputTy.getRank() - fortranDimVal;
+        reduceDims.push_back(stableHloDim);
+      } else {
+        for (int64_t i = 0; i < inputTy.getRank(); ++i) {
+          reduceDims.push_back(i);
+        }
+      }
+
+      auto resultFirTy = sumOp.getResult().getType();
+      auto resultHloTy = toCorrespondingTensorTy(resultFirTy);
+
+      auto reduceOp = stablehlo::ReduceOp::create(
+          opBuilder, funcOp.getLoc(),
+          TypeRange{resultHloTy},
+          ValueRange{inputHlo},  
+          ValueRange{initVal},
+          opBuilder.getDenseI64ArrayAttr(reduceDims)
+      );
+
+      auto storedInsertPoint = opBuilder.saveInsertionPoint();
+      Region &region = reduceOp.getBody();
+      Block *block = opBuilder.createBlock(&region);
+      auto scalarTy = RankedTensorType::get({}, eleTy);
+      
+      block->addArguments({scalarTy, scalarTy}, {funcOp.getLoc(), funcOp.getLoc()});
+      
+      opBuilder.setInsertionPointToStart(block);
+      
+      auto addOp = stablehlo::AddOp::create(
+          opBuilder, funcOp.getLoc(),
+          scalarTy,
+          block->getArgument(0), 
+          block->getArgument(1)
+      );
+      stablehlo::ReturnOp::create(opBuilder, funcOp.getLoc(), ValueRange{addOp.getResult()});
+      opBuilder.restoreInsertionPoint(storedInsertPoint);
+      tracking.valueMap.map(sumOp.getResult(), reduceOp.getResult(0));
+    })
     .Default([](auto){
       llvm::errs() << "Not Supported Builtin Operators!\n";
       std::exit(EXIT_FAILURE);
@@ -914,7 +971,7 @@ static void scanOperationsAndInserts(
           handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
         }
       )
-      .Case<hlfir::MatmulOp, hlfir::DotProductOp, hlfir::TransposeOp>(
+      .Case<hlfir::MatmulOp, hlfir::DotProductOp, hlfir::TransposeOp, hlfir::SumOp>(
         [&](auto builtInOp) {
           handleBuiltinOperators(tracking, opBuilder, funcOp, builtInOp);
         }

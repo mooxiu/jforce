@@ -20,7 +20,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -30,6 +29,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "jit-manager.h"
 
 using namespace mlir;
 
@@ -275,7 +275,6 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp, llv
           assert(shapeMap.contains(eop.getShape()) && "The shape of the elementalOp should be known");
           auto oldResType = eop.getResult().getType();
           auto newResType = convertToStaticShape(oldResType, shapeMap.at(eop.getShape()));
-          shapeMap.insert(std::pair(eop.getResult(), shapeMap.at(eop.getShape())));
           opBuilder.setInsertionPoint(eop);
           auto neop = hlfir::ElementalOp::create(
             opBuilder,
@@ -286,9 +285,62 @@ static void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp, llv
             eop.getTypeparams(),
             eop.isOrdered()
           );
+          shapeMap.insert(std::pair(neop.getResult(), shapeMap.at(eop.getShape())));
           neop.getRegion().takeBody(eop.getRegion());
           eop.replaceAllUsesWith(neop.getResult()); 
           eop.erase();
+        }
+      })
+      .Case<hlfir::SumOp>([&](hlfir::SumOp sumOp){
+        // %17 = "hlfir.sum"(%16, %2) <{fastmath = #arith.fastmath<contract>, operandSegmentSizes = array<i32: 1, 1, 0>}> : (!hlfir.expr<100x128xf64>, i32) -> !hlfir.expr<?xf64>
+        if (isDynamicShape(sumOp.getResult().getType())) {
+          auto arrayVal = sumOp.getArray();
+          assert(shapeMap.contains(arrayVal));
+          if (!shapeMap.contains(arrayVal)) {
+            return; 
+          }
+          auto inputShape = shapeMap.at(arrayVal);
+          llvm::SmallVector<int64_t> outputShape;
+
+          if (sumOp.getDim()) {
+            auto dimVal = sumOp.getDim();
+            int64_t dimIdx = -1;
+            
+            if (constTrackingMap.contains(dimVal)) {
+              dimIdx = constTrackingMap.at(dimVal);
+            } else if (auto constOp = llvm::dyn_cast_or_null<arith::ConstantOp>(dimVal.getDefiningOp())) {
+              if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(constOp.getValue())) {
+                dimIdx = intAttr.getInt();
+              }
+            }
+
+            if (dimIdx != -1) {
+              int64_t zeroBasedDim = dimIdx - 1;
+              for (size_t i = 0; i < inputShape.size(); ++i) {
+                if (i != zeroBasedDim) {
+                  outputShape.push_back(inputShape[i]);
+                }
+              }
+            } else {
+              return;
+            }
+          } else {
+            // DO NOTHING
+          }
+          shapeMap.insert(std::pair(sumOp.getResult(), outputShape));
+          Type newResType = convertToStaticShape(sumOp.getResult().getType(), outputShape);
+          opBuilder.setInsertionPoint(sumOp);
+          auto newSumOp = hlfir::SumOp::create(
+            opBuilder,
+            funcOp->getLoc(),
+            newResType,
+            sumOp.getArray(),
+            sumOp.getDim(),
+            sumOp.getMask(),
+            sumOp.getFastmathAttr()
+          );
+          sumOp.replaceAllUsesWith(newSumOp.getResult());
+          sumOp.erase();
         }
       })
       .Case<func::FuncOp>([&](func::FuncOp fop){
@@ -366,7 +418,7 @@ void inferShape(
 
     // std::cerr << "\nBefore Prepro: ====================================\n";
     preprocWithExistingPasses(opBuilder, pm, funcOp, valueMap);
-    // llvm::dbgs() << "\n ## after preproc with exesiting passes\n";
+    // DEBUG_PRINT("After preproc" + getMLIROperationAsString(funcOp));
 
     // std::cerr << "\nAfter Prepro: \n" << getMLIROperationAsString(funcOp);
 
