@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "kernel_pointer_interface.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "profiler.h"
 #include "utilities.h"
@@ -45,7 +46,7 @@ static PJRT_Client * getPJRTClient(const PJRT_Api *api) {
   args.struct_size = PJRT_Client_Create_Args_STRUCT_SIZE;
   auto error = api->PJRT_Client_Create(&args);
   if (error) {
-    std::cerr << "Fail to create client!\n";
+    std::cerr << "Fail to create client: " << JitManager::getErrMsg(api, error) << "\n";
     std::exit(EXIT_FAILURE);
   }
   return args.client;
@@ -127,6 +128,8 @@ PJRT_Device* JitManager::getPJRTDevice(TargetDevice td) {
     this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cuda");
   } else if (td == TargetDevice::ROCM) {
     this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "rocm");
+  } else if (td == TargetDevice::TPU) {
+    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "tpu");
   } else {
     std::cerr << "Fail to find device!\n";
     std::exit(EXIT_FAILURE);
