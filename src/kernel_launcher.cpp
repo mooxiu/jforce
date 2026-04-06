@@ -360,6 +360,9 @@ static void manageOutputBuffers(
         // TODO: insert cudamemd2d 
         std::cerr << "Not Implemented Yet for CUDA!\n";
         exit(EXIT_FAILURE);   
+      } else if (targetDeviceTy == TargetDevice::TPU) {
+        extern std::unordered_map<void*, PJRT_Buffer*> InternalBufferMap;
+        InternalBufferMap[inputArg.data] = outsBuffersList[0][i];
       } else {
         logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(targetDeviceTy)), logLevel::ERROR);
         exit(EXIT_FAILURE);
