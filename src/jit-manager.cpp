@@ -359,3 +359,13 @@ L2JitMetas* JitManager::createL2JitMetas(
   return &(insertedPair.first->getSecond());
 }; 
 
+PJRT_Client* JitManager::getPJRTClientPointer() {
+  return this->pjrtClient;
+}
+
+extern "C" {
+  __attribute__((visibility("default"))) 
+  PJRT_Client* GetExecutorPJRTClient() {
+    return JitManager::getInstance().getPJRTClientPointer(); 
+  }
+} 

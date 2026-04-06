@@ -72,6 +72,7 @@ public:
 
   mlir::MLIRContext* getContext();
   const PJRT_Api* getPJRTApi();
+  PJRT_Client* getPJRTClientPointer();
 
   mlir::ModuleOp getModuleOp(uintptr_t JitCodePtr, const char* JitCodeC);
 
