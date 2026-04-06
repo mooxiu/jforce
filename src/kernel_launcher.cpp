@@ -227,7 +227,8 @@ static PJRT_Buffer* createBufferFromForgedTgtPointers(
     .data = inputArg.data,
     .dims = dims_arr,
     .num_dims = size_t(inputArg.rank),
-    .device = device
+    .device = device,
+    .type = getPJRTBufferType(inputArg.dtype)
   };
   auto err = api->PJRT_Client_BufferFromHostBuffer(&args);
   assert(!err);
