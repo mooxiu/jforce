@@ -361,8 +361,11 @@ static void manageOutputBuffers(
         std::cerr << "Not Implemented Yet for CUDA!\n";
         exit(EXIT_FAILURE);   
       } else if (targetDeviceTy == TargetDevice::TPU) {
+        // This is supposed to be happen, because the inputArg.data is not a real pointer on the device
+        // but a pointer we forged on OpenMP side to to the buffer
         extern std::unordered_map<void*, PJRT_Buffer*> InternalBufferMap;
         InternalBufferMap[inputArg.data] = outsBuffersList[0][i];
+        return;
       } else {
         logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(targetDeviceTy)), logLevel::ERROR);
         exit(EXIT_FAILURE);
