@@ -20,12 +20,26 @@
 #include <string>
 #include <vector>
 
-static std::unordered_map<void*, PJRT_Buffer*> GlobalBufferRegistry;
+static std::unordered_map<void*, PJRT_Buffer*> InternalBufferMap;
 
 extern "C" {
   __attribute__((visibility("default"))) 
-  void RegisterPjrtBuffer(void* TgtPtr, PJRT_Buffer* buffer) {
-    GlobalBufferRegistry[TgtPtr] = buffer;
+  PJRT_Buffer* GetPjrtBuffer(void* cpu_ptr) {
+    auto it = InternalBufferMap.find(cpu_ptr);
+    if (it != InternalBufferMap.end()) {
+        return it->second;
+    }
+    return nullptr;
+  }
+
+  __attribute__((visibility("default"))) 
+  void DestroyPjrtBuffer(void* cpu_ptr, PJRT_Api* api) {
+    auto it = InternalBufferMap.find(cpu_ptr);
+    if (it != InternalBufferMap.end()) {
+        PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE, nullptr, it->second};
+        api->PJRT_Buffer_Destroy(&args);
+        InternalBufferMap.erase(it);
+    }
   }
 }
 
@@ -190,14 +204,35 @@ static PJRT_Buffer* createLiteralBuffer(
 
   return buffer_args.buffer;
 }
-
-static PJRT_Buffer* reuseAllocatedBuffer(void* bufferAddr) {
-  auto it = GlobalBufferRegistry.find(bufferAddr); 
-  if (it == GlobalBufferRegistry.end()) {
-    std::cerr << "The buffer is not been registered!\n";
-    std::exit(EXIT_FAILURE);
+  
+static PJRT_Buffer* createBufferFromForgedTgtPointers(
+  const PJRT_Api *api, 
+  PJRT_Client *client,
+  PJRT_Device *device, 
+  const TensorDesc& inputArg
+) {
+  // pointing to a memory on host, host does not know the size
+  // To make it work on TPU, we have to do it here
+  auto forgedPointer = inputArg.data;
+  
+  
+  int64_t dims_arr[inputArg.rank];
+  for (int i = 0; i < inputArg.rank; i++) {
+    dims_arr[i] = inputArg.shape[i];
   }
-  return it->second;
+
+  auto args = PJRT_Client_BufferFromHostBuffer_Args {
+    .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+    .client = client,
+    .data = inputArg.data,
+    .dims = dims_arr,
+    .num_dims = size_t(inputArg.rank),
+    .device = device
+  };
+  auto err = api->PJRT_Client_BufferFromHostBuffer(&args);
+  assert(!err);
+  InternalBufferMap[inputArg.data] = args.buffer;
+  return args.buffer;
 }
 
 static void manageInputBuffers(
@@ -226,7 +261,7 @@ static void manageInputBuffers(
       if (inputArgs[i].isLiteral) {
         buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
       } else {
-        buffers[i] = reuseAllocatedBuffer(inputArgs[i].data);
+        buffers[i] = createBufferFromForgedTgtPointers(api, client, device, inputArgs[i]);
       }
     } 
   } else {
