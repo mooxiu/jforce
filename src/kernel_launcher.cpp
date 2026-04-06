@@ -214,26 +214,29 @@ static PJRT_Buffer* createBufferFromForgedTgtPointers(
   // pointing to a memory on host, host does not know the size
   // To make it work on TPU, we have to do it here
   auto forgedPointer = inputArg.data;
-  
-  
-  int64_t dims_arr[inputArg.rank];
-  for (int i = 0; i < inputArg.rank; i++) {
-    dims_arr[i] = inputArg.shape[i];
-  }
+  auto it = InternalBufferMap.find(forgedPointer);
+  if (it == InternalBufferMap.end()) {
+    int64_t dims_arr[inputArg.rank];
+      for (int i = 0; i < inputArg.rank; i++) {
+        dims_arr[i] = inputArg.shape[i];
+      }
 
-  auto args = PJRT_Client_BufferFromHostBuffer_Args {
-    .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
-    .client = client,
-    .data = inputArg.data,
-    .dims = dims_arr,
-    .num_dims = size_t(inputArg.rank),
-    .device = device,
-    .type = getPJRTBufferType(inputArg.dtype)
-  };
-  auto err = api->PJRT_Client_BufferFromHostBuffer(&args);
-  assert(!err);
-  InternalBufferMap[inputArg.data] = args.buffer;
-  return args.buffer;
+      auto args = PJRT_Client_BufferFromHostBuffer_Args {
+        .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+        .client = client,
+        .data = inputArg.data,
+        .type = getPJRTBufferType(inputArg.dtype),
+        .dims = dims_arr,
+        .num_dims = size_t(inputArg.rank),
+        .device = device
+      };
+      auto err = api->PJRT_Client_BufferFromHostBuffer(&args);
+      assert(!err);
+      InternalBufferMap[inputArg.data] = args.buffer;
+      return args.buffer;
+  } else {
+    return it->second;
+  }
 }
 
 static void manageInputBuffers(
