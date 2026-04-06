@@ -20,6 +20,15 @@
 #include <string>
 #include <vector>
 
+static std::unordered_map<void*, PJRT_Buffer*> GlobalBufferRegistry;
+
+extern "C" {
+  __attribute__((visibility("default"))) 
+  void RegisterPjrtBuffer(void* TgtPtr, PJRT_Buffer* buffer) {
+    GlobalBufferRegistry[TgtPtr] = buffer;
+  }
+}
+
 /**
 -------------------- Tool Functions --------------------
  */
@@ -182,6 +191,15 @@ static PJRT_Buffer* createLiteralBuffer(
   return buffer_args.buffer;
 }
 
+static PJRT_Buffer* reuseAllocatedBuffer(void* bufferAddr) {
+  auto it = GlobalBufferRegistry.find(bufferAddr); 
+  if (it == GlobalBufferRegistry.end()) {
+    std::cerr << "The buffer is not been registered!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return it->second;
+}
+
 static void manageInputBuffers(
   const PJRT_Api *api,
   PJRT_Client* client,
@@ -201,6 +219,16 @@ static void manageInputBuffers(
         buffers[i] = createCPUBuffer(api, client, device, inputArgs[i]);
       }
     }
+  } else if (targetDevice == TargetDevice::TPU) {
+    // In TPU, buffer is already created by the offload plugin!
+    // We should not create View Buffer, but instead, we should reuse the buffer.
+    for (int i = 0; i < inputArgCount; i++) {
+      if (inputArgs[i].isLiteral) {
+        buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
+      } else {
+        buffers[i] = reuseAllocatedBuffer(inputArgs[i].data);
+      }
+    } 
   } else {
     for (int i = 0; i < inputArgCount; i++) {
       if (inputArgs[i].isLiteral){
