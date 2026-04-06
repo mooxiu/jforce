@@ -365,7 +365,7 @@ static void manageOutputBuffers(
         // but a pointer we forged on OpenMP side to to the buffer
         extern std::unordered_map<void*, PJRT_Buffer*> InternalBufferMap;
         InternalBufferMap[inputArg.data] = outsBuffersList[0][i];
-        return;
+        continue;
       } else {
         logger::Log("Unsupported Device: " + std::to_string(static_cast<int32_t>(targetDeviceTy)), logLevel::ERROR);
         exit(EXIT_FAILURE);
