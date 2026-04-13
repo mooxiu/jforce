@@ -1,9 +1,25 @@
 #include "kernel_pointer_interface.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <vector>
+
+DType getDTypeFromRankedTensorType(mlir::RankedTensorType tensorTy) {
+  auto eleType = tensorTy.getElementType();
+  if (eleType.isF32()){
+    return DType::F32;
+  } else if (eleType.isF64()){
+    return DType::F64;
+  } else if (eleType.isInteger(32)) {
+    return DType::I32;
+  } else if (eleType.isInteger(64)) {
+    return DType::I64;
+  } else {
+    llvm::errs() << "Unexpected ElementType of tensorTy: " << eleType << "\n";
+    std::exit(EXIT_FAILURE);
+  }
+}
 
 PJRT_Buffer_Type getPJRTBufferType(DType dtype) {
   switch (dtype) {
@@ -32,11 +48,3 @@ size_t getDTypeSizeInByte(DType dtype) {
   }
 }
 
-std::vector<int64_t> getShape(TensorDesc td) {
-  std::vector<int64_t> shape;
-  shape.reserve(td.rank);
-  for (int i = 0; i < td.rank; i++) {
-    shape.push_back(td.shape[i]);
-  }
-  return shape;
-}

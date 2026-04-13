@@ -2,9 +2,9 @@
 #include "../third_party/headers/pjrt_c_api.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 
 enum class DType : int32_t {
   F32 = 0,
@@ -15,6 +15,7 @@ enum class DType : int32_t {
 
 size_t getDTypeSizeInByte(DType dtype);
 PJRT_Buffer_Type getPJRTBufferType(DType dtype);
+DType getDTypeFromRankedTensorType(mlir::RankedTensorType tensorTy);
 
 enum class TargetDevice : int32_t {
   CPU = 0,
@@ -80,5 +81,3 @@ struct KernelArgs {
   }
 };
 
-// TODO: WTF is this function? Shouldn't `td.shape` can get the shape??????
-std::vector<int64_t> getShape(TensorDesc td);
