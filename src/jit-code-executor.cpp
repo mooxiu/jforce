@@ -51,6 +51,7 @@
 #include "jit-manager.h"
 #include "profiler.h"
 #include "utilities.h"
+#include "transform/transform.h"
 
 
 using namespace mlir;
@@ -70,20 +71,6 @@ static TargetDevice getTargetDevice() {
   return TargetDevice::CPU;
 #endif
 }
-
-
-void inferShape(MLIRContext* ctx, ModuleOp moduleOp, int64_t NumHostArgs, void** ArgBasePtrs, int64_t* ArgSizes, int64_t* ArgTypes, llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap); 
-void optimizeSignatureForXLAAliasing(MLIRContext* context, func::FuncOp& funcOp);
-
-func::FuncOp workdistributeToStableHLO(
-  MLIRContext* context, 
-  const mlir::ModuleOp& moduleOp, 
-  const llvm::DenseMap<Value, llvm::SmallVector<int>>& sliceShiftMap
-);
-
-llvm::DenseMap<unsigned, unsigned> trimShapeArgs(MLIRContext* context, func::FuncOp& funcOp, int64_t* ArgTypes);
-
-
 
 bool fillKernelFuncArgs(
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping, 

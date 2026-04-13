@@ -1,16 +1,16 @@
 #pragma once
 
-#ifdef ENABLE_PROFILING 
+#ifdef ENABLE_PROFILING
 #include <mutex>
 #include <string>
 #include <vector>
 enum class Phase {
   TOTAL, // total jit execution time
-  
+
   LOWERING_SHAPE_INFER,
   LOWERING_TO_STABLEHLO,
   LOWERING_EXTRA,
-  
+
   JITCOMPILE,
 
   EXECUTION_BUFFER_PREPARE,
@@ -27,21 +27,22 @@ struct ProfilerRecord {
 
 class Profiler {
 private:
-  std::vector<ProfilerRecord> records;  
+  std::vector<ProfilerRecord> records;
   std::mutex mtx;
-                                        
-public:                                 
+
+public:
   // Should be initialized by JitManager
-  Profiler(){};
+  Profiler() {};
   // When destroy, dumping everything
   ~Profiler();
   // Should be a singleton, so we do not allow copy constructor
-  Profiler(const Profiler&) = delete;
-  Profiler& operator=(const Profiler&) = delete; 
-    
-  static Profiler& getInstance(); 
+  Profiler(const Profiler &) = delete;
+  Profiler &operator=(const Profiler &) = delete;
 
-  void appendRecord(std::string kernelName, Phase phase, double durationInMicroSec);
+  static Profiler &getInstance();
+
+  void appendRecord(std::string kernelName, Phase phase,
+                    double durationInMicroSec);
 };
 
 class ProfilerRecorder {
@@ -56,15 +57,16 @@ public:
   ~ProfilerRecorder();
 };
 
-  #define CONCAT_IMPL(x, y) x##y
-  #define MACRO_CONCAT(x, y) CONCAT_IMPL(x, y)
+#define CONCAT_IMPL(x, y) x##y
+#define MACRO_CONCAT(x, y) CONCAT_IMPL(x, y)
 
-  #define PROFILE_SCOPE(kernelName, phase) \
-    ProfilerRecorder MACRO_CONCAT(rec_, __LINE__)(kernelName, phase)
-  
+#define PROFILE_SCOPE(kernelName, phase)                                       \
+  ProfilerRecorder MACRO_CONCAT(rec_, __LINE__)(kernelName, phase)
+
 #else
 
-  // If ENABLE_PROFILING not defined, will expand to nothing, so no impact on performance
-  #define PROFILE_SCOPE(kernelName, phase) 
+// If ENABLE_PROFILING not defined, will expand to nothing, so no impact on
+// performance
+#define PROFILE_SCOPE(kernelName, phase)
 
 #endif

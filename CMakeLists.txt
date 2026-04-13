@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 
 # I have to put here before "project" so it knows the place of Fortran Compiler
 set(HOME $ENV{HOME})
-set(CURR_ENV "REMOTE") # LOCAL/REMOTE <- Change this for different environment
-set(CURR_DEVICE "TPU") # CPU/CUDA/ROCM/TPU <- Change this for different environment
-set(MACHINE_NAME "tpu") # memkf01/memkf03/memkf04/tpu
+set(CURR_ENV "LOCAL") # LOCAL/REMOTE <- Change this for different environment
+set(CURR_DEVICE "CPU") # CPU/CUDA/ROCM/TPU <- Change this for different environment
+set(MACHINE_NAME "LOCAL") # memkf01/memkf03/memkf04/tpu
 
 if (CURR_ENV STREQUAL "LOCAL")
   set(DEFAULT_PJRT_PLUGIN_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pjrt_plugins/pjrt_c_api_cpu_plugin.so")
@@ -103,16 +103,9 @@ endif()
 
 add_subdirectory(third_party/protos)
 
+aux_source_directory(src SRC_FILES)
 add_library(jit-code-executor SHARED 
-  src/jit-code-executor.cpp
-  src/workdistribute-to-stablehlo.cpp
-  src/workdistribute-shape-inference.cpp
-  src/workdistribute-shape-transform.cpp
-  src/kernel_launcher.cpp
-  src/kernel_pointer_interface.cpp
-  src/utilities.cpp
-  src/jit-manager.cpp
-  src/profiler.cpp
+  ${SRC_FILES}
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
