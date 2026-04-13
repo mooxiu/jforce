@@ -3,17 +3,6 @@
 
 bool isLiteralTy(int64_t argType) { return (bool)(argType & 0x100); }
 
-void logger::Log(std::string msg, logLevel level) {
-  switch (level) {
-  case logLevel::DEBUG:
-    llvm::dbgs() << "[DEBUG] " << msg << "\n";
-    break;
-  case logLevel::ERROR:
-    llvm::dbgs() << "[ERROR] " << msg << "\n";
-    break;
-  }
-}
-
 // FIXME: does not cover full situations, can be false negative.
 bool isDynamicShape(mlir::Type type) {
   if (auto ref = llvm::dyn_cast<fir::ReferenceType>(type)) {

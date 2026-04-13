@@ -61,9 +61,7 @@ static std::string getDeviceDescription(const PJRT_Api *api,
   };
   auto err1 = api->PJRT_Device_GetDescription(&args);
   if (err1) {
-    logger::Log("Fail to get description of device: " +
-                    JitManager::getErrMsg(api, err1),
-                logLevel::ERROR);
+    std::cerr << "[Error] Fail to get description of the device: " << JitManager::getErrMsg(api, err1) << "\n";
     return nullptr;
   }
   PJRT_DeviceDescription_ToString_Args ts_args = {
@@ -72,9 +70,7 @@ static std::string getDeviceDescription(const PJRT_Api *api,
   };
   auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
   if (err2) {
-    logger::Log("Fail to get device description to string: " +
-                    JitManager::getErrMsg(api, err2),
-                logLevel::ERROR);
+    std::cerr << "[Error] Fail to get device description to string: " << JitManager::getErrMsg(api, err2) << "\n";
     return nullptr;
   }
   return ts_args.to_string;
@@ -92,8 +88,8 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
     return nullptr;
   }
   if (device_args.num_addressable_devices < 1) {
-    logger::Log("Cannot find any device!", logLevel::ERROR);
-    return nullptr;
+    std::cerr << "[Error] Cannot find any device!\n";
+    std::exit(EXIT_FAILURE);
   }
 
   int chosen_device_idx = -1;
@@ -113,9 +109,8 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
     }
   }
   if (chosen_device_idx == -1) {
-    logger::Log("Fail to find " + deviceDescKeyword + " device!",
-                logLevel::ERROR);
-    return nullptr;
+    std::cerr << "[Error] Fail to find " + deviceDescKeyword + " device!\n";
+    std::exit(EXIT_FAILURE);
   }
   return device_args.addressable_devices[chosen_device_idx];
 }

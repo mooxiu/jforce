@@ -16,13 +16,6 @@
 #include <cstdlib>
 #include <string>
 
-enum class logLevel { DEBUG, ERROR };
-
-class logger {
-public:
-  static void Log(std::string msg, logLevel level);
-};
-
 bool isLiteralTy(int64_t argType);
 
 bool isDynamicShape(mlir::Type type);
