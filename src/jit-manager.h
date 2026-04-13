@@ -28,7 +28,6 @@ struct L1JitMetas {
 
 struct L2JitMetas {
   PJRT_LoadedExecutable *exe;
-  // mlir::func::FuncOp kernelFunc;
   std::vector<mlir::Type> kernelFuncTypes;
   std::string kernelFuncStr;
   llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
@@ -89,7 +88,5 @@ public:
                     const std::string &kernelFuncStr);
 
   static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err);
-  static bool checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
-                             const std::string &eventName);
 };
 #endif

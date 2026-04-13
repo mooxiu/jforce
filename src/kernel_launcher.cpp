@@ -68,17 +68,6 @@ std::string JitManager::getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   return s;
 }
 
-bool JitManager::checkPJRTError(const PJRT_Api *api, PJRT_Error *err,
-                                const std::string &eventName) {
-  auto msg = eventName;
-  if (err) {
-    std::cerr << "[Error]" << msg << ": " << getErrMsg(api, err);
-    return false;
-  } else {
-    return true;
-  }
-}
-
 /**
 -------------------- End Tool Functions --------------------
  */
@@ -94,24 +83,24 @@ static PJRT_Buffer *createViewBuffer(const PJRT_Api *api, PJRT_Client *client,
                                      PJRT_Device *device,
                                      const TensorDesc &inputArg) {
 
-  PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg = {};
-  cvodbArg.client = client;
-  cvodbArg.struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE;
-  cvodbArg.element_type = getPJRTBufferType(inputArg.dtype);
-
-  // TODO: use memory instead of device
-  cvodbArg.device = device;
-  cvodbArg.device_buffer_ptr = inputArg.data;
-  cvodbArg.num_dims = inputArg.rank;
-  cvodbArg.dims = inputArg.shape;
   auto doNothingCallback = [](void *a, void *b) {};
-  cvodbArg.on_delete_callback = doNothingCallback;
-  if (!JitManager::checkPJRTError(
-          api, api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg),
-          "Create View of Device Buffer")) {
-    std::cerr << "Fail to create View of Device Buffer! Exit...\n";
-    std::exit(EXIT_FAILURE);
+  PJRT_Client_CreateViewOfDeviceBuffer_Args cvodbArg = {
+    .struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE,
+    .client = client,
+    .device_buffer_ptr = inputArg.data,
+    .dims = inputArg.shape,
+    .num_dims = size_t(inputArg.rank),
+    .element_type = getPJRTBufferType(inputArg.dtype),
+    // PJRT_Buffer_MemoryLayout* layout;
+    // TODO: use memory instead of device
+    .device = device,
+    .on_delete_callback = doNothingCallback,
   };
+  auto* err = api->PJRT_Client_CreateViewOfDeviceBuffer(&cvodbArg);
+  if (err) {
+    std::cerr << "[Error] Fail to create View Buffer: " << JitManager::getInstance().getErrMsg(api, err) << "\n";
+    std::exit(EXIT_FAILURE);
+  }
   return cvodbArg.buffer;
 }
 
@@ -127,10 +116,9 @@ static PJRT_Buffer *createCPUBuffer(const PJRT_Api *api, PJRT_Client *client,
       .num_dims = size_t(inputArg.rank),
       .host_buffer_semantics = PJRT_HostBufferSemantics_kMutableZeroCopy,
       .device = device};
-  if (!JitManager::checkPJRTError(api,
-                                  api->PJRT_Client_BufferFromHostBuffer(&args),
-                                  "Create CPU Buffer")) {
-    std::cerr << "Fail to create Buffer for CPU offloading! Exit...\n";
+  auto* err = api->PJRT_Client_BufferFromHostBuffer(&args);
+  if (err) {
+    std::cerr << "[Error] Fail to create CPU Buffer: " << JitManager::getInstance().getErrMsg(api, err) << "\n";
     std::exit(EXIT_FAILURE);
   }
   return args.buffer;
@@ -185,8 +173,6 @@ static PJRT_Buffer *createLiteralBuffer(const PJRT_Api *api,
   buffer_args.num_dims = 0; // TODO: should reconsider how to set the size and
                             // dimmension for general
   buffer_args.device = device;
-  // buffer_args.host_buffer_semantics =
-  // PJRT_HostBufferSemantics_kMutableZeroCopy;
 
   auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
   if (err) {
@@ -296,7 +282,10 @@ static void executeLoadedKernelExecutable(
   };
 
   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
-  JitManager::checkPJRTError(api, executeErr, "Execute LoadedExecutable");
+  if (executeErr) {
+    std::cerr << "[Error] Execute LoadedExecutable: " << JitManager::getInstance().getErrMsg(api, executeErr) << "\n";
+    std::exit(EXIT_FAILURE);
+  }
 
   for (int i = 0; i < deviceCount; i++) {
     PJRT_Event_Await_Args waitArgs = {.struct_size =

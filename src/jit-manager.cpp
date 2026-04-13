@@ -20,6 +20,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -84,8 +85,9 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
       .client = client,
   };
   auto err = api->PJRT_Client_AddressableDevices(&device_args);
-  if (!JitManager::checkPJRTError(api, err, "Find Device")) {
-    return nullptr;
+  if (err) {
+    std::cerr << "[Error] Cannot get addressable device: " << JitManager::getInstance().getErrMsg(api, err) << "\n";
+    std::exit(EXIT_FAILURE);
   }
   if (device_args.num_addressable_devices < 1) {
     std::cerr << "[Error] Cannot find any device!\n";
@@ -158,9 +160,11 @@ JitManager::JitManager() {
     std::exit(EXIT_FAILURE);
   }
   PJRT_Api *api = get_api_fn();
-  PJRT_Plugin_Initialize_Args initArgs = {};
-  initArgs.struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE;
+  PJRT_Plugin_Initialize_Args initArgs = {
+    .struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE
+  };
   auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
+  assert(!initErr && "Error when plugin initializing!");
   // Theoretically need to close handle_ when exiting, but it will automatically
   // be destroyed when exiting the program so intentionally leave it.
   this->pjrtApi = api;
@@ -227,7 +231,7 @@ void JitManager::destroyLoadedExecutable(PJRT_LoadedExecutable *exe) {
       .executable = exe,
   };
   auto destroyErr = this->pjrtApi->PJRT_LoadedExecutable_Destroy(&ledargs);
-  checkPJRTError(this->pjrtApi, destroyErr, "Destroy LoadedExecutable");
+  assert(!destroyErr);
   return;
 }
 
