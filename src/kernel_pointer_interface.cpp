@@ -45,6 +45,9 @@ size_t getDTypeSizeInByte(DType dtype) {
   case DType::F64:
   case DType::I64:
     return size_t(8);
+  default:
+    llvm::errs() << "Unexpected DType!\n";
+    std::exit(EXIT_FAILURE);
   }
 }
 

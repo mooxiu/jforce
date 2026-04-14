@@ -47,7 +47,7 @@ endif()
 
 # When commenting this line, need also to assign spack env on remote machines! 
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
-# set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
+set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
 
 project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -72,7 +72,7 @@ set(STABLEHLO_BUILD_PATH "${STABLEHLO_PROJECT}/build")
 set(STABLEHLO_STATIC_LIBS "${STABLEHLO_BUILD_PATH}/lib")
 message(STATUS "[DEBUG] THE stablehlo project: ${STABLEHLO_PROJECT}")
 message(STATUS "[DEBUG] THE stablehlo build: ${STABLEHLO_BUILD_PATH}")
-file(GLOB stablehlo_all_libs ${STABLEHLO_STATIC_LIBS}/lib*.a)
+# file(GLOB stablehlo_all_libs ${STABLEHLO_STATIC_LIBS}/lib*.a)
 include_directories(
   ${STABLEHLO_PROJECT}
   ${STABLEHLO_BUILD_PATH} # Important for generated .td files
@@ -103,9 +103,16 @@ endif()
 
 add_subdirectory(third_party/protos)
 
-aux_source_directory(src SRC_FILES)
 add_library(jit-code-executor SHARED 
-  ${SRC_FILES}
+  src/jit-code-executor.cpp
+  src/workdistribute-to-stablehlo.cpp
+  src/workdistribute-shape-inference.cpp
+  src/workdistribute-shape-transform.cpp
+  src/kernel_launcher.cpp
+  src/kernel_pointer_interface.cpp
+  src/utilities.cpp
+  src/jit-manager.cpp
+  src/profiler.cpp
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
@@ -125,8 +132,9 @@ target_link_libraries(jit-code-executor PRIVATE
   libprotobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
 
-  #${stablehlo_all_libs}
-  -Wl,--start-group ${stablehlo_all_libs} -Wl,--end-group
+  
+  # -Wl,--start-group ${stablehlo_all_libs} -Wl,--end-group
+  ${STABLEHLO_STATIC_LIBS}/libStablehloOps.a
   FIRDialect
   HLFIRDialect
   ${MLIR_LIBS} # TODO: Trim linked MLIR libs to save compile time, same for LLVM and Flang

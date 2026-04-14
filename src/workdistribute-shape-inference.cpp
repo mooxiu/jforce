@@ -1,4 +1,12 @@
-#include "transform.h"
+#include "flang/Optimizer/Dialect/FIROps.h"
+#include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
+#include "utilities.h"
+#include "profiler.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include <iostream>
+
 
 using namespace mlir;
 
@@ -21,16 +29,9 @@ preprocWithExistingPasses(OpBuilder opBuilder, PassManager &pm,
   };
 
   // Replace some known values with constant values, then lifiting the
-  // propagation task to existing mlir passes. llvm::dbgs() << "\n ## before
-  // replace known values\n"; llvm::dbgs() << "curr funcOP: " <<
-  // getMLIROperationAsString(funcOp) << "\n";
-
+  // propagation task to existing mlir passes.
   llvm::SmallVector<Operation *> opsToDelete;
   funcOp.walk([&](fir::LoadOp lop) {
-    // llvm::dbgs() <<  "\n on lop: ";
-    // lop.print(llvm::dbgs());
-    // llvm::dbgs() <<  "\n";
-
     opBuilder.setInsertionPoint(lop);
     auto lopVal = getSolidVal(lop.getOperand());
     if (lopVal.second) {

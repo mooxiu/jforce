@@ -1,35 +1,19 @@
 #include "jit-manager.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
-#include "kernel_pointer_interface.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/Parser/Parser.h"
-#include "profiler.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "utilities.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include <algorithm>
-#include <cassert>
-#include <cstdint>
-#include <cstdlib>
+#include "utilities.h"
+#include "profiler.h"
 #include <dlfcn.h>
 #include <iostream>
-#include <mlir/IR/MLIRContext.h>
-#include <mutex>
-#include <shared_mutex>
-#include <string>
-#include <utility>
+
 
 std::string getPluginPath() {
 // DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake

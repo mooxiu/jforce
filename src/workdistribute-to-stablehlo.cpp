@@ -1,20 +1,29 @@
-#include "transform.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
+#include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/IR/IRMapping.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "profiler.h"
+#include "jit-manager.h"
+#include <iostream>
 
 using namespace mlir;
 
 /// valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning
 /// - valueMap: tracking the each operand of FIR pointing to the value of each
-/// operand in Stablehlo function
+/// operand in Stablehlo function.
 /// - argsTrackingMap: tracking the current value of arguments of stablehlo
-/// pointing to, practically a reverse map of `valueMap`
+/// pointing to, practically a reverse map of `valueMap`.
 struct TrackingInfo {
 public:
   // Key: value in FIR function
   // Value: value in StableHLO function
-  mlir::IRMapping valueMap;
+  IRMapping valueMap;
   // Key: value of one of StableHLO function's arguments
   // Value: value in FIR function
-  mlir::IRMapping argsTrackingMap;
+  IRMapping argsTrackingMap;
 };
 
 ///  Example of source type:
@@ -122,26 +131,26 @@ static void handleArithUnaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
   auto operandSrc = tracking.valueMap.lookup(operand);
   assert(operandSrc && "OperandSource should exist!");
   llvm::TypeSwitch<Operation *>(unaryOp)
-      .Case([&](mlir::math::SinOp sop) {
+      .Case([&](math::SinOp sop) {
         // should have same type
         auto resTy = toCorrespondingTensorTy(operandSrc.getType());
         auto sinOp = stablehlo::SineOp::create(opBuilder, funcOp.getLoc(),
                                                resTy, operandSrc, {});
         tracking.valueMap.map(result, sinOp.getResult());
       })
-      .Case([&](mlir::math::ExpOp eop) {
+      .Case([&](math::ExpOp eop) {
         auto resTy = toCorrespondingTensorTy(operandSrc.getType());
         auto stablehloExOp = stablehlo::ExpOp::create(
             opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
         tracking.valueMap.map(result, stablehloExOp.getResult());
       })
-      .Case([&](mlir::math::SqrtOp sop) {
+      .Case([&](math::SqrtOp sop) {
         auto resTy = toCorrespondingTensorTy(operandSrc.getType());
         auto stablehloSqrtOp = stablehlo::SqrtOp::create(
             opBuilder, funcOp.getLoc(), resTy, operandSrc, {});
         tracking.valueMap.map(result, stablehloSqrtOp.getResult());
       })
-      .Case([&](mlir::arith::NegFOp nop) {
+      .Case([&](arith::NegFOp nop) {
         auto resTy = toCorrespondingTensorTy(operandSrc.getType());
         auto stablehloNegOp = stablehlo::NegOp::create(
             opBuilder, funcOp.getLoc(), resTy, operandSrc);
@@ -738,31 +747,6 @@ static void handleAssignOp(TrackingInfo &tracking, OpBuilder &opBuilder,
                    // generated, can be fixed after knowing more information
         /*unique_indices*/ BoolAttr::get(funcOp.getContext(), true));
 
-    // // scatter is very bug prone, this is for debugging
-    // [&](){
-    //   llvm::dbgs() << "\n\nDebugging Info for scatterOp: \n";
-    //   llvm::dbgs() << "> Left side slice:\n";
-    //   LHSStablehloSliceVal.print(llvm::dbgs());
-    //   llvm::dbgs() << "\n> Right side slice:\n";
-    //   auto RHSStablehloSliceVal =
-    //   llvm::dyn_cast<stablehlo::SliceOp>(RHSStablehloVal.getDefiningOp()); if
-    //   (RHSStablehloSliceVal) {
-    //     RHSStablehloSliceVal.print(llvm::dbgs());
-    //   }
-    //
-    //   llvm::dbgs() << "\n Update Window Dims: ";
-    //   llvm::interleaveComma(updateWindowDims, llvm::dbgs());
-    //   llvm::dbgs() << "\n Scatter Dims To Operand Dims: ";
-    //   llvm::interleaveComma(scatterDimsToOperandDims, llvm::dbgs());
-    //
-    //   auto indices =
-    //   llvm::dyn_cast<stablehlo::ConcatenateOp>(scatterIndice.getDefiningOp());
-    //   if (indices) {
-    //     llvm::dbgs() << "\n ScatterIndices(update indices): \n";
-    //     indices.print(llvm::dbgs());
-    //   }
-    // }();
-    //
     assert(
         scatterOp.getNumResults() == 1 &&
         ":( I was thinking scatterOp should have one result here, but more?");
@@ -968,7 +952,7 @@ static void terminateFunction(const TrackingInfo &tracking,
     returnValues.push_back(trackedVal);
   }
 
-  // find the end of the last block
+  // Find the end of the last block.
   auto loc = funcOp.getLoc();
   opBuilder.setInsertionPointToEnd(&funcOp.front());
   func::ReturnOp::create(opBuilder, loc, returnValues);

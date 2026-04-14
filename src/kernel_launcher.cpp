@@ -1,24 +1,7 @@
 #include "jit-manager.h"
 #include "kernel_pointer_interface.h"
 #include "profiler.h"
-#include "utilities.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cassert>
-#include <cctype>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <dlfcn.h>
-#include <functional>
 #include <iostream>
-#include <numeric>
-#include <ostream>
-#include <string>
-#include <vector>
 
 static std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
 
@@ -331,13 +314,12 @@ static void manageOutputBuffers(const PJRT_Api *api,
         std::memcpy(outputArgs[i].data, afterPtr,
                     inputArg.getEleSize() * getDTypeSizeInByte(inputArg.dtype));
       } else if (targetDeviceTy == TargetDevice::CUDA) {
-        // TODO: insert cudamemd2d
+        // TODO: insert cudamemd2d?
         std::cerr << "Not Implemented Yet for CUDA!\n";
         exit(EXIT_FAILURE);
       } else if (targetDeviceTy == TargetDevice::TPU) {
-        // This is supposed to be happen, because the inputArg.data is not a
-        // real pointer on the device but a pointer we forged on OpenMP side to
-        // to the buffer
+        // This is supposed to be happen, because the inputArg.data is not a real pointer on the device, 
+        // but a pointer we forged on OpenMP side to the buffer.
         extern std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
         InternalBufferMap[inputArg.data] = outsBuffersList[0][i];
         continue;

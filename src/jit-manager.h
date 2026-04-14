@@ -1,17 +1,14 @@
 #ifndef JITMANAGER_H
 #define JITMANAGER_H
+
+#include "llvm/ADT/DenseSet.h"
+#include <shared_mutex>
 #include "../third_party/headers/pjrt_c_api.h"
 #include "kernel_pointer_interface.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
-#include <cstdint>
-#include <shared_mutex>
-#include <vector>
+#include "mlir/IR/Types.h"
 
 #ifdef ENABLE_XLA_DEBUG
 #define SET_XLA_FLAG()                                                         \

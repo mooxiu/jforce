@@ -1,10 +1,9 @@
-#pragma once
+#ifndef KERNELPOINTERINTERFACE_H
+#define KERNELPOINTERINTERFACE_H
+
 #include "../third_party/headers/pjrt_c_api.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include <cstddef>
-#include <cstdint>
+#include "llvm/Support/Debug.h"
 
 enum class DType : int32_t {
   F32 = 0,
@@ -81,3 +80,4 @@ struct KernelArgs {
   }
 };
 
+#endif

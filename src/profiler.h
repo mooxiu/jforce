@@ -1,4 +1,5 @@
-#pragma once
+#ifndef PROFILER_H
+#define PROFILER_H
 
 #ifdef ENABLE_PROFILING
 #include <mutex>
@@ -69,4 +70,5 @@ public:
 // performance
 #define PROFILE_SCOPE(kernelName, phase)
 
+#endif
 #endif

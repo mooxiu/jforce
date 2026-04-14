@@ -1,5 +1,8 @@
 #include "utilities.h"
+#include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "mlir/IR/OperationSupport.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 bool isLiteralTy(int64_t argType) { return (bool)(argType & 0x100); }
 

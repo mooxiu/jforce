@@ -1,5 +1,5 @@
-#include <unordered_map>
 #ifdef ENABLE_PROFILING
+#include <unordered_map>
 #include "profiler.h"
 #include <algorithm>
 #include <chrono>

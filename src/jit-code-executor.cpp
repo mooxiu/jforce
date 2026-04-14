@@ -1,57 +1,24 @@
-#include "flang/Optimizer/Dialect/FIRType.h"
-#include "flang/Optimizer/Transforms/Passes.h"
-#include "jit-manager.h"
 #include "kernel_pointer_interface.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/OwningOpRef.h"
-#include "mlir/Transforms/DialectConversion.h"
+#include "jit-manager.h"
 #include "profiler.h"
-#include "transform/transform.h"
-#include "utilities.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cassert>
-#include <cstddef>
-#include <cstdint>
-#include <cstdlib>
 #include <iostream>
-#include <mlir/Dialect/Affine/Passes.h>
-#include <mlir/Dialect/Arith/IR/Arith.h>
-#include <mlir/Dialect/Func/IR/FuncOps.h>
-#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
-#include <mlir/Dialect/LLVMIR/LLVMTypes.h>
-#include <mlir/Dialect/Utils/IndexingUtils.h>
-#include <mlir/IR/AsmState.h>
-#include <mlir/IR/Attributes.h>
-#include <mlir/IR/BlockSupport.h>
-#include <mlir/IR/BuiltinAttributes.h>
-#include <mlir/IR/BuiltinOps.h>
-#include <mlir/IR/BuiltinTypes.h>
-#include <mlir/IR/Diagnostics.h>
-#include <mlir/IR/DialectRegistry.h>
-#include <mlir/IR/IRMapping.h>
-#include <mlir/IR/MLIRContext.h>
-#include <mlir/IR/OpDefinition.h>
-#include <mlir/IR/Operation.h>
-#include <mlir/IR/OperationSupport.h>
-#include <mlir/IR/PatternMatch.h>
-#include <mlir/IR/TypeRange.h>
-#include <mlir/IR/Types.h>
-#include <mlir/IR/ValueRange.h>
-#include <mlir/Interfaces/SideEffectInterfaces.h>
-#include <mlir/Support/LLVM.h>
-#include <mlir/Tools/mlir-opt/MlirOptMain.h>
-#include <ostream>
-#include <string_view>
-#include <sys/types.h>
-#include <utility>
-#include <vector>
 
 using namespace mlir;
+
+void inferShape(MLIRContext *ctx, ModuleOp moduleOp, int64_t NumHostArgs,
+                void **ArgBasePtrs, int64_t *ArgSizes, int64_t *ArgTypes,
+                llvm::DenseMap<Value, llvm::SmallVector<int>> &sliceShiftMap);
+
+void optimizeSignatureForXLAAliasing(MLIRContext *context,
+                                     func::FuncOp &funcOp);
+
+func::FuncOp workdistributeToStableHLO(
+    MLIRContext *context, const mlir::ModuleOp &moduleOp,
+    const llvm::DenseMap<Value, llvm::SmallVector<int>> &sliceShiftMap);
+
+llvm::DenseMap<unsigned, unsigned>
+trimShapeArgs(MLIRContext *context, func::FuncOp &funcOp, int64_t *ArgTypes);
+
 
 static TargetDevice getTargetDevice() {
 #ifdef TARGET_DEVICE
