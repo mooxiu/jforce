@@ -7,6 +7,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "profiler.h"
 #include "jit-manager.h"
+#include "utilities.h"
 #include <iostream>
 
 using namespace mlir;
@@ -25,37 +26,6 @@ public:
   // Value: value in FIR function
   IRMapping argsTrackingMap;
 };
-
-///  Example of source type:
-///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
-///  "!fir.ref<f32>": convert to "tensor<f32>"
-///  "!hlfir.expr<shape>: convert to tensor<shape>"
-[[deprecated("Should only be used when generating stablehlo op, and should "
-             "reverse the dimensions")]]
-static RankedTensorType convertBufferTyToTensorTy(mlir::Type srcTy) {
-  // If it's already a tensor type, then no need to convert
-  if (llvm::isa<RankedTensorType>(srcTy)) {
-    return llvm::dyn_cast<RankedTensorType>(srcTy);
-  }
-
-  return llvm::TypeSwitch<mlir::Type, RankedTensorType>(srcTy)
-      .Case<hlfir::ExprType>([](hlfir::ExprType expTy) {
-        return RankedTensorType::get(expTy.getShape(), expTy.getEleTy());
-      })
-      .Case<fir::BoxType>([](fir::BoxType bTy) {
-        return convertBufferTyToTensorTy(bTy.getEleTy());
-      })
-      .Case<fir::ReferenceType>([](fir::ReferenceType refTy) {
-        return convertBufferTyToTensorTy(refTy.getEleTy());
-      })
-      .Case<fir::SequenceType>([](fir::SequenceType seqTy) {
-        return RankedTensorType::get(seqTy.getShape(), seqTy.getEleTy());
-      })
-      .Default([&](auto scTy) {
-        // Suppose this is a scalar type
-        return RankedTensorType::get({}, scTy);
-      });
-}
 
 ///  Example of source type:
 ///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"

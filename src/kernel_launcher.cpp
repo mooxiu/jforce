@@ -248,16 +248,14 @@ static void executeLoadedKernelExecutable(
 
   const int deviceCount = 1;
 
-  PJRT_Event *deviceCompleteEvents[deviceCount];
+  PJRT_Event *deviceCompleteEvents[deviceCount] = {nullptr};
 
   PJRT_LoadedExecutable_Execute_Args leeas = {
-      .struct_size =
-          PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE, // function and args
+      .struct_size = PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE, // function and args
       .executable = exe,
       .options = &execute_options,
       .argument_lists = argLists,         // [deviceCount][argCount],
-      .num_devices = (size_t)deviceCount, // we have one device, and the output
-                                          // by this device is 1.
+      .num_devices = (size_t)deviceCount, // we have one device, and the output by this device is 1.
       .num_args = (size_t)in_args_count,
       .output_lists = outLists,
       .device_complete_events = deviceCompleteEvents,
@@ -266,23 +264,27 @@ static void executeLoadedKernelExecutable(
 
   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
   if (executeErr) {
-    std::cerr << "[Error] Execute LoadedExecutable: " << JitManager::getInstance().getErrMsg(api, executeErr) << "\n";
+    std::cerr << "[Error] Execute LoadedExecutable: " 
+      << JitManager::getErrMsg(api, executeErr) << "\n";
     std::exit(EXIT_FAILURE);
   }
+  DEBUG_PRINT("Finish Executing...");
 
   for (int i = 0; i < deviceCount; i++) {
-    PJRT_Event_Await_Args waitArgs = {.struct_size =
-                                          PJRT_Event_Await_Args_STRUCT_SIZE,
-                                      .event = leeas.device_complete_events[i]};
-    api->PJRT_Event_Await(&waitArgs);
+    if (leeas.device_complete_events != nullptr && leeas.device_complete_events[i] != nullptr) {
+      PJRT_Event_Await_Args waitArgs = {
+        .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
+        .event = leeas.device_complete_events[i]
+      };
+      api->PJRT_Event_Await(&waitArgs);
+      PJRT_Event_Destroy_Args eda = {
+        .struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE,
+        .event = leeas.device_complete_events[i]
+      };
+      api->PJRT_Event_Destroy(&eda);
+    }
   }
-
-  for (int i = 0; i < deviceCount; i++) {
-    PJRT_Event_Destroy_Args eda = {.struct_size =
-                                       PJRT_Event_Await_Args_STRUCT_SIZE,
-                                   .event = leeas.device_complete_events[i]};
-    api->PJRT_Event_Destroy(&eda);
-  }
+  DEBUG_PRINT("Finish Waiting For Events...");
 }
 
 /// Ideally, the data should be updated in-place
@@ -341,9 +343,11 @@ void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
   // Create Buffer with memory managed by OpenMP
   std::vector<PJRT_Buffer *> inputArgsBufs;
   inputArgsBufs.resize(offloadingArgs->inputArgCount);
+  DEBUG_PRINT("Before Managing Input Buffers...");
   manageInputBuffers(this->pjrtApi, this->pjrtClient, device,
                      offloadingArgs->targetDevice, offloadingArgs->inputArgs,
                      offloadingArgs->inputArgCount, inputArgsBufs);
+  DEBUG_PRINT("Succeed in preparing input buffers.");
   PJRT_Buffer **inputArgsBufsList[] = {inputArgsBufs.data()};
 
   std::vector<PJRT_Buffer *> outputArgsBufs;
@@ -351,9 +355,11 @@ void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
   PJRT_Buffer **outputArgsBufsList[] = {outputArgsBufs.data()};
 
   // Execute the kernel
+  DEBUG_PRINT("Before Executing...");
   executeLoadedKernelExecutable(this->pjrtApi, exe, device, inputArgsBufsList,
                                 outputArgsBufsList,
                                 offloadingArgs->inputArgCount);
+  DEBUG_PRINT("Succeed in Executing...");
 
   manageOutputBuffers(this->pjrtApi, inputArgsBufs, outputArgsBufsList,
                       offloadingArgs->inputArgs, offloadingArgs->outputArgs,

@@ -119,6 +119,7 @@ PJRT_Device *JitManager::getPJRTDevice(TargetDevice td) {
     std::cerr << "Fail to find device!\n";
     std::exit(EXIT_FAILURE);
   }
+  DEBUG_PRINT("Succeed in getting device!\n");
   return this->pjrtDevice;
 }
 

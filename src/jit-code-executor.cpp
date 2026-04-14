@@ -1,6 +1,7 @@
 #include "kernel_pointer_interface.h"
 #include "jit-manager.h"
 #include "profiler.h"
+#include "utilities.h"
 #include <iostream>
 
 using namespace mlir;
