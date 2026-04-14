@@ -268,7 +268,6 @@ static void executeLoadedKernelExecutable(
       << JitManager::getErrMsg(api, executeErr) << "\n";
     std::exit(EXIT_FAILURE);
   }
-  DEBUG_PRINT("Finish Executing...");
 
   for (int i = 0; i < deviceCount; i++) {
     if (leeas.device_complete_events != nullptr && leeas.device_complete_events[i] != nullptr) {
@@ -284,7 +283,6 @@ static void executeLoadedKernelExecutable(
       api->PJRT_Event_Destroy(&eda);
     }
   }
-  DEBUG_PRINT("Finish Waiting For Events...");
 }
 
 /// Ideally, the data should be updated in-place
@@ -343,11 +341,9 @@ void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
   // Create Buffer with memory managed by OpenMP
   std::vector<PJRT_Buffer *> inputArgsBufs;
   inputArgsBufs.resize(offloadingArgs->inputArgCount);
-  DEBUG_PRINT("Before Managing Input Buffers...");
   manageInputBuffers(this->pjrtApi, this->pjrtClient, device,
                      offloadingArgs->targetDevice, offloadingArgs->inputArgs,
                      offloadingArgs->inputArgCount, inputArgsBufs);
-  DEBUG_PRINT("Succeed in preparing input buffers.");
   PJRT_Buffer **inputArgsBufsList[] = {inputArgsBufs.data()};
 
   std::vector<PJRT_Buffer *> outputArgsBufs;
@@ -355,12 +351,9 @@ void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
   PJRT_Buffer **outputArgsBufsList[] = {outputArgsBufs.data()};
 
   // Execute the kernel
-  DEBUG_PRINT("Before Executing...");
   executeLoadedKernelExecutable(this->pjrtApi, exe, device, inputArgsBufsList,
                                 outputArgsBufsList,
                                 offloadingArgs->inputArgCount);
-  DEBUG_PRINT("Succeed in Executing...");
-
   manageOutputBuffers(this->pjrtApi, inputArgsBufs, outputArgsBufsList,
                       offloadingArgs->inputArgs, offloadingArgs->outputArgs,
                       offloadingArgs->targetDevice);

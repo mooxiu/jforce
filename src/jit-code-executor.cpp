@@ -54,6 +54,7 @@ bool fillKernelFuncArgs(llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
         .shape = rtType.getShape().data(),
         .rank = (int32_t)rtType.getRank(),
         .dtype = getDTypeFromRankedTensorType(rtType),
+        .isLiteral = isLiteralTy(ArgTypes[oldIdx]),
     };
   }
   return true;
