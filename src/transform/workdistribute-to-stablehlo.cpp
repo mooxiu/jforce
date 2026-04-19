@@ -5,9 +5,9 @@
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "profiler.h"
-#include "jit-manager.h"
-#include "utilities.h"
+#include "../support/profiler.h"
+#include "../runtime/jit-manager.h"
+#include "../support/utilities.h"
 #include <iostream>
 
 using namespace mlir;

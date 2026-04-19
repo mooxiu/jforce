@@ -1,7 +1,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
-#include "utilities.h"
-#include "profiler.h"
+#include "../support/utilities.h"
+#include "../support/profiler.h"
 
 
 using namespace mlir;

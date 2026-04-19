@@ -104,15 +104,15 @@ endif()
 add_subdirectory(third_party/protos)
 
 add_library(jit-code-executor SHARED 
-  src/jit-code-executor.cpp
-  src/workdistribute-to-stablehlo.cpp
-  src/workdistribute-shape-inference.cpp
-  src/workdistribute-shape-transform.cpp
-  src/kernel_launcher.cpp
-  src/kernel_pointer_interface.cpp
-  src/utilities.cpp
-  src/jit-manager.cpp
-  src/profiler.cpp
+  src/runtime/jit-code-executor.cpp
+  src/runtime/kernel_launcher.cpp
+  src/runtime/jit-manager.cpp
+  src/transform/workdistribute-to-stablehlo.cpp
+  src/transform/workdistribute-shape-inference.cpp
+  src/transform/workdistribute-shape-transform.cpp
+  src/support/kernel_pointer_interface.cpp
+  src/support/utilities.cpp
+  src/support/profiler.cpp
 )
 
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)

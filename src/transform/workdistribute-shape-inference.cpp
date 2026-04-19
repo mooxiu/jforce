@@ -2,8 +2,8 @@
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
-#include "utilities.h"
-#include "profiler.h"
+#include "../support/utilities.h"
+#include "../support/profiler.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include <iostream>
 

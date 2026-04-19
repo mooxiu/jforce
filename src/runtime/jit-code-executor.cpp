@@ -1,8 +1,15 @@
-#include "kernel_pointer_interface.h"
+#include "../support/kernel_pointer_interface.h"
+#include "../support/profiler.h"
+#include "../support/utilities.h"
 #include "jit-manager.h"
-#include "profiler.h"
-#include "utilities.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/Pass/PassManager.h"
+#include <cassert>
 #include <iostream>
+#include <vector>
 
 using namespace mlir;
 
@@ -19,7 +26,6 @@ func::FuncOp workdistributeToStableHLO(
 
 llvm::DenseMap<unsigned, unsigned>
 trimShapeArgs(MLIRContext *context, func::FuncOp &funcOp, int64_t *ArgTypes);
-
 
 static TargetDevice getTargetDevice() {
 #ifdef TARGET_DEVICE
@@ -58,6 +64,46 @@ bool fillKernelFuncArgs(llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
     };
   }
   return true;
+}
+
+struct jitArg {
+  void *hostPtr;
+  void *tgtPtr;
+  int64_t size;
+  bool isLiteral;
+};
+
+llvm::SmallVector<jitArg> packJitArg(int64_t NumArgs, void **TgtArgs,
+                                     void **ArgPtrs, int64_t *ArgSizes,
+                                     int64_t *ArgTypes) {
+  llvm::SmallVector<jitArg> args;
+  args.resize(NumArgs);
+
+  for (int i = 0; i < NumArgs; i++) {
+    args[i] = jitArg{
+      .hostPtr = ArgPtrs[i],
+      .tgtPtr = TgtArgs[i],
+      .size = ArgSizes[i],
+      .isLiteral = isLiteralTy(ArgTypes[i]),
+    };
+  };
+  return args;
+}
+
+void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::SmallVector<jitArg> args) {
+  llvm::SmallVector<mlir::Attribute> argsAttr;
+  for (int i = 0; i < args.size(); i++) {
+    llvm::SmallVector<mlir::NamedAttribute> perArgAttr;
+
+    perArgAttr.push_back(builder.getNamedAttr("jit.arg_size", builder.getI64IntegerAttr(args[i].size)));
+    if (args[i].isLiteral) {
+      perArgAttr.push_back(builder.getNamedAttr("jit.is_literal", builder.getUnitAttr()));
+    }
+    argsAttr.push_back(builder.getDictionaryAttr(perArgAttr));
+  }
+
+  kernelFunc.setArgAttrsAttr(builder.getArrayAttr(argsAttr));
+  return;
 }
 
 // ------------------------------ Init ------------------------------
@@ -129,8 +175,15 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // Parse JitCode to ModuleOp
   MLIRContext *ctx = JitManager::getInstance().getContext();
   // Use OweningOpRef so RAII can help to destroy the tree
-  mlir::OwningOpRef<mlir::ModuleOp> moduleOp =
-      JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
+  mlir::OwningOpRef<mlir::ModuleOp> moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
+  mlir::OpBuilder builder(ctx);
+  auto args = packJitArg(NumArgs, TgtArgs, ArgPtrs, ArgSizes, ArgTypes);
+  auto kernel = moduleOp.get().lookupSymbol<func::FuncOp>("kernel");
+  assert(kernel && "FuncOp with name kernel should exist!");
+  insertJitInfo(builder, kernel, args);
+
+  // TODO: gradually change the functions into standard passes compatible with MLIR ecosystem!!!!
+
   DEBUG_PRINT("\nThe module we got: \n" +
               getMLIROperationAsString(moduleOp.get()));
 

@@ -4,8 +4,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
 #include <shared_mutex>
-#include "../third_party/headers/pjrt_c_api.h"
-#include "kernel_pointer_interface.h"
+#include "../../third_party/headers/pjrt_c_api.h"
+#include "../support/kernel_pointer_interface.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"

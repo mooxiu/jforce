@@ -9,8 +9,8 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
-#include "utilities.h"
-#include "profiler.h"
+#include "../support/utilities.h"
+#include "../support/profiler.h"
 #include <dlfcn.h>
 #include <iostream>
 

@@ -1,7 +1,7 @@
 #ifndef KERNELPOINTERINTERFACE_H
 #define KERNELPOINTERINTERFACE_H
 
-#include "../third_party/headers/pjrt_c_api.h"
+#include "../../third_party/headers/pjrt_c_api.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/Debug.h"
 
