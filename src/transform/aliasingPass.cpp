@@ -14,6 +14,11 @@ struct AliasingPass :
   public PassWrapper<AliasingPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AliasingPass)
 
+  StringRef getArgument() const override { 
+    return "jforce-aliasing"; 
+  }
+
+
   // Ref: https://openxla.org/xla/aliasing
   // XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`,
   // function: `ConvertToHloModule::RunOnFunction`

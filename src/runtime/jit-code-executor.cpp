@@ -185,7 +185,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   insertJitInfo(builder, kernel, args);
 
   mlir::PassManager pm(ctx);
-  pm.addPass(xla_jit::createShapeInferPass());
+
+  ctx->disableMultithreading();
+  pm.enableIRPrinting();
+
+  pm.nest<mlir::func::FuncOp>().addPass(xla_jit::createShapeInferPass());
+
   pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
   pm.addPass(xla_jit::createAliasingPass());
   pm.addPass(xla_jit::createTrimArgsPass());

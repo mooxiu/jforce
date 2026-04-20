@@ -6,6 +6,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/TypeID.h"
 #include "mlir/Transforms/Passes.h"
@@ -15,6 +16,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
+#include <memory>
 #include "../support/utilities.h"
 #include "../support/profiler.h"
 #include "passes.h"
@@ -376,6 +378,11 @@ struct ShapeInferPass
     });  
   }
 
+  
+  StringRef getArgument() const override { 
+    return "jforce-shape-infer"; 
+  }
+
   void runOnOperation() override {
     PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
     func::FuncOp funcOp = getOperation();
@@ -386,8 +393,9 @@ struct ShapeInferPass
     // some parameters containing the shape info are passed as pointer like
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
       auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
-      assert(intAttr && "Literal Integer should have been inserted in arg attribute!\n");
-      valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), intAttr.getInt()));
+      if (intAttr) {
+        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), intAttr.getInt()));
+      }
     };
 
     // TODO: not sure if this could be propagated????
@@ -417,5 +425,7 @@ namespace xla_jit {
     return std::make_unique<ShapeInferPass>();
   }
 
-  void registerShapeInferPass() {};
+  void registerShapeInferPass() {
+    ::mlir::registerPass([]()->std::unique_ptr<mlir::Pass>{return createShapeInferPass();});
+  };
 }

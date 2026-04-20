@@ -960,6 +960,10 @@ struct WorkdistributeToStableHLOPass
     return sliceShiftMap;
   };
 
+  StringRef getArgument() const override { 
+    return "jforce-translate"; 
+  }
+
   void runOnOperation() override {
     PROFILE_SCOPE("workdistributeToStableHLO", Phase::LOWERING_TO_STABLEHLO);
     auto moduleOp = getOperation(); 

@@ -37,6 +37,11 @@ struct TrimArgsPass:
     return;
   }
 
+  StringRef getArgument() const override { 
+    return "jforce-trim-args"; 
+  }
+
+
   void runOnOperation() override {
       PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
     auto funcOp = getOperation();
