@@ -110,6 +110,10 @@ add_library(jit-code-executor SHARED
   src/transform/workdistribute-to-stablehlo.cpp
   src/transform/workdistribute-shape-inference.cpp
   src/transform/workdistribute-shape-transform.cpp
+  src/transform/shapeInferPass.cpp
+  src/transform/workdistributeToStableHLOPass.cpp
+  src/transform/aliasingPass.cpp
+  src/transform/trimArgsPass.cpp
   src/support/kernel_pointer_interface.cpp
   src/support/utilities.cpp
   src/support/profiler.cpp

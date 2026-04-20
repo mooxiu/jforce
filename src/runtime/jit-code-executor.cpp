@@ -1,17 +1,25 @@
 #include "../support/kernel_pointer_interface.h"
 #include "../support/profiler.h"
 #include "../support/utilities.h"
+#include "../transform/passes.h"
 #include "jit-manager.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
 using namespace mlir;
+
+#define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
+#define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
+
 
 void inferShape(MLIRContext *ctx, ModuleOp moduleOp, int64_t NumHostArgs,
                 void **ArgBasePtrs, int64_t *ArgSizes, int64_t *ArgTypes,
@@ -97,7 +105,7 @@ void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::Smal
 
     perArgAttr.push_back(builder.getNamedAttr("jit.arg_size", builder.getI64IntegerAttr(args[i].size)));
     if (args[i].isLiteral) {
-      perArgAttr.push_back(builder.getNamedAttr("jit.is_literal", builder.getUnitAttr()));
+      perArgAttr.push_back(builder.getNamedAttr(JIT_LITERAL_VAL_ATTR_NAME, builder.getUnitAttr()));
     }
     argsAttr.push_back(builder.getDictionaryAttr(perArgAttr));
   }
@@ -182,8 +190,19 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   assert(kernel && "FuncOp with name kernel should exist!");
   insertJitInfo(builder, kernel, args);
 
-  // TODO: gradually change the functions into standard passes compatible with MLIR ecosystem!!!!
+  mlir::PassManager pm(ctx);
+  pm.addPass(xla_jit::createShapeInferPass());
+  pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
+  pm.addPass(xla_jit::createAliasingPass());
+  pm.addPass(xla_jit::createTrimArgsPass());
 
+  if (mlir::failed(pm.run(moduleOp.get()))) {
+    llvm::errs() << "MLIR Pass Pipeline failed!\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  
+  // TODO: gradually change the functions into standard passes compatible with MLIR ecosystem!!!!
   DEBUG_PRINT("\nThe module we got: \n" +
               getMLIROperationAsString(moduleOp.get()));
 

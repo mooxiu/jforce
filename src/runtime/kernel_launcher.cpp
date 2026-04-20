@@ -1,6 +1,7 @@
 #include "jit-manager.h"
 #include "../support/kernel_pointer_interface.h"
 #include "../support/profiler.h"
+#include "../support/utilities.h"
 #include <iostream>
 
 static std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
