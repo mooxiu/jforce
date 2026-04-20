@@ -1,4 +1,4 @@
-add_library(transforms STATIC 
+add_library(JitTransforms STATIC 
   aliasingPass.cpp
   shapeInferPass.cpp
   trimArgsPass.cpp
@@ -6,16 +6,17 @@ add_library(transforms STATIC
   passes.cpp
 )
 
-target_include_directories(transforms 
+target_include_directories(JitTransforms
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_link_libraries(transforms 
+target_link_libraries(JitTransforms
   PRIVATE
     FIRDialect
     HLFIRDialect
-    MLIRFuncDialect
+    MLIRDialect
+    MLIRArithDialect
   PUBLIC
     JitSupport
     MLIRPass

@@ -1,7 +1,5 @@
 #include "../transform/passes.h"
 #include "mlir/IR/DialectRegistry.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/InitAllPasses.h"
 

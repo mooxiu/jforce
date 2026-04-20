@@ -3,6 +3,6 @@
 void xla_jit::registerAllJitPasses() {
   registerAliasingPass();
   registerShapeInferPass();
-  resgiterTrimArgsPass(); 
-  resgiterWorkdistributeToStableHLOPass();   
+  registerTrimArgsPass(); 
+  registerWorkdistributeToStableHLOPass();   
 }

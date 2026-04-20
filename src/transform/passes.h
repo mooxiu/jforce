@@ -11,8 +11,8 @@ namespace xla_jit {
 
   void registerAliasingPass();
   void registerShapeInferPass();
-  void resgiterTrimArgsPass(); 
-  void resgiterWorkdistributeToStableHLOPass();
+  void registerTrimArgsPass(); 
+  void registerWorkdistributeToStableHLOPass();
 
   void registerAllJitPasses();
 }

@@ -127,10 +127,8 @@ target_link_libraries(jit-code-executor PRIVATE
   xla_protos
   libprotobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
-  transforms
+  JitTransforms
   JitSupport
-  # StablehloOps
-  -Wl,--start-group ${stablehlo_all_libs} -Wl,--end-group
   # ${MLIR_LIBS} # TODO: Trim linked MLIR libs to save compile time, same for LLVM and Flang
   # ${LLVM_LIBS}
 )
