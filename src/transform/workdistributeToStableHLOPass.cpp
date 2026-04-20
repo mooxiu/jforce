@@ -993,4 +993,12 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createWorkdistributeToStableHLOPass() {
     return std::make_unique<WorkdistributeToStableHLOPass>();
   }
+
+  void registerWorkdistributeToStableHLOPass() {
+    mlir::PassRegistration<WorkdistributeToStableHLOPass>(
+      []()->std::unique_ptr<Pass> {
+        return createWorkdistributeToStableHLOPass();
+    });
+    return;
+  };
 }

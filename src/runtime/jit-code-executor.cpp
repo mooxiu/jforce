@@ -9,8 +9,10 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -20,20 +22,6 @@ using namespace mlir;
 #define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
 
-
-void inferShape(MLIRContext *ctx, ModuleOp moduleOp, int64_t NumHostArgs,
-                void **ArgBasePtrs, int64_t *ArgSizes, int64_t *ArgTypes,
-                llvm::DenseMap<Value, llvm::SmallVector<int>> &sliceShiftMap);
-
-void optimizeSignatureForXLAAliasing(MLIRContext *context,
-                                     func::FuncOp &funcOp);
-
-func::FuncOp workdistributeToStableHLO(
-    MLIRContext *context, const mlir::ModuleOp &moduleOp,
-    const llvm::DenseMap<Value, llvm::SmallVector<int>> &sliceShiftMap);
-
-llvm::DenseMap<unsigned, unsigned>
-trimShapeArgs(MLIRContext *context, func::FuncOp &funcOp, int64_t *ArgTypes);
 
 static TargetDevice getTargetDevice() {
 #ifdef TARGET_DEVICE
@@ -112,6 +100,12 @@ void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::Smal
 
   kernelFunc.setArgAttrsAttr(builder.getArrayAttr(argsAttr));
   return;
+}
+
+llvm::DenseMap<unsigned int, unsigned int> rebuildIndicesMapping(func::FuncOp) {
+  llvm::DenseMap<unsigned int, unsigned int> indicesMap;
+  // TODO: fill
+  return indicesMap;
 }
 
 // ------------------------------ Init ------------------------------
@@ -201,28 +195,9 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     std::exit(EXIT_FAILURE);
   }
 
-  
-  // TODO: gradually change the functions into standard passes compatible with MLIR ecosystem!!!!
-  DEBUG_PRINT("\nThe module we got: \n" +
-              getMLIROperationAsString(moduleOp.get()));
+  auto kernelFunc = moduleOp.get().lookupSymbol<func::FuncOp>("kernel");
+  auto argsIndicesMapping = rebuildIndicesMapping(kernelFunc);
 
-  llvm::DenseMap<Value, llvm::SmallVector<int>> sliceShiftMap;
-  inferShape(ctx, moduleOp.get(), NumHostArgs, ArgBasePtrs, ArgSizes, ArgTypes,
-             sliceShiftMap);
-  DEBUG_PRINT("\nAfter shape Infer:\n" +
-              getMLIROperationAsString(moduleOp.get()));
-
-  func::FuncOp kernelFunc =
-      workdistributeToStableHLO(ctx, moduleOp.get(), sliceShiftMap);
-  DEBUG_PRINT("\nAfter lowering to wd:\n" +
-              getMLIROperationAsString(kernelFunc));
-
-  optimizeSignatureForXLAAliasing(ctx, kernelFunc);
-
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping =
-      trimShapeArgs(ctx, kernelFunc, ArgTypes);
-  DEBUG_PRINT("\nAfter trim shape args:\n" +
-              getMLIROperationAsString(kernelFunc));
 
   if (l1JitMetas == nullptr) {
     llvm::DenseSet<int> argsIndices;

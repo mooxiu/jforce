@@ -102,46 +102,37 @@ endif()
 
 
 add_subdirectory(third_party/protos)
+add_subdirectory(src/support)
+add_subdirectory(src/transform)
+add_subdirectory(src/tool)
+
 
 add_library(jit-code-executor SHARED 
   src/runtime/jit-code-executor.cpp
   src/runtime/kernel_launcher.cpp
   src/runtime/jit-manager.cpp
-  src/transform/workdistribute-to-stablehlo.cpp
-  src/transform/workdistribute-shape-inference.cpp
-  src/transform/workdistribute-shape-transform.cpp
-  src/transform/shapeInferPass.cpp
-  src/transform/workdistributeToStableHLOPass.cpp
-  src/transform/aliasingPass.cpp
-  src/transform/trimArgsPass.cpp
-  src/support/kernel_pointer_interface.cpp
-  src/support/utilities.cpp
-  src/support/profiler.cpp
 )
+#
+# get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
+# get_property(LLVM_LIBS GLOBAL PROPERTY LLVM_ALL_LIBS)
+# get_property(FLANG_LIBS GLOBAL PROPERTY FLANG_ALL_LIBS)
+#
 
-get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
-get_property(LLVM_LIBS GLOBAL PROPERTY LLVM_ALL_LIBS)
-get_property(FLANG_LIBS GLOBAL PROPERTY FLANG_ALL_LIBS)
 
+# already public in transforms
 target_include_directories(jit-code-executor PRIVATE
-  ${MLIR_INCLUDE_DIRS}
-  ${LLVM_INCLUDE_DIRS}
-  ${FLANG_INCLUDE_DIRS}
-  ${STABLEHLO_PROJECT}
 )
 
 target_link_libraries(jit-code-executor PRIVATE 
-  stdc++
   xla_protos
   libprotobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
-
-  
+  transforms
+  JitSupport
+  # StablehloOps
   -Wl,--start-group ${stablehlo_all_libs} -Wl,--end-group
-  FIRDialect
-  HLFIRDialect
-  ${MLIR_LIBS} # TODO: Trim linked MLIR libs to save compile time, same for LLVM and Flang
-  ${LLVM_LIBS}
+  # ${MLIR_LIBS} # TODO: Trim linked MLIR libs to save compile time, same for LLVM and Flang
+  # ${LLVM_LIBS}
 )
 
 # Pass flags
@@ -163,5 +154,4 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     PRIVATE ENABLE_XLA_DEBUG
   )
 endif()
-
 

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include "../support/utilities.h"
 #include "../support/profiler.h"
+#include "passes.h"
 
 using namespace mlir;
 
@@ -415,4 +416,12 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createShapeInferPass() {
     return std::make_unique<ShapeInferPass>();
   }
+
+  void registerShapeInferPass() {
+    mlir::PassRegistration<ShapeInferPass>(
+      []()->std::unique_ptr<Pass> {
+        return createShapeInferPass();
+    });
+    return;
+  };
 }

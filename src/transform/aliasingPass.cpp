@@ -1,6 +1,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "../support/profiler.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "passes.h"
 #include <memory>
 
@@ -38,4 +39,12 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createAliasingPass() {
     return std::make_unique<AliasingPass>();
   }
+
+  void registerAliasingPass() {
+    mlir::PassRegistration<AliasingPass>(
+      []()->std::unique_ptr<Pass> {
+        return createAliasingPass();
+    });
+    return;
+  };
 }
