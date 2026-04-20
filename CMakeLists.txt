@@ -100,6 +100,8 @@ else()
     message(WARNING "Could not find protobuf-generate.cmake via direct path")
 endif()
 
+get_property(LLVM_LIBS GLOBAL PROPERTY LLVM_ALL_LIBS)
+get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
 
 add_subdirectory(third_party/protos)
 add_subdirectory(src/support)
@@ -112,12 +114,6 @@ add_library(jit-code-executor SHARED
   src/runtime/kernel_launcher.cpp
   src/runtime/jit-manager.cpp
 )
-#
-# get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
-# get_property(LLVM_LIBS GLOBAL PROPERTY LLVM_ALL_LIBS)
-# get_property(FLANG_LIBS GLOBAL PROPERTY FLANG_ALL_LIBS)
-#
-
 
 # already public in transforms
 target_include_directories(jit-code-executor PRIVATE
@@ -129,8 +125,6 @@ target_link_libraries(jit-code-executor PRIVATE
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
   JitTransforms
   JitSupport
-  # ${MLIR_LIBS} # TODO: Trim linked MLIR libs to save compile time, same for LLVM and Flang
-  # ${LLVM_LIBS}
 )
 
 # Pass flags

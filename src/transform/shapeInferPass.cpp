@@ -417,11 +417,5 @@ namespace xla_jit {
     return std::make_unique<ShapeInferPass>();
   }
 
-  void registerShapeInferPass() {
-    mlir::PassRegistration<ShapeInferPass>(
-      []()->std::unique_ptr<Pass> {
-        return createShapeInferPass();
-    });
-    return;
-  };
+  void registerShapeInferPass() {};
 }

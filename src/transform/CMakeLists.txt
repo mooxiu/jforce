@@ -15,8 +15,6 @@ target_link_libraries(JitTransforms
   PRIVATE
     FIRDialect
     HLFIRDialect
-    MLIRDialect
-    MLIRArithDialect
   PUBLIC
     JitSupport
     MLIRPass

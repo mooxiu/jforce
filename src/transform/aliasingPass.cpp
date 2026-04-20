@@ -40,11 +40,5 @@ namespace xla_jit {
     return std::make_unique<AliasingPass>();
   }
 
-  void registerAliasingPass() {
-    mlir::PassRegistration<AliasingPass>(
-      []()->std::unique_ptr<Pass> {
-        return createAliasingPass();
-    });
-    return;
-  };
+  void registerAliasingPass() {};
 }

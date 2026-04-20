@@ -4,10 +4,18 @@ add_executable(jforce-opt
 
 target_link_libraries(jforce-opt 
   PRIVATE
-    MLIRIR
+    -Wl,--start-group ${stablehlo_all_libs} -Wl,--end-group
     MLIROptLib
+    MLIRPass
     MLIRTransforms
     MLIRSupport
-    -Wl,--start-group JitTransforms -Wl,--end-group
-    -Wl,--start-group ${stablehlo_all_libs} -Wl,--end-group
+    JitTransforms
+    MLIRShapeDialect
+    MLIRQuantDialect
+    MLIRMathDialect
+    MLIRArithDialect
+    MLIRRegisterAllPasses
+    MLIRIR
+    ${MLIR_LIBS}
+    ${LLVM_LIBS}
 )
