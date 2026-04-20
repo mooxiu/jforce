@@ -57,6 +57,7 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 option(ENABLE_PROFILING "Profiling the execution or not, default off" OFF)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti -fno-exceptions")
 
 # -------------------- Find MLIR, LLVM, Clang, Flang --------------------  
 list(APPEND CMAKE_PREFIX_PATH ${LLVM_INSTALL_PATH})
@@ -123,8 +124,8 @@ target_link_libraries(jit-code-executor PRIVATE
   xla_protos
   libprotobuf
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
-  JitTransforms
   JitSupport
+  JitTransforms
 )
 
 # Pass flags

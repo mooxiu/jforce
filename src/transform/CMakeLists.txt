@@ -12,10 +12,16 @@ target_include_directories(JitTransforms
 )
 
 target_link_libraries(JitTransforms
-  PRIVATE
-    FIRDialect
-    HLFIRDialect
   PUBLIC
     JitSupport
     MLIRPass
+  PRIVATE
+    -Wl,--start-group ${stablehlo_all_libs}  -Wl,--end-group
+    FIRDialect
+    HLFIRDialect
+    MLIRShapeDialect
+    MLIRQuantDialect
+    MLIRMathDialect
+    MLIRArithDialect
+    MLIRIR
 )

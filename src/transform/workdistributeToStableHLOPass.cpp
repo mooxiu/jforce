@@ -945,7 +945,7 @@ static void terminateFunction(const TrackingInfo &tracking,
 }
 
 struct WorkdistributeToStableHLOPass
-    : PassWrapper<WorkdistributeToStableHLOPass, OperationPass<ModuleOp>> {
+    : public PassWrapper<WorkdistributeToStableHLOPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(WorkdistributeToStableHLOPass)
 
   llvm::DenseMap<Value, llvm::SmallVector<int64_t>> extractSliceShifts(func::FuncOp funcOp) {

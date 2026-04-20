@@ -11,7 +11,7 @@ using namespace mlir;
 
 namespace {
 struct AliasingPass : 
-  PassWrapper<AliasingPass, OperationPass<func::FuncOp>> {
+  public PassWrapper<AliasingPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AliasingPass)
 
   // Ref: https://openxla.org/xla/aliasing
