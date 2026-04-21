@@ -1,7 +1,6 @@
 add_library(JitSupport STATIC
   utilities.cpp
   profiler.cpp
-  kernel_pointer_interface.cpp
 )
 
 target_include_directories(JitSupport

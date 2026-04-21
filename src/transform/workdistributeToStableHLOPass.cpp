@@ -1,10 +1,12 @@
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
@@ -15,6 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 
@@ -164,7 +167,9 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
   assert(tracking.valueMap.contains(operand2) &&
          "ValueMap supposed to contain operand2!");
   Value operand1Src = tracking.valueMap.lookup(operand1);
+  assert(operand1Src && "operand1Src not exist!");
   Value operand2Src = tracking.valueMap.lookup(operand2);
+  assert(operand2Src && "operand2Src not exist!");
 
   RankedTensorType o1Type = toCorrespondingTensorTy(operand1Src.getType());
   RankedTensorType o2Type = toCorrespondingTensorTy(operand2Src.getType());
@@ -192,13 +197,13 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
   // insert the arith operation
   Value stablehloRes;
   llvm::TypeSwitch<Operation *>(arithOp)
-      .Case<arith::AddFOp>([&](arith::AddFOp addOp) {
+      .Case<arith::AddFOp, arith::AddIOp>([&](Operation* addOp) {
         auto stablehloAddOp =
             stablehlo::AddOp::create(opBuilder, funcOp.getLoc(), targetType,
                                      largerOperand, smallerOperand);
         stablehloRes = stablehloAddOp.getResult();
       })
-      .Case<arith::MulFOp>([&](arith::MulFOp) {
+      .Case<arith::MulFOp, arith::MulIOp>([&](Operation* mulOp) {
         auto stablehloMulOp =
             stablehlo::MulOp::create(opBuilder, funcOp.getLoc(), targetType,
                                      largerOperand, smallerOperand);
@@ -294,7 +299,9 @@ static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
         assert(dpOp.getNumOperands() == 2 &&
                "Failure of expecting dot product op has 2 operands!\n");
         auto lhs = tracking.valueMap.lookup(dpOp.getOperand(0));
+        assert(lhs && "lhs not exist!");
         auto rhs = tracking.valueMap.lookup(dpOp.getOperand(1));
+        assert(rhs && "rhs not exist!");
 
         auto lhsTy = llvm::dyn_cast<RankedTensorType>(lhs.getType());
         if (!lhsTy) {
@@ -318,7 +325,9 @@ static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
         // : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) ->
         // !hlfir.expr<?x?xf64>
         auto op0 = tracking.valueMap.lookup(mmOp.getOperand(0));
+        assert(op0 && "op0 not exist!");
         auto op1 = tracking.valueMap.lookup(mmOp.getOperand(1));
+        assert(op1 && "op1 not exist!");
         auto op0Ty = toCorrespondingTensorTy(op0.getType());
         auto op1Ty = toCorrespondingTensorTy(op1.getType());
         auto resTy = RankedTensorType::get(
@@ -341,6 +350,7 @@ static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
         // %24 = hlfir.transpose %23#0 : (!fir.box<!fir.array<?x?xf64>>) ->
         // !hlfir.expr<?x?xf64>
         auto op = tracking.valueMap.lookup(tOp.getOperand());
+        assert(op && "op not exist!");
         auto opTy = toCorrespondingTensorTy(op.getType());
         auto resTy = RankedTensorType::get(
             llvm::SmallVector<int64_t>{opTy.getShape()[1], opTy.getShape()[0]},
@@ -357,6 +367,7 @@ static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
         // (!hlfir.expr<100x128xf64>, i32) -> !hlfir.expr<?xf64>
         auto inputFir = sumOp.getArray();
         auto inputHlo = tracking.valueMap.lookup(inputFir);
+        assert(inputHlo && "inputHlo not exist!");
 
         auto inputTy = llvm::dyn_cast<RankedTensorType>(inputHlo.getType());
         assert(inputTy &&
@@ -440,7 +451,9 @@ static void handleDesignateOp(
   if (!isSlicing) {
     // example: %451 = "hlfir.designate"(%447#0, %arg9)
     // Often inside of an elemental operation
-    tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(memRef));
+    auto memRefV = tracking.valueMap.lookup(memRef);
+    assert(memRefV && "memRefV not exist!");
+    tracking.valueMap.map(resultOperand, memRefV);
   } else {
     // example 1: 1D slicing %1#0 [%c1: %c5: %c1]
     // - %7 = hlfir.designate %1#0 (%c1:%c5:%c1)  shape %4 :
@@ -531,6 +544,7 @@ static void handleDesignateOp(
     assert(tracking.valueMap.contains(memRef) &&
            "memRef should have corresponding value in StablehlO function!");
     auto memRefStablehlo = tracking.valueMap.lookup(memRef);
+    assert(memRefStablehlo && "memRefStablehlo not exist!");
     auto stablehloSliceOp = stablehlo::SliceOp::create(
         opBuilder, funcOp.getLoc(),
         toCorrespondingTensorTy(resultOperand.getType()), memRefStablehlo,
@@ -584,6 +598,7 @@ static void handleAssignOp(TrackingInfo &tracking, OpBuilder &opBuilder,
   // TODO: generate scatter
   assert(tracking.valueMap.contains(LHS) && "WriteToVal is not tracked!");
   auto LHSStablehloVal = tracking.valueMap.lookup(LHS);
+  assert(LHSStablehloVal && "LHSStablehloVal not exist!");
   // Deciding if we're slicing the LHS
   if (LHSStablehloVal.getDefiningOp() &&
       llvm::isa<stablehlo::SliceOp>(LHSStablehloVal.getDefiningOp())) {
@@ -764,15 +779,18 @@ static void handleAssignOp(TrackingInfo &tracking, OpBuilder &opBuilder,
            "Can find a tracking from arg!");
 
     // when using the LHS later, need to use corresponding value of RHS
+    assert(tracking.valueMap.contains(RHS) && "RHS not exist!");
     tracking.valueMap.map(LHS, tracking.valueMap.lookup(RHS));
 
     tracking.valueMap.map(defOp.getMemref(), scatterOp.getResult(0));
   } else {
     // Old logic here when assignOp is to whole array, may also need to fix
     // value: B should tracking the same value as A
+    assert(tracking.valueMap.contains(RHS) && "RHS not exist!");
     tracking.valueMap.map(LHS, tracking.valueMap.lookup(RHS));
 
     // argsTrackingMap: the arg which is tracking B now should tracking A?
+    assert(tracking.valueMap.contains(LHS) && "LHS not exist!");
     tracking.argsTrackingMap.map(tracking.valueMap.lookup(LHS), RHS);
   }
   return;
@@ -784,6 +802,7 @@ static void scanOperationsAndInserts(
     Operation *op,
     const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap) {
   DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
+  printf("Currently handling: %s\n", getMLIROperationAsString(op).data());
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {
@@ -808,6 +827,7 @@ static void scanOperationsAndInserts(
         auto parentOpResult = parentOp.getResult();
 
         auto stablehloArg = tracking.valueMap.lookup(yieldOperand);
+        assert(stablehloArg && "stabelhloArg not exist!");
         tracking.valueMap.map(parentOpResult, stablehloArg);
         tracking.argsTrackingMap.map(stablehloArg, parentOpResult);
       })
@@ -825,6 +845,7 @@ static void scanOperationsAndInserts(
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
         auto declaredOprand = declareOp.getOperand(0);
         for (unsigned int i = 0; i < declareOp->getNumResults(); i++) {
+          assert(tracking.valueMap.contains(declaredOprand) && "declaredOperand not exist!");
           tracking.valueMap.map(declareOp->getOpResult(i),
                                 tracking.valueMap.lookup(declaredOprand));
           tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand),
@@ -839,14 +860,17 @@ static void scanOperationsAndInserts(
         // example: %445 = "hlfir.apply"(%443, %arg9)
         auto resultOperand = applyOp->getOpResult(0);
         auto refArr = applyOp.getOperand(0);
+        assert(tracking.valueMap.contains(refArr) && "refArr not exist!");
         tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(refArr));
       })
       .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
+        assert(tracking.valueMap.contains(loadOp->getOperand(0)) && "First Operand not exist!");
         tracking.valueMap.map(loadOp->getResult(0),
                               tracking.valueMap.lookup(loadOp->getOperand(0)));
       })
-      .Case<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
-            arith::CmpFOp>([&](auto arithBinaryOp) {
+      .Case<arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
+            arith::MulFOp, arith::AddIOp, arith::DivFOp, arith::DivSIOp,
+            arith::CmpFOp, arith::CmpIOp>([&](auto arithBinaryOp) {
         handleArithBinaryOp(tracking, opBuilder, funcOp, arithBinaryOp);
       })
       .Case<arith::SelectOp>([&](arith::SelectOp sop) {
@@ -865,7 +889,9 @@ static void scanOperationsAndInserts(
         // Consider example when comparing a tensor with a scalar 0: ReLU(x) =
         // MAX(x, 0) In such a case, we have to broadcast the operand!
         Value trueSrc = tracking.valueMap.lookup(firOnTrue);
+        assert(trueSrc && "trueSrc not exist!");
         Value falseSrc = tracking.valueMap.lookup(firOnFalse);
+        assert(falseSrc && "falseSrc not exist!");
 
         RankedTensorType trueTy =
             llvm::dyn_cast<RankedTensorType>(trueSrc.getType());
@@ -893,6 +919,7 @@ static void scanOperationsAndInserts(
           }
         }
 
+        assert(tracking.valueMap.contains(firCond) && "firCond not exist!");
         auto stableHLOSelectRes = stablehlo::SelectOp::create(
             opBuilder, funcOp.getLoc(), tracking.valueMap.lookup(firCond),
             trueSrc, falseSrc);
@@ -908,6 +935,7 @@ static void scanOperationsAndInserts(
       })
       .Case<fir::ConvertOp>([&](fir::ConvertOp convertOp) {
         auto firOprand = convertOp.getOperand();
+        assert(tracking.valueMap.contains(firOprand) && "firOprand not exist!");
         auto stablehloOperand = tracking.valueMap.lookup(firOprand);
         assert(stablehloOperand && "Operand of convertOp should exist!\n");
         auto resTy = convertOp.getResult().getType();
@@ -919,6 +947,7 @@ static void scanOperationsAndInserts(
         assert(tracking.valueMap.contains(nrop.getOperand()) &&
                "Operand of NoReassocOp is supposed to be in ValueMap!");
         // just ignore and pass to the result
+        assert(tracking.valueMap.contains(nrop.getOperand()) && "nrop.getOperand not exist!");
         tracking.valueMap.map(nrop.getResult(),
                               tracking.valueMap.lookup(nrop.getOperand()));
       })
@@ -933,8 +962,10 @@ static void terminateFunction(const TrackingInfo &tracking,
   returnValues.reserve(argNum);
   for (unsigned int i = 0; i < funcOp.getNumArguments(); i++) {
     auto currArg = funcOp.getArgument(i);
+    assert(tracking.argsTrackingMap.contains(currArg) && "currArg not exist!");
     auto trackedVal =
         tracking.valueMap.lookup(tracking.argsTrackingMap.lookup(currArg));
+    assert(trackedVal && "trackedVal not exist!");
     returnValues.push_back(trackedVal);
   }
 
@@ -959,6 +990,10 @@ struct WorkdistributeToStableHLOPass
     });
     return sliceShiftMap;
   };
+
+  void getDependentDialects(mlir::DialectRegistry & registry) const override {
+    registry.insert<stablehlo::StablehloDialect>();
+  }
 
   StringRef getArgument() const override { 
     return "jforce-translate"; 
@@ -986,8 +1021,10 @@ struct WorkdistributeToStableHLOPass
       });
       terminateFunction(trackingInfo, opBuilder, stableHLOFuncOp);
       auto funcName = oldFOp.getName();
-      oldFOp.erase();
       stableHLOFuncOp.setName(funcName);
+      opBuilder.setInsertionPointAfter(oldFOp);
+      opBuilder.insert(stableHLOFuncOp);
+      oldFOp.erase();
     }
   }
 };

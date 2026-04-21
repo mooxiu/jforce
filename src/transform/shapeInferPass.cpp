@@ -160,7 +160,10 @@ struct ShapeInferPass
             // Example: %1:2 = hlfir.declare %arg0(%0) {uniq_name =
             // "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<?x?xf64>>,
             // !fir.shape<2>) -> (!fir.box<!fir.array<?x?xf64>>,
-            // !fir.ref<!fir.array<?x?xf64>>) Objective: %1:2 = hlfir.declare
+            // !fir.ref<!fir.array<?x?xf64>>) 
+            //  
+            // Expect: 
+            // %1:2 = hlfir.declare
             // %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} :
             // (!fir.ref<!fir.array<1000x1000xf64>>, !fir.shape<2>) ->
             // (!fir.box<!fir.array<1000x1000xf64>>,
@@ -378,28 +381,17 @@ struct ShapeInferPass
       auto isComputeArg = funcOp.getArgAttr(i, JIT_COMPUTE_ARG_ATTR_NAME);
       if (!isComputeArg) {
         auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
-        // TODO: need to get value from the ptr address !!!!
         if (intAttr) {
-          valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), intAttr.getInt()));
+          // `intAttr` is the literal address, need to recover to specific number.
+          auto argTy = funcOp.getArgumentTypes()[i];
+          auto eleTy = getDTypeFromValueType(argTy);
+          assert(eleTy == DType::I32 && "Supposed to be shape size!\n");
+          auto eleVal = extractLiteralPtr(intAttr.getInt(), eleTy);
+          assert(eleVal.returnedType == DType::I32);
+          valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), eleVal.valI32));
         }
       }
     };
-
-    //
-    // // TODO: not sure if this could be propagated????
-    // // If so, should delete this.
-    // funcOp->walk([&](hlfir::DeclareOp dop) {
-    //   // Sometimes it's included in declare Op
-    //   // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} :
-    //   // (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
-    //   // ...
-    //   // %4 = fir.load %2#0 : !fir.ref<i32>
-    //   if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) &&
-    //       dop.getNumResults() > 0) {
-    //     valueMap.insert(std::pair<Value, int>(
-    //         dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
-    //   }
-    // });
 
     preprocWithExistingPasses(opBuilder, funcOp);
     shapeInferenceInternal(opBuilder, funcOp);

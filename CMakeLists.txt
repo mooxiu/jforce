@@ -143,8 +143,6 @@ endif()
 
 # -DCMAKE_BUILD_TYPE=Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  target_compile_definitions(jit-code-executor 
-    PRIVATE ENABLE_XLA_DEBUG
-  )
+  add_compile_definitions(ENABLE_XLA_DEBUG)
 endif()
 

@@ -1,4 +1,3 @@
-#include "../support/kernel_pointer_interface.h"
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "../transform/passes.h"
@@ -16,7 +15,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <memory>
 #include <vector>
 
 using namespace mlir;
@@ -205,7 +203,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     /*printAfterOnlyOnFailure=*/false
   );
   // pm.enableIRPrinting();
-  pm.enableCrashReproducerGeneration("crash_repro.mlir");
+  pm.enableCrashReproducerGeneration("./crash_repro.mlir");
 
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
