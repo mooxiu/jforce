@@ -7,6 +7,7 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 using namespace mlir;
@@ -88,13 +90,19 @@ llvm::SmallVector<jitArg> packJitArg(int64_t NumArgs, void **TgtArgs,
 
 void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::SmallVector<jitArg> args) {
   llvm::SmallVector<mlir::Attribute> argsAttr;
+  auto ctx = builder.getContext();
   for (int i = 0; i < args.size(); i++) {
     llvm::SmallVector<mlir::NamedAttribute> perArgAttr;
 
-    perArgAttr.push_back(builder.getNamedAttr("jit.arg_size", builder.getI64IntegerAttr(args[i].size)));
     if (args[i].isLiteral) {
-      perArgAttr.push_back(builder.getNamedAttr(JIT_LITERAL_VAL_ATTR_NAME, builder.getUnitAttr()));
+      std::uintptr_t literalAddr = reinterpret_cast<std::uintptr_t>(args[i].hostPtr);
+      auto attr = IntegerAttr::get(
+        IntegerType::get(ctx, sizeof(void*) * 8),
+        literalAddr
+      );
+      perArgAttr.push_back(builder.getNamedAttr(JIT_LITERAL_VAL_ATTR_NAME, attr));
     }
+
     argsAttr.push_back(builder.getDictionaryAttr(perArgAttr));
   }
 
@@ -122,27 +130,27 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgNames) {
   PROFILE_SCOPE("total", Phase::TOTAL);
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" <<
-  // JitCodeC << "\n"; llvm::dbgs() << "\nreceive a jit call\n";
+  std::cerr << "Got a jit call with " << NumArgs << " args into:\n" <<
+  JitCodeC << "\n"; llvm::dbgs() << "\nreceive a jit call\n";
 
-  // #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
-  // #define h(A) \
-  //   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
-  //   for (unsigned I = 0; I < NumArgs; I++) {
-  //     std::cerr << "Device Arg #" << I << ":\n";
-  //     p(TgtArgs);
-  //     p(TgtOffsets);
-  //   }
-  //   for (unsigned I = 0; I < NumHostArgs; I++) {
-  //     std::cerr << "Host Arg #" << I << ":\n";
-  //     p(ArgBasePtrs);
-  //     p(ArgPtrs);
-  //     p(ArgSizes);
-  //     h(ArgTypes);
-  //     h(ArgNames);
-  //   }
-  // #undef p
-  // #undef h
+  #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
+  #define h(A) \
+    std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
+    for (unsigned I = 0; I < NumArgs; I++) {
+      std::cerr << "Device Arg #" << I << ":\n";
+      p(TgtArgs);
+      p(TgtOffsets);
+    }
+    for (unsigned I = 0; I < NumHostArgs; I++) {
+      std::cerr << "Host Arg #" << I << ":\n";
+      p(ArgBasePtrs);
+      p(ArgPtrs);
+      p(ArgSizes);
+      h(ArgTypes);
+      h(ArgNames);
+    }
+  #undef p
+  #undef h
 
   assert(NumArgs == NumHostArgs);
 
@@ -189,11 +197,15 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   ctx->disableMultithreading();
   pm.enableIRPrinting();
 
-  pm.nest<mlir::func::FuncOp>().addPass(xla_jit::createShapeInferPass());
+  auto nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
+  nestedPMPhase1.addPass(xla_jit::createShapeInferPass());
 
   pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
-  pm.addPass(xla_jit::createAliasingPass());
-  pm.addPass(xla_jit::createTrimArgsPass());
+
+  auto nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase2.addPass(xla_jit::createAliasingPass());
+  nestedPMPhase2.addPass(xla_jit::createTrimArgsPass());
 
   if (mlir::failed(pm.run(moduleOp.get()))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";

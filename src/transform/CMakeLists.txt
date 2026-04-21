@@ -1,4 +1,5 @@
 add_library(JitTransforms STATIC 
+  annotatePass.cpp
   aliasingPass.cpp
   shapeInferPass.cpp
   trimArgsPass.cpp
