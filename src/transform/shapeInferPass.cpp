@@ -16,6 +16,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include "../support/utilities.h"
 #include "../support/profiler.h"
@@ -23,6 +24,7 @@
 
 using namespace mlir;
 
+#define JIT_COMPUTE_ARG_ATTR_NAME "jit.compute_arg"
 #define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
 #define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
 
@@ -40,8 +42,7 @@ struct ShapeInferPass
   /// - Canonlicalize
   /// - SCCP: Sparse Conditional Constant Propagation
   /// Ref: https://mlir.llvm.org/docs/Passes/
-  void preprocWithExistingPasses(OpBuilder opBuilder, PassManager &pm,
-                            func::FuncOp funcOp) {
+  void preprocWithExistingPasses(OpBuilder opBuilder, func::FuncOp funcOp) {
     auto getSolidVal = [&](Value v) -> std::pair<int, bool> {
       auto it = valueMap.find(v);
       if (it != valueMap.end()) {
@@ -79,31 +80,15 @@ struct ShapeInferPass
     // llvm::dbgs() << "\n ## after replace known values\n";
 
     // Run passes
+    mlir::PassManager pm(funcOp.getContext());
     pm.addPass(mlir::createCanonicalizerPass());
     pm.addPass(mlir::createSCCPPass());
     pm.addPass(mlir::createCSEPass());
-    auto prevSnapshot = getMLIROperationAsString(funcOp);
-    auto currSnapshot = std::string();
-    const auto MAX_ITERATION = 3;
-    auto runPassCount = 0;
-    while (true) {
-      auto res = pm.run(funcOp);
-      if (mlir::failed(res)) {
-        llvm::errs() << "[Fail] Fail to run passes on funcOp!\n";
-        std::exit(EXIT_FAILURE);
-      } else {
-        runPassCount += 1;
-      }
-      currSnapshot = getMLIROperationAsString(funcOp);
-      if ((currSnapshot != prevSnapshot) && (runPassCount < MAX_ITERATION)) {
-        std::swap(prevSnapshot, currSnapshot);
-        // now prevSnapshot pointing to currSnapshot, currSnapshot will be
-        // shadowed in next run.
-        continue;
-      } else {
-        // Is not changed or reach the upper limit
-        break;
-      }
+    pm.addPass(mlir::createCanonicalizerPass());
+
+    if (mlir::failed(pm.run(funcOp))) {
+      llvm::errs() << "[Fail] Fail to run passes on funcOp!\n";
+      std::exit(EXIT_FAILURE);
     }
     return;
   }
@@ -378,7 +363,6 @@ struct ShapeInferPass
     });  
   }
 
-  
   StringRef getArgument() const override { 
     return "jforce-shape-infer"; 
   }
@@ -388,32 +372,36 @@ struct ShapeInferPass
     func::FuncOp funcOp = getOperation();
     MLIRContext* ctx = funcOp.getContext();
     OpBuilder opBuilder(ctx);
-    PassManager pm(ctx);
 
     // some parameters containing the shape info are passed as pointer like
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
-      if (intAttr) {
-        valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), intAttr.getInt()));
+      auto isComputeArg = funcOp.getArgAttr(i, JIT_COMPUTE_ARG_ATTR_NAME);
+      if (!isComputeArg) {
+        auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
+        // TODO: need to get value from the ptr address !!!!
+        if (intAttr) {
+          valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), intAttr.getInt()));
+        }
       }
     };
 
-    // TODO: not sure if this could be propagated????
-    // If so, should delete this.
-    funcOp->walk([&](hlfir::DeclareOp dop) {
-      // Sometimes it's included in declare Op
-      // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} :
-      // (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
-      // ...
-      // %4 = fir.load %2#0 : !fir.ref<i32>
-      if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) &&
-          dop.getNumResults() > 0) {
-        valueMap.insert(std::pair<Value, int>(
-            dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
-      }
-    });
+    //
+    // // TODO: not sure if this could be propagated????
+    // // If so, should delete this.
+    // funcOp->walk([&](hlfir::DeclareOp dop) {
+    //   // Sometimes it's included in declare Op
+    //   // %2:2 = hlfir.declare %arg1 {uniq_name = "_QFFcoexecute_aEm"} :
+    //   // (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)
+    //   // ...
+    //   // %4 = fir.load %2#0 : !fir.ref<i32>
+    //   if (dop.getNumOperands() == 1 && valueMap.contains(dop.getOperand(0)) &&
+    //       dop.getNumResults() > 0) {
+    //     valueMap.insert(std::pair<Value, int>(
+    //         dop.getResults()[0], valueMap.lookup(dop.getOperand(0))));
+    //   }
+    // });
 
-    preprocWithExistingPasses(opBuilder, pm, funcOp);
+    preprocWithExistingPasses(opBuilder, funcOp);
     shapeInferenceInternal(opBuilder, funcOp);
     setSliceShiftAsAttr(opBuilder, funcOp); 
   }

@@ -185,17 +185,27 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // Parse JitCode to ModuleOp
   MLIRContext *ctx = JitManager::getInstance().getContext();
   // Use OweningOpRef so RAII can help to destroy the tree
-  mlir::OwningOpRef<mlir::ModuleOp> moduleOp = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
+  mlir::OwningOpRef<mlir::ModuleOp> moduleOpRef = JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
   mlir::OpBuilder builder(ctx);
   auto args = packJitArg(NumArgs, TgtArgs, ArgPtrs, ArgSizes, ArgTypes);
-  auto kernel = moduleOp.get().lookupSymbol<func::FuncOp>("kernel");
+  auto moduleOp = moduleOpRef.get(); 
+  auto kernel = moduleOp.lookupSymbol<func::FuncOp>("kernel");
   assert(kernel && "FuncOp with name kernel should exist!");
   insertJitInfo(builder, kernel, args);
+  moduleOp.dump();
 
   mlir::PassManager pm(ctx);
 
   ctx->disableMultithreading();
-  pm.enableIRPrinting();
+  pm.enableIRPrinting(
+    /*shouldPrintBeforePass=*/[](mlir::Pass*, mlir::Operation*) { return true; },
+    /*shouldPrintAfterPass=*/[](mlir::Pass*, mlir::Operation*) { return true; },
+    /*printModuleScope=*/true,   // print the full module, not just the FuncOp
+    /*printAfterOnlyOnChange=*/false,
+    /*printAfterOnlyOnFailure=*/false
+  );
+  // pm.enableIRPrinting();
+  pm.enableCrashReproducerGeneration("crash_repro.mlir");
 
   auto nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
@@ -207,12 +217,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase2.addPass(xla_jit::createAliasingPass());
   nestedPMPhase2.addPass(xla_jit::createTrimArgsPass());
 
-  if (mlir::failed(pm.run(moduleOp.get()))) {
+  if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);
   }
 
-  auto kernelFunc = moduleOp.get().lookupSymbol<func::FuncOp>("kernel");
+  auto kernelFunc = moduleOp.lookupSymbol<func::FuncOp>("kernel");
   auto argsIndicesMapping = rebuildIndicesMapping(kernelFunc);
 
 

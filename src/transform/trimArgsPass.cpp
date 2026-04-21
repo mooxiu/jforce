@@ -180,5 +180,7 @@ namespace xla_jit {
     return std::make_unique<TrimArgsPass>();
   }
 
-  void registerTrimArgsPass() {};
+  void registerTrimArgsPass() {
+    ::mlir::registerPass([]()->std::unique_ptr<mlir::Pass>{return createTrimArgsPass();});
+  };
 }
