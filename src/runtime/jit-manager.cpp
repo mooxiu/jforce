@@ -11,6 +11,7 @@
 #include "xla/pjrt/proto/compile_options.pb.h"
 #include "../support/utilities.h"
 #include "../support/profiler.h"
+#include <cstdio>
 #include <dlfcn.h>
 #include <iostream>
 
@@ -247,8 +248,7 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
     if (td == TargetDevice::CUDA) {
       // TODO: this might make compiled code slower!!!
       auto debugOptions = build_opts->mutable_debug_options();
-      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(
-          true);
+      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
       if (const char *cuda_path_env = std::getenv("MY_CUDA_PATH")) {
         debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
       } else {
@@ -257,8 +257,7 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
     }
 
     std::string buf;
-    // SerializeToString(): This is protobuf's method inherited by
-    // `CompileOptionProto`.
+    // SerializeToString(): This is protobuf's method inherited by `CompileOptionProto`.
     if (!opts.SerializeToString(&buf)) {
       llvm::errs() << "Fail to serialize CompileOptionsProto\n";
       return "";
@@ -277,7 +276,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
 
   auto error = this->pjrtApi->PJRT_Client_Compile(&compile_args);
   if (error) {
-    llvm::errs() << "Fail to compile XLA Executable!\n";
+    llvm::errs() << "Fail to compile XLA Executable: " 
+      << getErrMsg(this->pjrtApi, error) << "\n";
     std::exit(EXIT_FAILURE);
   }
   return compile_args.executable;

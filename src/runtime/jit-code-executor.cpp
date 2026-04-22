@@ -10,11 +10,14 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 using namespace mlir;
@@ -37,6 +40,13 @@ static TargetDevice getTargetDevice() {
   return TargetDevice::CPU;
 #endif
 }
+
+#ifdef ENABLE_XLA_DEBUG
+#define PRINT_PASS() \
+  ctx->disableMultithreading(); pm.enableIRPrinting()
+#else
+#define PRINT_PASS()
+#endif
 
 bool fillKernelFuncArgs(llvm::DenseMap<unsigned, unsigned> argsIndicesMapping,
                         TensorDesc *newArgs, ArrayRef<Type> kernelFuncTypes,
@@ -108,9 +118,16 @@ void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::Smal
   return;
 }
 
-llvm::DenseMap<unsigned int, unsigned int> rebuildIndicesMapping(func::FuncOp) {
-  llvm::DenseMap<unsigned int, unsigned int> indicesMap;
-  // TODO: fill
+llvm::DenseMap<uint32_t, uint32_t> rebuildIndicesMapping(func::FuncOp funcOp) {
+  llvm::DenseMap<uint32_t, uint32_t> indicesMap;
+  auto arrayAttr = funcOp->getAttrOfType<ArrayAttr>(JIT_ARGS_MAPPING_ATTR_NAME);
+  assert(arrayAttr && "Jit args map after trimming should be stored as attribute!");
+  auto attrs = arrayAttr.getValue();
+  for (int i = 0; i < attrs.size(); i+=2) {
+    uint32_t key = llvm::cast<IntegerAttr>(attrs[i]).getUInt();
+    uint32_t val = llvm::cast<IntegerAttr>(attrs[i+1]).getUInt();
+    indicesMap[key] = val;
+  }
   return indicesMap;
 }
 
@@ -128,27 +145,27 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgNames) {
   PROFILE_SCOPE("total", Phase::TOTAL);
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  std::cerr << "Got a jit call with " << NumArgs << " args into:\n" <<
-  JitCodeC << "\n"; llvm::dbgs() << "\nreceive a jit call\n";
-
-  #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
-  #define h(A) \
-    std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
-    for (unsigned I = 0; I < NumArgs; I++) {
-      std::cerr << "Device Arg #" << I << ":\n";
-      p(TgtArgs);
-      p(TgtOffsets);
-    }
-    for (unsigned I = 0; I < NumHostArgs; I++) {
-      std::cerr << "Host Arg #" << I << ":\n";
-      p(ArgBasePtrs);
-      p(ArgPtrs);
-      p(ArgSizes);
-      h(ArgTypes);
-      h(ArgNames);
-    }
-  #undef p
-  #undef h
+  // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" <<
+  // JitCodeC << "\n"; llvm::dbgs() << "\nreceive a jit call\n";
+  //
+  // #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
+  // #define h(A) \
+  //   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
+  //   for (unsigned I = 0; I < NumArgs; I++) {
+  //     std::cerr << "Device Arg #" << I << ":\n";
+  //     p(TgtArgs);
+  //     p(TgtOffsets);
+  //   }
+  //   for (unsigned I = 0; I < NumHostArgs; I++) {
+  //     std::cerr << "Host Arg #" << I << ":\n";
+  //     p(ArgBasePtrs);
+  //     p(ArgPtrs);
+  //     p(ArgSizes);
+  //     h(ArgTypes);
+  //     h(ArgNames);
+  //   }
+  // #undef p
+  // #undef h
 
   assert(NumArgs == NumHostArgs);
 
@@ -190,39 +207,27 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   auto kernel = moduleOp.lookupSymbol<func::FuncOp>("kernel");
   assert(kernel && "FuncOp with name kernel should exist!");
   insertJitInfo(builder, kernel, args);
-  moduleOp.dump();
 
   mlir::PassManager pm(ctx);
-
-  ctx->disableMultithreading();
-  pm.enableIRPrinting(
-    /*shouldPrintBeforePass=*/[](mlir::Pass*, mlir::Operation*) { return true; },
-    /*shouldPrintAfterPass=*/[](mlir::Pass*, mlir::Operation*) { return true; },
-    /*printModuleScope=*/true,   // print the full module, not just the FuncOp
-    /*printAfterOnlyOnChange=*/false,
-    /*printAfterOnlyOnFailure=*/false
-  );
-  // pm.enableIRPrinting();
+  PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
 
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
   nestedPMPhase1.addPass(xla_jit::createShapeInferPass());
-
   pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
-
   auto& nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase2.addPass(xla_jit::createAliasingPass());
   nestedPMPhase2.addPass(xla_jit::createTrimArgsPass());
-
   if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);
   }
 
-  auto kernelFunc = moduleOp.lookupSymbol<func::FuncOp>("kernel");
+  // kernel function needs to be named as `main` to be compiled by XLA
+  auto kernelFunc = moduleOp.lookupSymbol<func::FuncOp>("main");
+  assert(kernelFunc && "Kernel Func should be renamed as main!\n");
   auto argsIndicesMapping = rebuildIndicesMapping(kernelFunc);
-
 
   if (l1JitMetas == nullptr) {
     llvm::DenseSet<int> argsIndices;
@@ -233,10 +238,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
         argsIndices.insert(i);
       }
     }
-    l2Key = JitManager::getInstance().getL2JitMetasKey(
-        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, argsIndices);
-    JitManager::getInstance().saveL1JitMetas(JitCodePtrUint,
-                                             std::move(argsIndices));
+    l2Key = JitManager::getInstance().getL2JitMetasKey(NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, argsIndices);
+    JitManager::getInstance().saveL1JitMetas(JitCodePtrUint, std::move(argsIndices));
   }
 
   auto createdL2JitMetas = JitManager::getInstance().createL2JitMetas(

@@ -95,6 +95,7 @@ static func::FuncOp createFunction(mlir::MLIRContext *context,
   }
 
   auto funcType = mlir::FunctionType::get(context, argsTypes, argsTypes);
+  // Has to be named as `main` to be compiled by XLA.
   auto funcOp = func::FuncOp::create(inputOp->getLoc(), "main", funcType, {});
   // we need to update the valueMap!
   funcOp.addEntryBlock();
@@ -802,7 +803,6 @@ static void scanOperationsAndInserts(
     Operation *op,
     const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap) {
   DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
-  printf("Currently handling: %s\n", getMLIROperationAsString(op).data());
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         if (constOp.getResult().getType().isIndex()) {
@@ -1020,8 +1020,6 @@ struct WorkdistributeToStableHLOPass
         scanOperationsAndInserts(trackingInfo, opBuilder, stableHLOFuncOp, op, sliceShiftMap);
       });
       terminateFunction(trackingInfo, opBuilder, stableHLOFuncOp);
-      auto funcName = oldFOp.getName();
-      stableHLOFuncOp.setName(funcName);
       opBuilder.setInsertionPointAfter(oldFOp);
       opBuilder.insert(stableHLOFuncOp);
       oldFOp.erase();

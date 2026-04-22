@@ -5,6 +5,7 @@
 #include "mlir/Pass/Pass.h"
 #include "../support/profiler.h"
 #include "llvm/ADT/SmallVector.h"
+#include <cstdint>
 #include <string>
 
 using namespace mlir;
@@ -17,23 +18,21 @@ struct TrimArgsPass:
   mlir::PassWrapper<TrimArgsPass, mlir::OperationPass<mlir::func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TrimArgsPass)
 
-
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
-
-  // TODO: currently store dictionary for consistency of the old code, 
-  // should modified to only store new Idx array later.
-  void setArgsMapToFuncAttribute(OpBuilder opBuilder, func::FuncOp funcOp) {
-    llvm::SmallVector<mlir::NamedAttribute> entries;
+  // Insert dictionary attr as an array attr {key1, val1, key2, val2...} for performance and easy parsing.
+  void setArgsMapToFuncAttribute(
+    OpBuilder opBuilder, 
+    func::FuncOp funcOp, 
+    const llvm::DenseMap<uint32_t, uint32_t>& argsIndicesMapping
+  ) {
+    llvm::SmallVector<mlir::Attribute> entries;
 
     for (auto& entry: argsIndicesMapping) {
-      std::string keyStr = std::to_string(entry.getFirst());
-      entries.push_back(
-        mlir::NamedAttribute(
-          opBuilder.getStringAttr(keyStr), 
-          opBuilder.getI64ArrayAttr(entry.getSecond())
-        ));
+      auto key = entry.getFirst();
+      auto val = entry.getSecond();
+      entries.push_back(opBuilder.getUI32IntegerAttr(key));
+      entries.push_back(opBuilder.getUI32IntegerAttr(val));
     }
-    funcOp->setAttr(JIT_ARGS_MAPPING_ATTR_NAME, opBuilder.getDictionaryAttr(entries));
+    funcOp->setAttr(JIT_ARGS_MAPPING_ATTR_NAME, opBuilder.getArrayAttr(entries));
     return;
   }
 
@@ -116,6 +115,7 @@ struct TrimArgsPass:
     // - argsIndicesMapping: {1: 0, 3: 1, 4: 2}; (old idx_0 is gone, so old idx_1
     // became new idx_0; for the same reason, old idx_3 became new idx_1) Mapping
     // of Index Before Trimming: Index After Trimming
+    llvm::DenseMap<uint32_t, uint32_t> argsIndicesMapping;
     int currNewIdx = 0;
     for (int oldIdx = 0; oldIdx < funcOp.getNumArguments(); oldIdx++) {
       auto literalAttr = funcOp.getArgAttrOfType<IntegerAttr>(oldIdx, JIT_LITERAL_VAL_ATTR_NAME);
@@ -169,7 +169,7 @@ struct TrimArgsPass:
         // DO NOTHING
       };
     });
-    setArgsMapToFuncAttribute(opBuilder, funcOp); 
+    setArgsMapToFuncAttribute(opBuilder, funcOp, argsIndicesMapping); 
   }
 
 };

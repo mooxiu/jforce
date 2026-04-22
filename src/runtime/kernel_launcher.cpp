@@ -113,36 +113,22 @@ static PJRT_Buffer *createLiteralBuffer(const PJRT_Api *api,
                                         const TensorDesc &inputArg) {
   uintptr_t rawPtr = reinterpret_cast<uintptr_t>(inputArg.data);
   DType dataType = inputArg.dtype;
-
-  int32_t val_i32;
-  int64_t val_i64;
-  float val_f32;
-  double val_f64;
-
+  DTypeVal val = extractLiteralPtr(rawPtr, dataType);
+  
   void *host_ptr = nullptr;
-
-  switch (dataType) {
-  case DType::I32: {
-    val_i32 = static_cast<int32_t>(rawPtr);
-    host_ptr = &val_i32;
-    break;
-  }
-  case DType::I64: {
-    val_i64 = static_cast<int64_t>(rawPtr);
-    host_ptr = &val_i64;
-    break;
-  }
-  case DType::F32: {
-    uint32_t low_bits = static_cast<uint32_t>(rawPtr);
-    std::memcpy(&val_f32, &low_bits, sizeof(float));
-    host_ptr = &val_f32;
-    break;
-  }
-  case DType::F64: {
-    std::memcpy(&val_f64, &rawPtr, sizeof(double));
-    host_ptr = &val_f64;
-    break;
-  }
+  switch (val.returnedType) {
+    case DType::I32: 
+      host_ptr = &val.valI32;
+      break;
+    case DType::I64:
+      host_ptr = &val.valI64;
+      break;
+    case DType::F32:
+      host_ptr = &val.valF32;
+      break;
+    case DType::F64:
+      host_ptr = &val.valF64;
+      break;
   }
 
   PJRT_Client_BufferFromHostBuffer_Args buffer_args = {};
