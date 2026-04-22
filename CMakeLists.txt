@@ -136,9 +136,10 @@ target_compile_definitions(jit-code-executor
 
 # -DENABLE_PROFILING
 if (ENABLE_PROFILING)
-  target_compile_definitions(jit-code-executor
-    PRIVATE ENABLE_PROFILING
-  )
+  target_compile_definitions(jit-code-executor PRIVATE ENABLE_PROFILING)
 endif()
 
-
+# -DCMAKE_BUILD_TYPE=Debug
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_definitions(jit-code-executor PRIVATE ENABLE_XLA_DEBUG)
+endif()

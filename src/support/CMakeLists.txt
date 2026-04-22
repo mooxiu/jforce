@@ -18,5 +18,5 @@ target_link_libraries(JitSupport
 
 # -DCMAKE_BUILD_TYPE=Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  add_compile_definitions(ENABLE_XLA_DEBUG)
+  target_compile_definitions(JitSupport PRIVATE ENABLE_XLA_DEBUG)
 endif()

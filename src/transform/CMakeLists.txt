@@ -26,3 +26,8 @@ target_link_libraries(JitTransforms
     MLIRArithDialect
     MLIRIR
 )
+
+# -DCMAKE_BUILD_TYPE=Debug
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_definitions(JitTransforms PRIVATE ENABLE_XLA_DEBUG)
+endif()
