@@ -7,6 +7,7 @@ add_library(JitTransforms STATIC
   passes.cpp
   translate.cpp
   AffineCFG.cpp
+  CleanFIRLoopPass.cpp
 )
 
 target_include_directories(JitTransforms
