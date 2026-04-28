@@ -7,4 +7,5 @@ void xla_jit::registerAllJitPasses() {
   registerTrimArgsPass(); 
   registerWorkdistributeToStableHLOPass();   
   registerAffineCFGPass();
+  registerCleanFIRLoopPass();
 }

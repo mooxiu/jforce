@@ -6,6 +6,7 @@ add_library(JitTransforms STATIC
   workdistributeToStableHLOPass.cpp
   passes.cpp
   AffineCFG.cpp
+  CleanFIRLoopPass.cpp
 )
 
 target_include_directories(JitTransforms
