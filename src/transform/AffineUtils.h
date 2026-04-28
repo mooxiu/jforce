@@ -8,7 +8,6 @@
 #include <isl/aff.h>
 #include <isl/set.h>
 
-namespace mlir {
 
 mlir::affine::AffineValueMap getAVM(mlir::Operation *op);
 
@@ -21,9 +20,9 @@ public:
 
   isl_map *getAccessMap(mlir::Operation *op);
 
-  isl_set *getDomain(Operation *op);
+  isl_set *getDomain(mlir::Operation *op);
 
-  isl_set *getMemrefShape(MemRefType ty);
+  isl_set *getMemrefShape(mlir::MemRefType ty);
 
   ~IslAnalysis();
   IslAnalysis();
@@ -42,8 +41,5 @@ public:
 };
 
 void populateAffineExprSimplificationPatterns(IslAnalysis &islAnalysis,
-                                              RewritePatternSet &patterns);
-
-} // namespace mlir
-
+                                              mlir::RewritePatternSet &patterns);
 #endif // ENZYME_JAX_PASSES_AFFINEUTILS_H_
