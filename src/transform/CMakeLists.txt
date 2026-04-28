@@ -5,7 +5,11 @@ add_library(JitTransforms STATIC
   trimArgsPass.cpp
   workdistributeToStableHLOPass.cpp
   passes.cpp
+<<<<<<< HEAD
   translate.cpp
+=======
+  AffineCFG.cpp
+>>>>>>> 5946fc5 (include AffineCFG from enzymeJAX)
 )
 
 target_include_directories(JitTransforms
@@ -26,6 +30,7 @@ target_link_libraries(JitTransforms
     MLIRMathDialect
     MLIRArithDialect
     MLIRIR
+    FIRTransforms
 )
 
 # -DCMAKE_BUILD_TYPE=Debug

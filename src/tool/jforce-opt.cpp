@@ -1,6 +1,7 @@
 #include "../transform/passes.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
+#include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -12,6 +13,7 @@
 
 int main(int argc, char** argv) {
   mlir::registerAllPasses();
+  fir::registerFIRToSCFPass();
   xla_jit::registerAllJitPasses();
 
   mlir::DialectRegistry registry;

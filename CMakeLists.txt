@@ -48,6 +48,8 @@ endif()
 # When commenting this line, need also to assign spack env on remote machines! 
 # Adding following to make CXX and Fortran compiler to be the one we assigned, if not it will still try to find the default location
 # set(CMAKE_CXX_COMPILER "${LLVM_INSTALL_PATH}/bin/clang++" CACHE FILEPATH "LLVM C++ Compiler" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=lld")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=lld")
 
 project(xla_glue_project)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -65,6 +67,13 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
 find_package(Flang REQUIRED CONFIG)
+
+list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+# include(TableGen)
+include(AddLLVM)
+include(AddMLIR)
+
 # StableHLO does not have *Config.cmake, so we cannot do in that way
 
 list(APPEND CMAKE_MODULE_PATH
