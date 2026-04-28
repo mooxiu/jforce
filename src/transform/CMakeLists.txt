@@ -5,6 +5,7 @@ add_library(JitTransforms STATIC
   trimArgsPass.cpp
   workdistributeToStableHLOPass.cpp
   passes.cpp
+  AffineCFG.cpp
 )
 
 target_include_directories(JitTransforms
@@ -25,6 +26,7 @@ target_link_libraries(JitTransforms
     MLIRMathDialect
     MLIRArithDialect
     MLIRIR
+    FIRTransforms
 )
 
 # -DCMAKE_BUILD_TYPE=Debug
