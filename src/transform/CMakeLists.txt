@@ -29,6 +29,7 @@ target_link_libraries(JitTransforms
     MLIRArithDialect
     MLIRIR
     FIRTransforms
+    HLFIRTransforms
 )
 
 # -DCMAKE_BUILD_TYPE=Debug

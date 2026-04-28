@@ -1376,6 +1376,7 @@ void fully2ComposeIntegerSetAndOperands(
 
 namespace {
 struct AffineCFGPass : public PassWrapper<AffineCFGPass, OperationPass<ModuleOp>> {
+  void getDependentDialects(mlir::DialectRegistry & registry) const override;
   StringRef getArgument() const override;
   void runOnOperation() override;
 };
@@ -6381,6 +6382,19 @@ struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
 
 void populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
+  rpl.add<
+    CanonicalizeAffineApply, 
+    ForOpRaising,
+    ParallelOpRaising,
+    CanonicalizeIndexCast<IndexCastOp>,
+    CanonicalizeIndexCast<IndexCastUIOp>,
+    AffineIfYieldMovementPattern,
+    AffineFixup<affine::AffineLoadOp>,
+    AffineFixup<affine::AffineStoreOp>>(context, 2); 
+
+
+
+  // ....................
   // addSingleIter(rpl, context);
   // rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
   //         ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
@@ -6400,6 +6414,10 @@ void populateAffineCFGPatterns(RewritePatternSet &rpl) {
   //                                                                      2);
   // rpl.add<SimplifyAndOr>(context, 2);
   // rpl.add<SplitParallelInductions>(context, 1);
+}
+
+void AffineCFGPass::getDependentDialects(mlir::DialectRegistry & registry) const {
+  return registry.insert<affine::AffineDialect>(); 
 }
 
 StringRef AffineCFGPass::getArgument() const {
