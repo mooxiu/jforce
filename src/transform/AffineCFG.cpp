@@ -15,16 +15,21 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassRegistry.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "AffineUtils.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
+#include "passes.h"
 
 #include "Utils.h"
 #include "llvm/ADT/MapVector.h"
 
 #include <deque>
 #include <isl/set.h>
+#include <memory>
 #include <numeric>
 
 #define DEBUG_TYPE "affine-cfg"
@@ -1371,6 +1376,7 @@ void fully2ComposeIntegerSetAndOperands(
 
 namespace {
 struct AffineCFGPass : public PassWrapper<AffineCFGPass, OperationPass<ModuleOp>> {
+  StringRef getArgument() const override;
   void runOnOperation() override;
 };
 } // namespace
@@ -6396,12 +6402,17 @@ void populateAffineCFGPatterns(RewritePatternSet &rpl) {
   // rpl.add<SplitParallelInductions>(context, 1);
 }
 
+StringRef AffineCFGPass::getArgument() const {
+  return "enzyme-affinecfg";
+}
+
 void AffineCFGPass::runOnOperation() {
   mlir::RewritePatternSet rpl(getOperation()->getContext());
   populateAffineCFGPatterns(rpl);
   populateAffineParallelizationPattern(*getOperation()->getContext(), rpl);
-  IslAnalysis islAnalysis;
-  populateAffineExprSimplificationPatterns(islAnalysis, rpl);
+  // TODO: seems some advanced simplification...I commented this to avoid linking
+  // IslAnalysis islAnalysis;
+  // populateAffineExprSimplificationPatterns(islAnalysis, rpl);
   GreedyRewriteConfig config;
   config.enableFolding();
   if (failed(applyPatternsGreedily(getOperation(), std::move(rpl), config))) {
@@ -7205,3 +7216,14 @@ void populateAffineParallelizationPattern(MLIRContext &context,
   patterns.insert<AffineParallelizePattern>(/*parallelReductions=*/true,
                                             &context);
 }
+
+namespace xla_jit {
+  std::unique_ptr<mlir::Pass> createAffineCFGPass() {
+    return std::make_unique<AffineCFGPass>();
+  }   
+
+  void registerAffineCFGPass() {
+    ::mlir::registerPass([]()->std::unique_ptr<mlir::Pass>{return createAffineCFGPass();});
+  }
+}
+
