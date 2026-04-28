@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/InitAllPasses.h"
@@ -24,6 +25,7 @@ int main(int argc, char** argv) {
     fir::FIROpsDialect,
     hlfir::hlfirDialect,
     mlir::omp::OpenMPDialect,
+    mlir::scf::SCFDialect,
     mlir::stablehlo::StablehloDialect>();
 
   return mlir::asMainReturnCode(
