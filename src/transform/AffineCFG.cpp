@@ -3184,42 +3184,42 @@ static void replaceOpWithRegion(PatternRewriter &rewriter, Operation *op,
   rewriter.eraseOp(terminator);
 }
 
-struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
-  using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
-                                PatternRewriter &rewriter) const override {
-    IslAnalysis ia;
-    isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
-    isl_set *outsideIf = ia.getDomain(ifOp);
-    isl_set *inElse =
-        isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
-
-    bool succeeded = false;
-    if (isl_set_is_empty(inThen) == isl_bool_true) {
-      if (ifOp.hasElse()) {
-        Operation *term = ifOp.getElseBlock()->getTerminator();
-        rewriter.inlineBlockBefore(ifOp.getElseBlock(), ifOp);
-        rewriter.replaceOp(ifOp, term->getOperands());
-        rewriter.eraseOp(term);
-      } else {
-        rewriter.eraseOp(ifOp);
-      }
-      succeeded = true;
-    } else if (isl_set_is_empty(inElse) == isl_bool_true) {
-      Operation *term = ifOp.getThenBlock()->getTerminator();
-      rewriter.inlineBlockBefore(ifOp.getThenBlock(), ifOp);
-      rewriter.replaceOp(ifOp, term->getOperands());
-      rewriter.eraseOp(term);
-      succeeded = true;
-    }
-    isl_set_free(inThen);
-    isl_set_free(inElse);
-    isl_set_free(outsideIf);
-
-    return success(succeeded);
-  }
-};
-
+// struct AffineIfSimplificationIsl : public OpRewritePattern<affine::AffineIfOp> {
+//   using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
+//   LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+//                                 PatternRewriter &rewriter) const override {
+//     IslAnalysis ia;
+//     isl_set *inThen = ia.getDomain(&ifOp.getThenBlock()->front());
+//     isl_set *outsideIf = ia.getDomain(ifOp);
+//     isl_set *inElse =
+//         isl_set_subtract(isl_set_copy(outsideIf), isl_set_copy(inThen));
+//
+//     bool succeeded = false;
+//     if (isl_set_is_empty(inThen) == isl_bool_true) {
+//       if (ifOp.hasElse()) {
+//         Operation *term = ifOp.getElseBlock()->getTerminator();
+//         rewriter.inlineBlockBefore(ifOp.getElseBlock(), ifOp);
+//         rewriter.replaceOp(ifOp, term->getOperands());
+//         rewriter.eraseOp(term);
+//       } else {
+//         rewriter.eraseOp(ifOp);
+//       }
+//       succeeded = true;
+//     } else if (isl_set_is_empty(inElse) == isl_bool_true) {
+//       Operation *term = ifOp.getThenBlock()->getTerminator();
+//       rewriter.inlineBlockBefore(ifOp.getThenBlock(), ifOp);
+//       rewriter.replaceOp(ifOp, term->getOperands());
+//       rewriter.eraseOp(term);
+//       succeeded = true;
+//     }
+//     isl_set_free(inThen);
+//     isl_set_free(inElse);
+//     isl_set_free(outsideIf);
+//
+//     return success(succeeded);
+//   }
+// };
+//
 struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
   using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
 
@@ -6382,17 +6382,29 @@ struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
 
 void populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
-  rpl.add<
-    CanonicalizeAffineApply, 
-    ForOpRaising,
-    ParallelOpRaising,
-    CanonicalizeIndexCast<IndexCastOp>,
-    CanonicalizeIndexCast<IndexCastUIOp>,
-    AffineIfYieldMovementPattern,
-    AffineFixup<affine::AffineLoadOp>,
-    AffineFixup<affine::AffineStoreOp>>(context, 2); 
-
-
+  rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
+          ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
+          CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
+          /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
+          AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
+          MoveStoreToAffine, MoveIfToAffine, 
+          // MoveRMWToAffine, 
+          MoveLoadToAffine,
+          MoveExtToAffine, MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
+          AffineIfSimplification, 
+          // AffineIfSimplificationIsl, 
+          CombineAffineIfs,
+          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
+          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
+          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
+          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
+          AffineForReductionSink>(context, 2);
+  rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
+          FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
+                                                                       2);
+  rpl.add<SimplifyAndOr>(context, 2);
+   
+  
 
   // ....................
   // addSingleIter(rpl, context);
