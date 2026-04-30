@@ -13,6 +13,8 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createTranslatePass(); // INFO: improved version for createWorkdistributeToStableHLOPass
   std::unique_ptr<mlir::Pass> createAffineCFGPass();
   std::unique_ptr<mlir::Pass> createCleanFIRLoopPass();
+  std::unique_ptr<mlir::Pass> createSimplifyDoLoopPass();
+  std::unique_ptr<mlir::Pass> createAffineToStableHLORaisingPass();
 
   void registerAnnotatePass();
   void registerAliasingPass();
@@ -22,6 +24,8 @@ namespace xla_jit {
   void registerTranslatePass();
   void registerAffineCFGPass();
   void registerCleanFIRLoopPass();
+  void registerSimplifyDoLoopPass();
+  void registerAffineToStableHLORaisingPass();
 
   void registerAllJitPasses();
 }
