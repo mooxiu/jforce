@@ -8,4 +8,6 @@ void xla_jit::registerAllJitPasses() {
   registerWorkdistributeToStableHLOPass();   
   registerAffineCFGPass();
   registerCleanFIRLoopPass();
+  registerSimplifyDoLoopPass();
+  registerAffineToStableHLORaisingPass();
 }

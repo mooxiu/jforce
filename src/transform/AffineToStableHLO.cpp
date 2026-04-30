@@ -1,0 +1,3575 @@
+//===- AffineToStableHLORaising.cpp - Raise affine loops to stablehlo -----===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements a pass to raise affine loops functions to stablehlo.
+//
+//===----------------------------------------------------------------------===//
+
+#include "AffineUtils.h"
+// #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "Utils.h"
+
+#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/Utils.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/AffineValueMap.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/Dialect/Affine/Utils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/IR/IntegerSet.h"
+
+// #include "Interfaces/AutoDiffTypeInterface.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+
+// #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/SmallSet.h"
+#include <cassert>
+#include <isl/ctx.h>
+#include <isl/ilp.h>
+#include <isl/map.h>
+#include <isl/set.h>
+#include <isl/space.h>
+#include <isl/val.h>
+#include <optional>
+
+#define DEBUG_TYPE "raise-affine-to-stablehlo"
+
+using namespace mlir;
+
+bool isXLACompatiblePrimitive(Type ty) {
+  if (isa<FloatType>(ty))
+    return true;
+  if (isa<IntegerType>(ty))
+    return true;
+  if (isa<ComplexType>(ty))
+    return true;
+  return false;
+}
+
+Type makeIndexToI64(Type ty) {
+  if (isa<IndexType>(ty))
+    return IntegerType::get(ty.getContext(), 64);
+
+  if (auto tenTy = dyn_cast<RankedTensorType>(ty))
+    return RankedTensorType::get(tenTy.getShape(),
+                                 makeIndexToI64(tenTy.getElementType()));
+
+  return ty;
+}
+
+mlir::Location rewriteLocation(mlir::Location loc, bool strip_llvm_debuginfo) {
+  if (auto csl = dyn_cast<CallSiteLoc>(loc)) {
+    auto callee = rewriteLocation(csl.getCallee(), strip_llvm_debuginfo);
+    auto caller = rewriteLocation(csl.getCaller(), strip_llvm_debuginfo);
+    if (isa<UnknownLoc>(callee)) {
+      return caller;
+    }
+    return CallSiteLoc::get(callee, caller);
+  }
+  if (auto si = dyn_cast<FusedLocWith<LLVM::DISubprogramAttr>>(loc)) {
+    if (strip_llvm_debuginfo)
+      return UnknownLoc::get(si.getContext());
+    auto attr = si.getMetadata();
+    auto fl = FileLineColLoc::get(attr.getContext(), attr.getFile().getName(),
+                                  attr.getLine(), 0);
+    return Location(NameLoc::get(attr.getName(), fl));
+  }
+  return loc;
+}
+
+// This represents the values taken from an induction variable with the
+// following syntax: [lb:ub:step]. ub is non-inclusive.
+struct InductionVariableRange {
+  int64_t lb;
+  int64_t ub;
+  int64_t step;
+
+  int64_t getNumIters() { return (ub - lb) / step; }
+};
+
+static unsigned getIVPos(affine::AffineValueMap map, AffineExpr expr) {
+  assert(!expr.isSymbolicOrConstant());
+  unsigned pos;
+  expr.walk([&pos](AffineExpr expr) {
+    if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+      pos = dimExpr.getPosition();
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return pos;
+}
+
+// Assumes a single IV per Expr. (i) -> (i * 3 + 2)
+static Value getIVForExpr(affine::AffineValueMap map, AffineExpr expr) {
+  unsigned pos = getIVPos(map, expr);
+  return map.getOperand(pos);
+}
+
+// has single (or zero) iv per dim.
+// iv are present only at one dim.
+static bool needsGeneralScatterGather(affine::AffineValueMap accessValueMap) {
+  bool repeatingIV = false;
+  auto map = accessValueMap.getAffineMap();
+  auto sz = map.getNumDims();
+  SmallVector<bool> ivseen(sz, false);
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant())
+      continue;
+    bool moreThanOneIV = false;
+    for (int iv = 0; iv < sz; ++iv) {
+      if (!E.isFunctionOfDim(iv))
+        continue;
+      if (ivseen[iv]) {
+        repeatingIV = true;
+        break;
+      }
+      if (moreThanOneIV) {
+        return true;
+      }
+      moreThanOneIV = true;
+      ivseen[iv] = true;
+    }
+  }
+  return repeatingIV;
+}
+
+static std::optional<int64_t> getConstant(AffineMap map) {
+  if (map.isSingleConstant())
+    return map.getSingleConstantResult();
+  return std::nullopt;
+}
+
+static std::optional<InductionVariableRange> getIVRange(Value iv) {
+  assert(affine::isAffineInductionVar(iv));
+
+  if (auto owner = affine::getAffineParallelInductionVarOwner(iv)) {
+
+    auto ivPos = cast<BlockArgument>(iv).getArgNumber();
+    auto lb = getConstant(owner.getLowerBoundMap(ivPos));
+    auto ub = getConstant(owner.getUpperBoundMap(ivPos));
+    auto step = owner.getSteps()[ivPos];
+    if (!lb || !ub)
+      return std::nullopt;
+    return InductionVariableRange{*lb, *ub, step};
+  }
+  if (auto owner = affine::getForInductionVarOwner(iv)) {
+    auto lb = getConstant(owner.getLowerBoundMap());
+    auto ub = getConstant(owner.getUpperBoundMap());
+    auto step = owner.getStep();
+    if (!lb || !ub)
+      return std::nullopt;
+    return InductionVariableRange{*lb, *ub, step.getSExtValue()};
+  }
+  llvm_unreachable("Not affine iv");
+}
+
+static std::optional<InductionVariableRange>
+computeExprRange(affine::AffineValueMap map, AffineExpr expr) {
+  InductionVariableRange range;
+
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+    Value iv = map.getOperand(dimExpr.getPosition());
+    auto range_ = getIVRange(iv);
+
+    if (!range_.has_value())
+      return std::nullopt;
+
+    range = *range_;
+  } else if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
+    auto rhs = binExpr.getRHS();
+    auto lhs = binExpr.getLHS();
+
+    auto rhsConst = dyn_cast<AffineConstantExpr>(rhs);
+    auto constantSide = rhsConst ? rhsConst : dyn_cast<AffineConstantExpr>(lhs);
+    auto dynSide = rhsConst ? lhs : rhs;
+
+    auto rangeDyn = computeExprRange(map, dynSide);
+
+    if (!rangeDyn.has_value() || !constantSide)
+      return std::nullopt;
+
+    auto const_ = constantSide.getValue();
+
+    auto kind = expr.getKind();
+    switch (kind) {
+    case AffineExprKind::Add:
+      range.lb = rangeDyn->lb + const_;
+      range.ub = rangeDyn->ub + const_;
+      range.step = rangeDyn->step;
+      break;
+    case AffineExprKind::Mul:
+      range.lb = rangeDyn->lb * const_;
+      range.ub = rangeDyn->ub * const_;
+      range.step = rangeDyn->step * const_;
+      break;
+    default:
+      // unsupported
+      return std::nullopt;
+    }
+  } else {
+    return std::nullopt;
+  }
+
+  return std::optional<InductionVariableRange>{range};
+}
+
+static void
+emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
+                  IRMapping &mapping,
+                  llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                  bool strip_llvm_debuginfo) {
+  auto ET = builder.getI64Type();
+  auto Ty = RankedTensorType::get({range.getNumIters()}, ET);
+  Value iota =
+      stablehlo::IotaOp::create(
+          builder, rewriteLocation(iv.getLoc(), strip_llvm_debuginfo), Ty, 0)
+          .getResult();
+  iota = stablehlo::AddOp::create(
+      builder, rewriteLocation(iv.getLoc(), strip_llvm_debuginfo), Ty, iota,
+      stablehlo::ConstantOp::create(
+          builder, rewriteLocation(iv.getLoc(), strip_llvm_debuginfo), Ty,
+          SplatElementsAttr::get(
+              Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb)))));
+  iota = stablehlo::MulOp::create(
+      builder, rewriteLocation(iv.getLoc(), strip_llvm_debuginfo), Ty, iota,
+      stablehlo::ConstantOp::create(
+          builder, rewriteLocation(iv.getLoc(), strip_llvm_debuginfo), Ty,
+          SplatElementsAttr::get(
+              Ty, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step)))));
+  mapping.map(iv, iota);
+
+  // contiguous with respect to itself: (d0) -> (d0)
+  affine::AffineValueMap accessMap(
+      AffineMap::getMultiDimIdentityMap(1, iv.getContext()), {iv});
+  maps[iota] = accessMap;
+}
+
+// The name is parallel context but a more accurate description would be
+// LockStepContext
+struct ParallelContext {
+  struct Options {
+    bool enableLockstepFor = true;
+    bool dump_failed_lockstep = false;
+    bool preferWhileRaising = true;
+    bool strip_llvm_debuginfo = false;
+  } options;
+
+  explicit ParallelContext(Options &options) : options(options) {}
+
+  SmallVector<InductionVariableRange, 8> ranges;
+  SmallVector<Value, 8> ivs;
+  Value mask = nullptr;
+
+  bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
+
+  RankedTensorType getTensorType(Type elTy) {
+    SmallVector<int64_t> shape = llvm::map_to_vector(
+        ranges, [&](auto range) { return range.getNumIters(); });
+    assert(isXLACompatiblePrimitive(elTy) &&
+           "unsupported element type for XLA");
+    return RankedTensorType::get(shape, elTy);
+  }
+
+  struct Broadcast {
+    Value v;
+    affine::AffineValueMap avm;
+  };
+
+  std::optional<Broadcast> getBroadcast(OpBuilder &b,
+                                        affine::AffineValueMap avm, Value v) {
+    auto CTT = dyn_cast<RankedTensorType>(v.getType());
+    if (!CTT)
+      return std::nullopt;
+    auto TT = getTensorType(CTT.getElementType());
+    assert(CTT.getElementType() == TT.getElementType());
+    if (CTT.getShape() == TT.getShape())
+      return Broadcast{v, avm};
+    if (llvm::any_of(llvm::zip(CTT.getShape(), TT.getShape()),
+                     [](auto p) { return std::get<0>(p) != std::get<1>(p); }))
+      return std::nullopt;
+    if (CTT.getRank() > TT.getRank())
+      return std::nullopt;
+
+    // TODO I haven't thought through how to broadcast non-scalars to the
+    // shape we need.
+    if (CTT.getRank() != 0)
+      return std::nullopt;
+    SmallVector<int64_t> dimsToBroadcast;
+    auto bc = stablehlo::BroadcastInDimOp::create(
+        b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), TT, v,
+        dimsToBroadcast);
+
+    AffineMap newMap = AffineMap::getMultiDimIdentityMap(
+        TT.getRank() - CTT.getRank(), b.getContext());
+
+    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
+  }
+
+  std::optional<ParallelContext> add(affine::AffineForOp forOp) {
+    ParallelContext newPc = *this;
+    auto iv = forOp.getInductionVar();
+    auto ivr = getIVRange(iv);
+    if (!ivr)
+      return std::nullopt;
+    newPc.ranges.push_back(*ivr);
+    newPc.ivs.push_back(iv);
+    return newPc;
+  }
+
+  std::optional<ParallelContext> add(affine::AffineParallelOp parallelOp) {
+    ParallelContext newPc = *this;
+    for (auto iv : parallelOp.getIVs()) {
+      auto ivr = getIVRange(iv);
+      if (!ivr)
+        return std::nullopt;
+      newPc.ranges.push_back(*ivr);
+      newPc.ivs.push_back(iv);
+    }
+    return newPc;
+  }
+
+  static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
+                                            Options &options) {
+    ParallelContext pc(options);
+    return pc.add(parallelOp);
+  }
+  static ParallelContext getEmpty(Options &options) {
+    return ParallelContext(options);
+  }
+};
+
+// Given an affine map for a load/store operation, compute the startIndices,
+// limitIndices and strides corresponding in the memref based on the loop
+// induction variables.
+//
+// (i) -> (0, i, 10) will give [0:1:1, begin:end:step, 10:11:1]
+// (i) -> (2 * i, i + 2, 10) will give [begin*2:end*2:2*step,
+// begin+2:end+2:step, 10:11:1]
+//
+// with begin:end:step corresponding to the range of the iv i.
+static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
+                                      SmallVectorImpl<int64_t> &strides,
+                                      SmallVectorImpl<int64_t> &reverseDims,
+                                      ParallelContext pc) {
+  auto rank = accessValueMap.getNumResults();
+
+  strides.reserve(rank);
+
+  for (unsigned i = 0; i < rank; i++) {
+    auto expr = accessValueMap.getResult(i);
+
+    if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
+      strides.push_back(1);
+      continue;
+    }
+
+    Value iv = getIVForExpr(accessValueMap, expr);
+    if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
+      strides.push_back(1);
+      continue;
+    }
+
+    auto range = computeExprRange(accessValueMap, expr);
+
+    if (!range.has_value())
+      return failure();
+
+    if (range->step < 0) {
+      // 0:-1:-180 -> -179:1:1
+      strides.push_back(-range->step);
+      reverseDims.push_back(i);
+    } else {
+      strides.push_back(range->step);
+    }
+  }
+
+  return success();
+}
+
+static SmallVector<int64_t>
+affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
+  AffineMap map = accessValueMap.getAffineMap();
+
+  SmallVector<int64_t> shape;
+  shape.reserve(map.getNumResults());
+
+  for (auto E : map.getResults()) {
+    if (E.isSymbolicOrConstant()) {
+      shape.push_back(1);
+      continue;
+    }
+
+    Value iv = getIVForExpr(accessValueMap, E);
+    if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
+      shape.push_back(1);
+      continue;
+    }
+
+    auto range = getIVRange(iv);
+    if (!range.has_value())
+      return {};
+
+    shape.push_back(range->getNumIters());
+  }
+
+  return shape;
+}
+
+static affine::AffineValueMap
+alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
+                  ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder,
+                  ParallelContext pc) {
+  // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
+  // -> to tensor<1x10xf32> written as (i) -> (0, i)
+
+  SmallVector<int64_t> shapeA = affineMapShape(src, pc);
+  assert(shapeA.size() ==
+         cast<RankedTensorType>(a.getType()).getShape().size());
+  SmallVector<SmallVector<int64_t>> shapeBs;
+  for (int i = 0; i < dsts.size(); i++) {
+    shapeBs.push_back(affineMapShape(dsts[i], pc));
+    assert(shapeBs[i].size() ==
+           cast<RankedTensorType>(bs[i].getType()).getShape().size());
+  }
+
+  SmallVector<int64_t> outputShape;
+
+  SmallVector<int64_t> broadcastDimensionsA(shapeA.size(), -1);
+  SmallVector<SmallVector<int64_t>> broadcastDimensionsBs;
+  for (auto shapeB : shapeBs)
+    broadcastDimensionsBs.emplace_back(shapeB.size(), -1);
+
+  SmallVector<AffineExpr> exprs;
+  SmallVector<Value> mapOperands;
+
+  SetVector<Value> ivs;
+
+  bool needsBroadcastA = false;
+  SmallVector<bool> needsBroadcastBs(shapeBs.size(), false);
+
+  for (auto [i, EA] : llvm::enumerate(src.getAffineMap().getResults())) {
+    broadcastDimensionsA[i] = outputShape.size();
+
+    Value ivA = getIVForExpr(src, EA);
+
+    for (auto [dst, broadcastDimensionsB] :
+         llvm::zip(dsts, broadcastDimensionsBs)) {
+
+      for (unsigned j = 0, e = dst.getNumResults(); j < e; ++j) {
+        auto EB = dst.getAffineMap().getResult(j);
+        if (getIVForExpr(dst, EB) == ivA) {
+          broadcastDimensionsB[j] = outputShape.size();
+        }
+      }
+    }
+
+    outputShape.push_back(shapeA[i]);
+
+    exprs.push_back(
+        mlir::getAffineDimExpr(mapOperands.size(), ivA.getContext()));
+    mapOperands.push_back(ivA);
+  }
+
+  for (auto &&[dst, broadcastDimensionsB, shapeB] :
+       llvm::zip(dsts, broadcastDimensionsBs, shapeBs)) {
+    for (auto [i, EB] : llvm::enumerate(dst.getAffineMap().getResults())) {
+      if (broadcastDimensionsB[i] != -1)
+        continue; // dim already set in A
+
+      needsBroadcastA = true;
+
+      Value ivB = getIVForExpr(dst, EB);
+
+      for (auto &&[dst2, broadcastDimensionsB2] :
+           llvm::zip(dsts, broadcastDimensionsBs)) {
+        for (unsigned j = 0, e = dst2.getNumResults(); j < e; ++j) {
+          auto EB2 = dst2.getAffineMap().getResult(j);
+          if (getIVForExpr(dst2, EB2) == ivB) {
+            broadcastDimensionsB2[j] = outputShape.size();
+          }
+        }
+      }
+
+      outputShape.push_back(shapeB[i]);
+
+      exprs.push_back(
+          mlir::getAffineDimExpr(mapOperands.size(), ivB.getContext()));
+      mapOperands.push_back(ivB);
+    }
+  }
+
+  auto TA = cast<RankedTensorType>(a.getType());
+
+  if (needsBroadcastA) {
+    a = stablehlo::BroadcastInDimOp::create(
+            builder,
+            rewriteLocation(a.getLoc(), pc.options.strip_llvm_debuginfo),
+            TA.clone(outputShape), a, broadcastDimensionsA)
+            .getResult();
+  }
+
+  for (size_t i = 0; i < dsts.size(); i++) {
+    auto TB = cast<RankedTensorType>(bs[i].getType());
+
+    bool needsBroadcast = false;
+    if (TB.getShape().size() == outputShape.size()) {
+      for (auto bdim : llvm::enumerate(broadcastDimensionsBs[i])) {
+        if (bdim.index() != bdim.value()) {
+          needsBroadcast = true;
+          break;
+        }
+      }
+    } else
+      needsBroadcast = true;
+
+    if (needsBroadcast)
+      bs[i] =
+          stablehlo::BroadcastInDimOp::create(
+              builder,
+              rewriteLocation(bs[i].getLoc(), pc.options.strip_llvm_debuginfo),
+              TB.clone(outputShape), bs[i], broadcastDimensionsBs[i])
+              .getResult();
+  }
+
+  affine::AffineValueMap outputMap(
+      AffineMap::getMultiDimIdentityMap(mapOperands.size(), a.getContext()),
+      mapOperands);
+
+  return outputMap;
+}
+
+static affine::AffineValueMap
+alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
+                  affine::AffineValueMap dst, OpBuilder &builder,
+                  ParallelContext pc) {
+  Value bs[] = {b};
+  affine::AffineValueMap dsts[] = {dst};
+  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc);
+  b = bs[0];
+  return res;
+}
+
+// like affine::expandAffineExpr but with stablehlo ops and returning
+// the corresponding AffineValueMap for the produced value.
+static std::tuple<Value, affine::AffineValueMap>
+expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
+                 ValueRange operands, IRMapping &mapping, unsigned numDims,
+                 ParallelContext pc) {
+  if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
+    auto ET = builder.getI64Type();
+    auto TT = RankedTensorType::get({}, ET);
+    Value res = stablehlo::ConstantOp::create(
+        builder, loc, TT,
+        SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(
+                                       ET, constExpr.getValue()))));
+    return {res, affine::AffineValueMap(AffineMap::get(expr.getContext()), {})};
+  }
+
+  if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
+    AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
+    auto [lhs, lhsMap] =
+        expandAffineExpr(builder, loc, lhsExpr, operands, mapping, numDims, pc);
+    auto [rhs, rhsMap] =
+        expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims, pc);
+
+    affine::AffineValueMap outputMap =
+        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc);
+
+    auto makeI64Constant = [loc, &builder](ShapedType ty,
+                                           int64_t cst) -> Value {
+      return stablehlo::ConstantOp::create(
+                 builder, loc, ty,
+
+                 SplatElementsAttr::get(
+                     ty, ArrayRef<Attribute>(
+                             IntegerAttr::get(ty.getElementType(), cst))))
+          .getResult();
+    };
+
+    Value result;
+    switch (expr.getKind()) {
+    case AffineExprKind::Add:
+      result = stablehlo::AddOp::create(builder, loc, lhs, rhs);
+      break;
+    case AffineExprKind::Mul:
+      result = stablehlo::MulOp::create(builder, loc, lhs, rhs);
+      break;
+    case AffineExprKind::Mod:
+      // a mod b =
+      //     let remainder = srem a, b;
+      //         negative = a < 0 in
+      //     select negative, remainder + b, remainder.
+      {
+        Value remainder = stablehlo::RemOp::create(builder, loc, lhs, rhs);
+        Value negative = stablehlo::CompareOp::create(
+            builder, loc, lhs,
+            makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
+            stablehlo::ComparisonDirection::LT);
+        result = stablehlo::SelectOp::create(
+            builder, loc, negative,
+            stablehlo::AddOp::create(builder, loc, remainder, rhs), remainder);
+      };
+      break;
+    case AffineExprKind::FloorDiv:
+      // a floordiv b =
+      //     let negative = a < 0 in
+      //     let absolute = negative ? -a - 1 : a in
+      //     let quotient = absolute / b in
+      //         negative ? -quotient - 1 : quotient
+      {
+        Value negative = stablehlo::CompareOp::create(
+            builder, loc, lhs,
+            makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
+            stablehlo::ComparisonDirection::LE);
+        Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
+        Value absolute = stablehlo::SelectOp::create(
+            builder, loc, negative,
+            stablehlo::SubtractOp::create(
+                builder, loc, stablehlo::NegOp::create(builder, loc, lhs), one),
+            lhs);
+        Value quotient = stablehlo::DivOp::create(builder, loc, absolute, rhs);
+        result = stablehlo::SelectOp::create(
+            builder, loc, negative,
+            stablehlo::SubtractOp::create(
+                builder, loc, stablehlo::NegOp::create(builder, loc, quotient),
+                one),
+            quotient);
+      };
+      break;
+    case AffineExprKind::CeilDiv:
+      // a ceildiv b =
+      //     let negative = a <= 0 in
+      //     let absolute = negative ? -a : a - 1 in
+      //     let quotient = absolute / b in
+      //         negative ? -quotient : quotient + 1
+      {
+        Value negative = stablehlo::CompareOp::create(
+            builder, loc, lhs,
+            makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
+            stablehlo::ComparisonDirection::LE);
+        Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
+        Value absolute = stablehlo::SelectOp::create(
+            builder, loc, negative, stablehlo::NegOp::create(builder, loc, lhs),
+            stablehlo::AddOp::create(builder, loc, lhs, one));
+        Value quotient = stablehlo::DivOp::create(builder, loc, absolute, rhs);
+        result = stablehlo::SelectOp::create(
+            builder, loc, negative,
+            stablehlo::NegOp::create(builder, loc, quotient),
+            stablehlo::AddOp::create(builder, loc, quotient, one));
+      };
+      break;
+    default:
+      llvm_unreachable("unsupported expansion of expr");
+    }
+    return {result, outputMap};
+  }
+
+  if (auto symExpr = dyn_cast<AffineSymbolExpr>(expr)) {
+    Value sym = operands[symExpr.getPosition() + numDims];
+    return {mapping.lookup(sym),
+            affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
+  }
+
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+    Value dim = operands[dimExpr.getPosition()];
+
+    if (!pc.isParallelIV(dim)) {
+      return {mapping.lookup(dim),
+              affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
+    }
+
+    return {
+        mapping.lookup(dim),
+        affine::AffineValueMap(
+            AffineMap::getMultiDimIdentityMap(1, expr.getContext()), {dim})};
+  }
+
+  llvm_unreachable("unreachable");
+}
+
+/// scope is an operation _in_ the scope we are interested in
+bool isSafeToSpeculativelyExecuteAtScope(Operation *scope, Operation *op) {
+  if (mlir::isPure(op))
+    return true;
+
+  MemRefType ty = nullptr;
+  if (auto read = dyn_cast<affine::AffineReadOpInterface>(op))
+    ty = read.getMemRefType();
+  if (!ty)
+    return false;
+
+  // 0-dim memrefs are always legal to speculate (assuming non-null)
+  if (ty.getShape().size() == 0)
+    return true;
+
+  // IslAnalysis ia;
+  //
+  // isl_set *array = ia.getMemrefShape(ty);
+  // if (!array)
+  //   return false;
+  //
+  // isl_map *accessMap = ia.getAccessMap(op);
+  // if (!accessMap) {
+  //   isl_set_free(array);
+  //   return false;
+  // }
+  //
+  // isl_set *domain = ia.getDomain(scope);
+  // if (!domain) {
+  //   isl_set_free(array);
+  //   isl_map_free(accessMap);
+  //   return false;
+  // }
+  // isl_set *accessed = isl_set_apply(domain, accessMap);
+  // isl_bool inBounds = isl_set_is_subset(accessed, array);
+  // isl_set_free(array);
+  // isl_set_free(accessed);
+  // if (inBounds == isl_bool_error)
+  //   return false;
+  // return inBounds;
+  return true;
+}
+
+static LogicalResult
+tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext pc);
+
+static LogicalResult
+emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
+               OpBuilder &builder, IRMapping &mapping,
+               DenseMap<Value, affine::AffineValueMap> &maps,
+               ParallelContext pc) {
+  Block *thenBlock = &ifOp->getRegion(0).front();
+  Block *elseBlock =
+      ifOp->getRegion(1).empty() ? nullptr : &ifOp->getRegion(1).front();
+
+  auto getMaskedCond = [&](Value cond, Value mask) {
+    if (mask) {
+      // merge mask and current cond
+      affine::AffineValueMap maskMap = maps.lookup(mask),
+                             condMap = maps.lookup(cond);
+      affine::AffineValueMap newMaskMap =
+          alignMemoryAccess(mask, maskMap, cond, condMap, builder, pc);
+
+      mask = stablehlo::AndOp::create(
+          builder,
+          rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+          mask, cond);
+      maps[mask] = newMaskMap;
+    } else {
+      mask = cond;
+    }
+    return mask;
+  };
+
+  Value mask = getMaskedCond(cond, pc.mask);
+
+  ParallelContext thenPc(pc.options);
+  thenPc.ranges = pc.ranges;
+  thenPc.ivs = pc.ivs;
+  thenPc.mask = mask;
+
+  for (auto &innerOp : thenBlock->without_terminator()) {
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, thenPc)
+            .failed())
+      return failure();
+  }
+
+  ParallelContext elsePc(pc.options);
+  elsePc.ranges = pc.ranges;
+  elsePc.ivs = pc.ivs;
+
+  if (elseBlock) {
+    Value elseCond = stablehlo::NotOp::create(
+        builder,
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), cond);
+    maps[elseCond] = maps.lookup(cond);
+
+    Value elseMask = getMaskedCond(elseCond, pc.mask);
+    assert(maps.contains(elseMask));
+    elsePc.mask = elseMask;
+
+    for (auto &innerOp : elseBlock->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, elsePc)
+              .failed())
+        return failure();
+    }
+  }
+
+  Operation *thenTerm = thenBlock->getTerminator();
+  Operation *elseTerm = elseBlock ? elseBlock->getTerminator() : nullptr;
+
+  if (ifOp->getNumResults() > 0) {
+    for (auto [thenVal, elseVal, res] :
+         llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
+                         ifOp->getResults())) {
+      Value a = cond;
+      Value b = mapping.lookup(thenVal);
+      Value c = mapping.lookup(elseVal);
+
+      auto mapA = map;
+      auto mapB = maps.lookup(b);
+      auto mapC = maps.lookup(c);
+
+      Value dsts[] = {b, c};
+      affine::AffineValueMap submaps[] = {mapB, mapC};
+      auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+      b = dsts[0];
+      c = dsts[1];
+      assert(b.getType() == c.getType());
+
+      auto newOp = stablehlo::SelectOp::create(
+          builder,
+          rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), a,
+          b, c);
+      mapping.map(res, newOp.getResult());
+      maps[newOp.getResult()] = outputMap;
+    }
+  }
+
+  return success();
+}
+
+static Value
+emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
+                 OpBuilder &builder,
+                 llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  Value indices = nullptr;
+
+  SmallVector<int64_t> sliceSizes(lIndices.size(), 1);
+  SmallVector<int64_t> startIndexMap;
+  SmallVector<int64_t> outputShape;
+  SmallVector<Value> ivs;
+  for (auto raisedIdx : lIndices) {
+    startIndexMap.push_back(startIndexMap.size());
+
+    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
+
+    SmallVector<int64_t> dimsToBroadcast;
+
+    auto map = maps.lookup(raisedIdx);
+
+    for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
+      auto iv = getIVForExpr(map, E);
+
+      unsigned ivPos = 0;
+      for (unsigned e = ivs.size(); ivPos < e; ++ivPos) {
+        if (ivs[ivPos] == iv) {
+          break;
+        }
+      }
+
+      if (ivPos == ivs.size()) {
+        outputShape.push_back(Ty.getShape()[i]);
+        dimsToBroadcast.push_back(ivs.size());
+        ivs.push_back(iv);
+      } else {
+        // this dim is already present
+        dimsToBroadcast.push_back((int64_t)ivPos);
+      }
+    }
+
+    if (indices) {
+      auto indicesTy = cast<RankedTensorType>(indices.getType());
+
+      SmallVector<int64_t> raisedIdxShape(
+          indicesTy.getShape().drop_back().begin(),
+          indicesTy.getShape().drop_back().end());
+
+      for (auto [dim, bdim] : llvm::enumerate(dimsToBroadcast)) {
+        if (bdim >= raisedIdxShape.size()) {
+          raisedIdxShape.push_back(Ty.getShape()[dim]);
+        }
+      }
+
+      raisedIdxShape.push_back(1);
+
+      raisedIdx = stablehlo::BroadcastInDimOp::create(
+          builder, loc, Ty.clone(raisedIdxShape), raisedIdx, dimsToBroadcast);
+
+      SmallVector<int64_t> shape(indicesTy.getShape().drop_back().begin(),
+                                 indicesTy.getShape().drop_back().end());
+
+      for (auto [dim, bdim] : llvm::enumerate(dimsToBroadcast)) {
+        if (bdim >= shape.size()) {
+          shape.push_back(Ty.getShape()[dim]);
+        }
+      }
+
+      shape.push_back(indicesTy.getShape()[indicesTy.getShape().size() - 1]);
+      SmallVector<int64_t> bDims;
+      for (int i = 0, e = indicesTy.getShape().size() - 1; i < e; ++i)
+        bDims.push_back(i);
+      bDims.push_back(shape.size() - 1);
+
+      indices = stablehlo::BroadcastInDimOp::create(
+          builder, loc, Ty.clone(shape), indices, bDims);
+
+      indicesTy = cast<RankedTensorType>(indices.getType());
+      SmallVector<int64_t> newIndicesShape(
+          indicesTy.getShape().drop_back().begin(),
+          indicesTy.getShape().drop_back().end());
+      newIndicesShape.push_back(
+          indicesTy.getShape()[indicesTy.getShape().size() - 1] + 1);
+
+      indices = stablehlo::ConcatenateOp::create(
+          builder, loc, Ty.clone(newIndicesShape),
+          ValueRange{indices, raisedIdx}, (int64_t)newIndicesShape.size() - 1);
+    } else {
+
+      auto S = cast<RankedTensorType>(raisedIdx.getType()).getShape();
+      SmallVector<int64_t> shape(S.begin(), S.end());
+      shape.push_back(1);
+
+      indices = stablehlo::ReshapeOp::create(builder, loc, Ty.clone(shape),
+                                             raisedIdx);
+    }
+  }
+
+  auto Ty = cast<RankedTensorType>(indices.getType());
+  SmallVector<int64_t> productOfIndices = {1, (int64_t)lIndices.size()};
+
+  for (auto s : Ty.getShape().drop_back()) {
+    productOfIndices[0] *= s;
+  }
+
+  indices = stablehlo::ReshapeOp::create(builder, loc,
+                                         Ty.clone(productOfIndices), indices);
+
+  Value res =
+      stablehlo::GatherOp::create(builder, loc, mappedMemref, indices,
+                                  stablehlo::GatherDimensionNumbersAttr::get(
+                                      loc.getContext(),
+                                      /*offsetDims*/ {},
+                                      /*collapsedSliceDims*/ startIndexMap,
+                                      /*operandBatchingDims*/ {},
+                                      /*startIndicesBatchingDims*/ {},
+                                      /*startIndexMap*/ startIndexMap,
+                                      /*indexVectorDim*/ 1),
+                                  sliceSizes);
+
+  auto OT = cast<RankedTensorType>(res.getType());
+  res = stablehlo::ReshapeOp::create(builder, loc, OT.clone(outputShape), res);
+
+  affine::AffineValueMap outputMap(
+      AffineMap::getMultiDimIdentityMap(ivs.size(), loc.getContext()), ivs);
+
+  maps[res] = outputMap;
+
+  return res;
+}
+
+static Value
+emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
+                   OpBuilder &builder,
+                   llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  Value indices = nullptr;
+
+  affine::AffineValueMap updateValueMap = maps.lookup(update);
+
+  auto UTy = cast<RankedTensorType>(update.getType());
+  SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
+  SmallVector<int64_t> updateShape;
+  SmallVector<int64_t> scatterDimsToOperandDims;
+
+  for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
+    auto idxMap = maps.lookup(raisedIdx);
+
+    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
+
+    int64_t numIndices = Ty.getNumElements();
+    scatterDimsToOperandDims.push_back(i);
+
+    auto S = Ty.getShape();
+    updateShape.append(S.begin(), S.end());
+
+    for (auto [j, ex] : llvm::enumerate(idxMap.getAffineMap().getResults())) {
+      auto iv = getIVForExpr(idxMap, ex);
+      for (auto [updateIdx, E] :
+           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+        Value updateIV = getIVForExpr(updateValueMap, E);
+        if (updateIV == iv) {
+          if (broadcastDims[updateIdx] != -1) {
+            continue;
+          }
+
+          broadcastDims[updateIdx] =
+              (updateShape.size() - Ty.getShape().size() + j);
+        }
+      }
+    }
+
+    raisedIdx = stablehlo::ReshapeOp::create(
+        builder, loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
+
+    if (indices) {
+      int64_t indicesSize =
+                  cast<RankedTensorType>(indices.getType()).getShape()[0],
+              numDims = cast<RankedTensorType>(indices.getType()).getShape()[1],
+              newSize =
+                  cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
+
+      indices = stablehlo::BroadcastInDimOp::create(
+          builder, loc, Ty.clone({indicesSize, newSize, numDims}), indices,
+          llvm::ArrayRef<int64_t>({0, 2}));
+      indices = stablehlo::ReshapeOp::create(
+          builder, loc, Ty.clone({indicesSize * newSize, numDims}), indices);
+      raisedIdx = stablehlo::BroadcastInDimOp::create(
+          builder, loc, Ty.clone({indicesSize, newSize}), raisedIdx,
+          llvm::ArrayRef<int64_t>({1, 0}));
+      raisedIdx = stablehlo::ReshapeOp::create(
+          builder, loc, Ty.clone({indicesSize * newSize, 1}), raisedIdx);
+
+      indices = stablehlo::ConcatenateOp::create(
+          builder, loc, Ty.clone({indicesSize * newSize, numDims + 1}),
+          ValueRange{indices, raisedIdx}, 1);
+    } else {
+      indices = raisedIdx;
+    }
+  }
+
+  if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
+    return nullptr;
+  }
+
+  // Align update to the store indices.
+  update = stablehlo::BroadcastInDimOp::create(
+      builder, loc, cast<RankedTensorType>(update.getType()).clone(updateShape),
+      update, broadcastDims);
+
+  update = stablehlo::ReshapeOp::create(
+      builder, loc,
+      RankedTensorType::get(
+          {cast<RankedTensorType>(indices.getType()).getShape()[0]},
+          cast<RankedTensorType>(update.getType()).getElementType()),
+      update);
+
+  auto Ty = cast<RankedTensorType>(input.getType());
+  stablehlo::ScatterOp scatter = stablehlo::ScatterOp::create(
+      builder, loc, llvm::ArrayRef<Type>{Ty}, ValueRange{input}, indices,
+      ValueRange{update},
+      stablehlo::ScatterDimensionNumbersAttr::get(
+          loc.getContext(),
+          /*updateWindowDims*/ {},
+          /*insertedWindowDims*/ scatterDimsToOperandDims,
+          /*inputBatchingDims*/ {},
+          /*scatterIndicesBatchingDims*/ {},
+          /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
+          /*indexVectorDim*/ 1),
+      /*indicesAreSorted*/ false,
+      /*uniqueIndices*/ true); // Indices must be unique because otherwise the
+                               // original program had a race [writing to the
+                               // same location across multiple threads].
+  Value res = scatter.getResult(0);
+
+  Block *updateBody = new Block();
+  scatter.getUpdateComputation().push_back(updateBody);
+
+  auto unrankedTy = RankedTensorType::get(
+      {}, cast<RankedTensorType>(update.getType()).getElementType());
+  updateBody->addArgument(unrankedTy, loc);
+  Value updateInBody = updateBody->addArgument(unrankedTy, loc);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(updateBody);
+    stablehlo::ReturnOp::create(builder, loc, updateInBody);
+  }
+
+  return res;
+}
+
+static LogicalResult tryRaisingForOpToStableHLOUnroll(
+    affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  // Materialize an unrolled version of the loop in a temporary block and
+  // generate the raised version of that. The unrolled version will be deleted
+  // afterwards and the results of the original for loop will be mapped to it.
+
+  // There arises a problem with the affine maps contained in the for loop which
+  // until now correctly identified the loop iv as an affine dim, but will now
+  // take constants as inputs. We need to canonicalize those maps before raising
+  // the operations because we assume dim inputs to be loop ivs. This is the
+  // reason we need to canonicalize all affine maps before we raise them in the
+  // other parts of the code.
+  auto tmpBlock = std::make_unique<Block>();
+  OpBuilder oldFuncBuilder(builder.getContext());
+  oldFuncBuilder.setInsertionPointToStart(tmpBlock.get());
+  auto clonedFor = cast<affine::AffineForOp>(oldFuncBuilder.clone(*forOp));
+  auto yield = affine::AffineYieldOp::create(
+      oldFuncBuilder,
+      rewriteLocation(clonedFor.getLoc(), pc.options.strip_llvm_debuginfo),
+      clonedFor.getResults());
+  if (failed(affine::loopUnrollFull(clonedFor)))
+    return failure();
+
+  // Make a temporary new mapping because we will map values from the temporary
+  // block which we will delete later.
+  IRMapping forMapping = mapping;
+  for (auto &innerOp : tmpBlock->without_terminator()) {
+    if (tryRaisingOpToStableHLO(&innerOp, forMapping, builder, maps, pc)
+            .failed())
+      return failure();
+  }
+  // Remap the results of the loop in the main mapping which will be needed for
+  // raising subsequent ops.
+  for (auto [yielded, res] :
+       llvm::zip_equal(yield.getOperands(), forOp.getResults())) {
+    auto mapped = forMapping.lookupOrNull(yielded);
+    assert(mapped);
+    mapping.map(res, mapped);
+  }
+  for (auto [from, to] : forMapping.getValueMap()) {
+    Block *b = from.getParentBlock();
+    // This checks whether `tmpBlock` is an ancestor of `from`. If it is not,
+    // then we need to reflect any change in the `forMapping` in the global
+    // `mapping`. We need to do this because memref arguments to the function we
+    // are raising get remapped as the raising process goes on.
+    bool shouldRemap;
+    while (true) {
+      if (!b) {
+        shouldRemap = true;
+        break;
+      }
+      if (b == tmpBlock.get()) {
+        shouldRemap = false;
+        break;
+      }
+      Operation *op = b->getParentOp();
+      if (op) {
+        b = op->getBlock();
+      } else {
+        shouldRemap = true;
+        break;
+      }
+    }
+    if (shouldRemap)
+      mapping.map(from, to);
+  }
+  return success();
+}
+
+static LogicalResult tryRaisingForOpToStableHLOWhile(
+    affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
+  if (!forOp.hasConstantBounds()) {
+    return forOp.emitError("CPU kernels do not support cluster");
+  }
+
+  Value iv = forOp.getInductionVar();
+  InductionVariableRange range{forOp.getConstantLowerBound(),
+                               forOp.getConstantUpperBound(),
+                               forOp.getStepAsInt()};
+
+  auto ET = builder.getI64Type();
+  auto TT = RankedTensorType::get({}, ET);
+
+  Value lb = stablehlo::ConstantOp::create(
+      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+      TT,
+      SplatElementsAttr::get(
+          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
+  Value ub = stablehlo::ConstantOp::create(
+      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+      TT,
+      SplatElementsAttr::get(
+          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
+  Value step = stablehlo::ConstantOp::create(
+      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+      TT,
+      SplatElementsAttr::get(
+          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
+
+  Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
+
+  Block *cond = new Block(), *body = new Block();
+  Value ivInCond = cond->addArgument(
+      TT, rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo));
+  Value ivInBody = body->addArgument(
+      TT, rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo));
+
+  SmallVector<Value> inits;
+  inits.push_back(lb);
+
+  for (auto [init, iterArg] :
+       llvm::zip(forOp.getInits(), forOp.getRegionIterArgs())) {
+    auto TT = pc.getTensorType(init.getType());
+    cond->addArgument(
+        TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
+    Value iterArgInBody = body->addArgument(
+        TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
+    auto tensorInit = mapping.lookup(init);
+    auto broadcastInit =
+        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+    if (!broadcastInit) {
+      return forOp->emitError("Could not broadcast an init");
+    }
+    inits.push_back(broadcastInit->v);
+    mapping.map(iterArg, iterArgInBody);
+    maps[iterArgInBody] = broadcastInit->avm;
+  }
+
+  for (auto memref : entryBlock->getArguments()) {
+    Value mappedMemref = mapping.lookup(memref);
+    inits.push_back(mappedMemref);
+
+    cond->addArgument(mappedMemref.getType(),
+                      rewriteLocation(mappedMemref.getLoc(),
+                                      pc.options.strip_llvm_debuginfo));
+    Value memrefInBody =
+        body->addArgument(mappedMemref.getType(),
+                          rewriteLocation(mappedMemref.getLoc(),
+                                          pc.options.strip_llvm_debuginfo));
+    mapping.map(memref, memrefInBody);
+  }
+
+  auto whileOp = stablehlo::WhileOp::create(
+      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+      inits);
+
+  whileOp->getRegion(0).push_back(cond);
+  whileOp->getRegion(1).push_back(body);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(cond);
+    Value cond = stablehlo::CompareOp::create(
+        builder,
+        rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+        ivInCond, ub, stablehlo::ComparisonDirection::LT);
+    stablehlo::ReturnOp::create(
+        builder,
+        rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo), cond);
+  }
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(body);
+
+    mapping.map(iv, ivInBody);
+    maps[ivInBody] =
+        affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
+
+    for (auto &innerOp : forOp.getBody()->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+              .failed()) {
+        LLVM_DEBUG(llvm::dbgs() << "Failed to raise inner op\n"
+                                << innerOp << "\n");
+        return failure();
+      }
+    }
+
+    Value newIvInBody = stablehlo::AddOp::create(
+        builder,
+        rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+        ivInBody, step);
+
+    SmallVector<Value> loopCarried = {newIvInBody};
+    for (auto [iterArg, yieldedIterArgs] :
+         llvm::zip(forOp.getRegionIterArgs(),
+                   forOp.getBody()->getTerminator()->getOperands())) {
+      if (maps.lookup(mapping.lookup(iterArg)) !=
+          maps.lookup(mapping.lookup(yieldedIterArgs))) {
+        auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
+        whileOp->erase();
+        return err;
+      }
+      loopCarried.push_back(mapping.lookup(yieldedIterArgs));
+    }
+
+    for (auto memref : entryBlock->getArguments())
+      loopCarried.push_back(mapping.lookup(memref));
+    stablehlo::ReturnOp::create(
+        builder,
+        rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+        loopCarried);
+  }
+
+  for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
+    mapping.map(memref,
+                whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
+  for (auto [forRes, forIterArg, whileRes] :
+       llvm::zip(forOp.getResults(), forOp.getRegionIterArgs(),
+                 llvm::drop_begin(whileOp.getResults()))) {
+    mapping.map(forRes, whileRes);
+    maps[whileRes] = maps.lookup(mapping.lookup(forIterArg));
+  }
+
+  parentMapping = mapping;
+  return success();
+}
+
+template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
+template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineParallelOp op) {
+  return {op.getIVs().begin(), op.getIVs().end()};
+}
+template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineForOp op) {
+  return {op.getInductionVar()};
+}
+
+template <class T>
+static LogicalResult tryRaisingParallelOpToStableHLO(
+    T parallelOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
+
+  for (auto iv : getIVs(parallelOp)) {
+    auto range = getIVRange(iv);
+    if (!range.has_value()) {
+      return parallelOp.getOperation()->emitError(
+          "parallel loop has non-constant bounds, which is not currently "
+          "supported");
+    }
+    emitIVToStableHLO(builder, iv, *range, mapping, maps,
+                      pc.options.strip_llvm_debuginfo);
+  }
+
+  auto newPc = pc.add(parallelOp);
+  if (!newPc)
+    return failure();
+
+  SmallVector<Value> iter_inputs;
+  SmallVector<BlockArgument> iters;
+  if (auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation())) {
+    for (auto &&[inp, arg] :
+         llvm::zip_equal(forOp.getInits(), forOp.getRegionIterArgs())) {
+      iters.push_back(arg);
+      iter_inputs.push_back(inp);
+    }
+  }
+
+  for (auto &innerOp : parallelOp.getBody()->without_terminator()) {
+    ssize_t reduced_idx = -1;
+    ssize_t op_idx = -1;
+    for (auto &&[j, operand] : llvm::enumerate(innerOp.getOperands())) {
+      for (auto &&[i, iter] : llvm::enumerate(iters)) {
+        if (iter == operand) {
+          reduced_idx = i;
+          op_idx = j;
+          break;
+        }
+      }
+    }
+
+    if (reduced_idx != -1) {
+      Value reduced_val = innerOp.getOperand(1 - op_idx);
+      Value init_val = iter_inputs[reduced_idx];
+
+      Value reduce_broadcasted = mapping.lookup(reduced_val);
+      auto reduce_map = maps.lookup(reduce_broadcasted);
+
+      auto forOp = cast<affine::AffineForOp>(
+          iters[reduced_idx].getOwner()->getParentOp());
+
+      Value idx_broadcasted = mapping.lookup(forOp.getInductionVar());
+      auto idx_map = maps.lookup(idx_broadcasted);
+
+      Value dsts[] = {idx_broadcasted, mapping.lookup(init_val)};
+      affine::AffineValueMap submaps[] = {idx_map, maps.lookup(dsts[1])};
+
+      auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts,
+                                         submaps, builder, *newPc);
+
+      ssize_t idx_to_reduce = -1;
+      for (auto &&[i, expr] :
+           llvm::enumerate(outputMap.getAffineMap().getResults())) {
+        auto dim = cast<AffineDimExpr>(expr);
+        if (outputMap.getOperands()[dim.getPosition()] ==
+            forOp.getInductionVar()) {
+          assert(idx_to_reduce == -1);
+          idx_to_reduce = i;
+        }
+      }
+      assert(idx_to_reduce != -1);
+
+      auto unrankedTensorType = RankedTensorType::get(
+          {}, cast<RankedTensorType>(reduce_broadcasted.getType())
+                  .getElementType());
+      Value init_values[1] = {stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
+          builder.getZeroAttr(unrankedTensorType))};
+
+      auto shape =
+          cast<RankedTensorType>(reduce_broadcasted.getType()).getShape();
+      SmallVector<int64_t> win_dim(shape.size(), 1);
+      win_dim[idx_to_reduce] = shape[idx_to_reduce];
+
+      SmallVector<int64_t> win_strides(shape.size(), 1);
+      SmallVector<int64_t> win_dialations(shape.size(), 1);
+      SmallVector<int64_t> base_dialations(shape.size(), 1);
+      SmallVector<int64_t> padding_dialations(2 * shape.size(), 0);
+      padding_dialations[2 * idx_to_reduce] = shape[idx_to_reduce] - 1;
+
+      int64_t padding_shape[2] = {(int64_t)shape.size(), 2};
+
+      Value operands[1] = {reduce_broadcasted};
+      Type restys[1] = {reduce_broadcasted.getType()};
+      auto redwin = stablehlo::ReduceWindowOp::create(
+          builder,
+          rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
+          restys, operands, init_values, builder.getDenseI64ArrayAttr(win_dim),
+          builder.getDenseI64ArrayAttr(win_strides),
+          builder.getDenseI64ArrayAttr(base_dialations),
+          builder.getDenseI64ArrayAttr(win_dialations),
+          DenseIntElementsAttr::get(
+              RankedTensorType::get(padding_shape, builder.getIntegerType(64)),
+              padding_dialations));
+
+      auto block = new Block();
+      redwin.getBody().push_back(block);
+
+      auto a = block->addArgument(
+          unrankedTensorType,
+          rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo));
+      auto b = block->addArgument(
+          unrankedTensorType,
+          rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo));
+
+      {
+        OpBuilder builder(block, block->end());
+        auto addOp = stablehlo::AddOp::create(
+            builder,
+            rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
+            a, b);
+        stablehlo::ReturnOp::create(
+            builder,
+            rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
+            addOp.getResult());
+      }
+
+      Value result = redwin->getResult(0);
+      if (isa<arith::AddIOp, arith::AddFOp>(&innerOp)) {
+        result = stablehlo::AddOp::create(
+            builder,
+            rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
+            result, dsts[1]);
+      } else if (isa<arith::SubIOp, arith::SubFOp>(&innerOp)) {
+        result = stablehlo::SubtractOp::create(
+            builder,
+            rewriteLocation(innerOp.getLoc(), pc.options.strip_llvm_debuginfo),
+            dsts[1], result);
+      } else {
+        llvm_unreachable("unhandled reduction");
+      }
+
+      mapping.map(innerOp.getResult(0), result);
+      maps[result] = outputMap;
+
+      continue;
+    }
+
+    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, *newPc)
+            .failed())
+      return failure();
+  }
+
+  auto yld = parallelOp.getBody()->getTerminator();
+  for (auto &&[res, yval] :
+       llvm::zip_equal(parallelOp.getResults(), yld->getOperands())) {
+    auto val = mapping.lookup(yval);
+    auto outputMap = maps[val];
+
+    if (auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation())) {
+
+      ssize_t idx_to_reduce = -1;
+      for (auto &&[i, expr] :
+           llvm::enumerate(outputMap.getAffineMap().getResults())) {
+        auto dim = cast<AffineDimExpr>(expr);
+        if (outputMap.getOperands()[dim.getPosition()] ==
+            forOp.getInductionVar()) {
+          assert(idx_to_reduce == -1);
+          idx_to_reduce = i;
+        }
+      }
+
+      if (idx_to_reduce == -1) {
+        mapping.map(res, val);
+      } else {
+
+        SmallVector<int64_t> startIndices;
+        SmallVector<int64_t> limitIndices;
+        SmallVector<int64_t> strides;
+
+        SmallVector<AffineExpr> exprs;
+        for (auto &&[i, expr0] :
+             llvm::enumerate(outputMap.getAffineMap().getResults())) {
+          auto expr = expr0;
+          if (i == idx_to_reduce) {
+            auto range = computeExprRange(outputMap, expr);
+            expr = builder.getAffineConstantExpr(range->ub - 1);
+          } else {
+            exprs.push_back(expr);
+          }
+          strides.push_back(1);
+          if (auto constOp = dyn_cast<AffineConstantExpr>(expr)) {
+            startIndices.push_back(constOp.getValue());
+            limitIndices.push_back(constOp.getValue() + 1);
+            continue;
+          }
+          auto range = computeExprRange(outputMap, expr);
+          startIndices.push_back(range->step < 0 ? range->ub - range->step
+                                                 : range->lb);
+          limitIndices.push_back(range->step < 0 ? range->lb - range->step
+                                                 : range->ub);
+        }
+        SmallVector<Value> vals;
+        for (auto v : outputMap.getOperands()) {
+          if (v == forOp.getInductionVar()) {
+            v = arith::ConstantIndexOp::create(
+                builder,
+                rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+                0);
+          }
+          vals.push_back(v);
+        }
+
+        auto newVal = stablehlo::SliceOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), val,
+            startIndices, limitIndices, strides);
+
+        SmallVector<int64_t> newShape;
+        for (auto &&[i, sz] : llvm::enumerate(newVal.getType().getShape())) {
+          if (i != idx_to_reduce) {
+            newShape.push_back(sz);
+          }
+        }
+        auto newVal2 = stablehlo::ReshapeOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            RankedTensorType::get(newShape, newVal.getType().getElementType()),
+            newVal);
+        mapping.map(res, newVal2);
+        maps[newVal2] = affine::AffineValueMap(
+            AffineMap::get(outputMap.getAffineMap().getNumDims(),
+                           outputMap.getAffineMap().getNumSymbols(), exprs,
+                           res.getContext()),
+            vals);
+      }
+    } else if (auto pforOp = dyn_cast<affine::AffineParallelOp>(
+                   parallelOp.getOperation())) {
+
+      SmallVector<int64_t> dims_to_reduce;
+      for (auto &&[i, expr] :
+           llvm::enumerate(outputMap.getAffineMap().getResults())) {
+        auto dim = cast<AffineDimExpr>(expr);
+        auto operand =
+            dyn_cast<BlockArgument>(outputMap.getOperands()[dim.getPosition()]);
+        if (!operand)
+          continue;
+        if (operand.getOwner()->getParentOp() == pforOp)
+          dims_to_reduce.push_back(operand.getArgNumber());
+      }
+
+      SmallVector<Value> dsts;
+      SmallVector<affine::AffineValueMap> submaps;
+      for (auto idx : dims_to_reduce) {
+        auto dst = mapping.lookup(pforOp.getIVs()[idx]);
+        dsts.push_back(dst);
+        submaps.push_back(maps.lookup(dst));
+      }
+      auto outputMap2 = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
+                                          builder, *newPc);
+
+      SmallVector<int64_t> idxs_to_reduce;
+      SmallVector<int64_t> redshape;
+      SmallVector<AffineExpr> newExprs;
+      for (auto &&[i, expr] :
+           llvm::enumerate(outputMap.getAffineMap().getResults())) {
+        auto dim = cast<AffineDimExpr>(expr);
+        auto operand =
+            dyn_cast<BlockArgument>(outputMap.getOperands()[dim.getPosition()]);
+        if (!operand)
+          continue;
+        if (operand.getOwner()->getParentOp() == pforOp)
+          idxs_to_reduce.push_back(i);
+        else {
+          redshape.push_back(
+              cast<RankedTensorType>(val.getType()).getShape()[i]);
+          newExprs.push_back(expr);
+        }
+      }
+
+      ArrayRef<Attribute> reductions = pforOp.getReductions().getValue();
+      auto intAttr =
+          llvm::dyn_cast<IntegerAttr>(reductions[res.getResultNumber()]);
+      if (!intAttr || !arith::symbolizeAtomicRMWKind(intAttr.getInt()))
+        return failure();
+      auto kind = arith::symbolizeAtomicRMWKind(intAttr.getInt()).value();
+
+      switch (kind) {
+      case arith::AtomicRMWKind::addf:
+      case arith::AtomicRMWKind::addi:
+        break;
+      default:
+        return failure();
+      }
+
+      Value inputs[] = {val};
+      Type types[] = {RankedTensorType::get(redshape, res.getType())};
+
+      auto unrankedTensorType = RankedTensorType::get(
+          {}, cast<RankedTensorType>(val.getType()).getElementType());
+      Value inits[1] = {stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+          builder.getZeroAttr(unrankedTensorType))};
+
+      auto red = stablehlo::ReduceOp::create(
+          builder,
+          rewriteLocation(val.getLoc(), pc.options.strip_llvm_debuginfo), types,
+          inputs, inits, builder.getDenseI64ArrayAttr(idxs_to_reduce));
+
+      auto block = new Block();
+      red.getBody().push_back(block);
+
+      auto a = block->addArgument(
+          unrankedTensorType,
+          rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo));
+      auto b = block->addArgument(
+          unrankedTensorType,
+          rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo));
+
+      {
+        OpBuilder builder(block, block->end());
+        auto addOp = stablehlo::AddOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), a,
+            b);
+        stablehlo::ReturnOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            addOp.getResult());
+      }
+
+      SmallVector<Value> vals;
+      for (auto v : outputMap.getOperands()) {
+        auto operand = dyn_cast<BlockArgument>(v);
+        if (operand && operand.getOwner()->getParentOp() == pforOp) {
+          v = arith::ConstantIndexOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+              0);
+        }
+        vals.push_back(v);
+      }
+      affine::AffineValueMap avm(
+          AffineMap::get(outputMap.getAffineMap().getNumDims(),
+                         outputMap.getAffineMap().getNumSymbols(), newExprs,
+                         res.getContext()),
+          vals);
+
+      avm.composeSimplifyAndCanonicalize();
+      mapping.map(res, red->getResult(0));
+      maps[red->getResult(0)] = avm;
+
+    } else {
+      llvm_unreachable("unknown input operand");
+    }
+  }
+
+  parentMapping = mapping;
+  return success();
+}
+
+bool isLoopLockStepExecutable(
+    affine::AffineForOp forOp,
+    SmallVectorImpl<affine::LoopReduction> *parallelReductions);
+static bool isLockStepExecutable(affine::AffineForOp forOp,
+                                 ParallelContext &pc) {
+  SmallVector<mlir::affine::LoopReduction> red;
+  if (isLoopLockStepExecutable(forOp, &red)) {
+
+    llvm::SmallSet<Operation *, 1> reductions;
+    for (auto &&[i, arg] : llvm::enumerate(forOp.getRegionIterArgs())) {
+      if (!arg.hasOneUse()) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "multiple use iter arg: " << arg << "\n";
+        return false;
+      }
+      Operation *user = nullptr;
+      for (auto user2 : arg.getUsers()) {
+        user = user2;
+        break;
+      }
+      assert(user);
+      if (user->getParentOp() != forOp) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "user not directly in for: " << *user << "\n";
+        return false;
+      }
+      if (isa<arith::AddIOp, arith::AddFOp>(user)) {
+      } else if (auto sub = dyn_cast<arith::SubIOp>(user)) {
+        if (sub.getRhs() == arg) {
+          if (pc.options.dump_failed_lockstep)
+            llvm::errs() << "wrong side sub: " << *user << "\n";
+          return false;
+        }
+      } else if (auto sub = dyn_cast<arith::SubFOp>(user)) {
+        if (sub.getRhs() == arg) {
+          if (pc.options.dump_failed_lockstep)
+            llvm::errs() << "wrong side sub: " << *user << "\n";
+          return false;
+        }
+      } else {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "unknown reduction user: " << *user << "\n";
+        return false;
+      }
+      if (reductions.contains(user)) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "multi reduction user: " << *user << "\n";
+        return false;
+      }
+      reductions.insert(user);
+
+      bool hadYield = false;
+      for (auto &user2 : user->getResult(0).getUses()) {
+        if (auto yld = dyn_cast<affine::AffineYieldOp>(user2.getOwner())) {
+          if (user2.getOperandNumber() != i) {
+            if (pc.options.dump_failed_lockstep)
+              llvm::errs() << "non linked yield: " << *yld << "\n";
+            return false;
+          }
+          hadYield = true;
+          continue;
+        }
+      }
+      if (!hadYield) {
+        if (pc.options.dump_failed_lockstep)
+          llvm::errs() << "no yield user: " << *user << "\n";
+        return false;
+      }
+    }
+
+    return true;
+  } else {
+    if (pc.options.dump_failed_lockstep) {
+      llvm::errs() << "inner failed lockstep executable\n";
+    }
+    return false;
+  }
+}
+
+static LogicalResult tryRaisingLockStepForOpToStableHLO(
+    affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  LLVM_DEBUG(llvm::dbgs() << "Trying to lock step execute for " << *forOp
+                          << "\n");
+  if (isLockStepExecutable(forOp, pc)) {
+    LLVM_DEBUG(llvm::dbgs() << "Legal\n");
+    return tryRaisingParallelOpToStableHLO(forOp, mapping, builder, maps, pc);
+  }
+  LLVM_DEBUG(llvm::dbgs() << "Illegal\n");
+  if (pc.options.dump_failed_lockstep) {
+    llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
+  }
+  return forOp.emitError("Not lockstep executable") << *forOp;
+}
+
+static LogicalResult
+tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext pc) {
+
+  // Affine load inside a loop becomes a slice
+  if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+    affine::MemRefAccess access(loadOp);
+
+    affine::AffineValueMap accessValueMap;
+    access.getAccessMap(&accessValueMap);
+    // See tryRaisingForOpToStableHLOUnroll
+    accessValueMap.composeSimplifyAndCanonicalize();
+
+    auto inputTen = mapping.lookup(access.memref);
+
+    SmallVector<int64_t> outputShape = affineMapShape(accessValueMap, pc);
+
+    SmallVector<int64_t> strides;
+    SmallVector<int64_t> reverseDims;
+
+    bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
+      return affine::isAffineForInductionVar(iv);
+    });
+    bool emitAsGather =
+        affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
+        (dynIndices &&
+         llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
+        needsGeneralScatterGather(accessValueMap);
+
+    if (emitAsGather) {
+      SmallVector<Value> lIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [idx, idxMap] = expandAffineExpr(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
+            accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        maps[idx] = idxMap;
+        lIndices.push_back(idx);
+      }
+
+      Value res = emitLoadAsGather(
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          inputTen, lIndices, builder, maps);
+      if (!res) {
+        return op->emitError("failed to raise load (indices of rank > 1)")
+               << *op;
+      }
+      mapping.map(loadOp.getResult(), res);
+      return success();
+    }
+
+    auto T = RankedTensorType::get(
+        outputShape,
+        cast<RankedTensorType>(inputTen.getType()).getElementType());
+
+    Value newVal;
+
+    if (dynIndices) {
+      SmallVector<Value> startIndices;
+
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        AffineExpr exprToEmit = E;
+        if (!E.isSymbolicOrConstant()) {
+          auto iv = getIVForExpr(accessValueMap, E);
+          if (pc.isParallelIV(iv)) {
+            auto r = computeExprRange(accessValueMap, E);
+            auto lb = r->step < 0 ? r->ub - r->step : r->lb;
+            exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
+          }
+        }
+
+        auto [startIndex, _] = expandAffineExpr(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            exprToEmit, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+
+        startIndices.push_back(startIndex);
+      }
+
+      newVal = stablehlo::DynamicSliceOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
+          inputTen, startIndices, outputShape);
+    } else {
+      bool needSlice = false;
+      bool needPad = false;
+
+      SmallVector<int64_t> startIndices;
+      SmallVector<int64_t> limitIndices;
+
+      SmallVector<int64_t> padLow;
+      SmallVector<int64_t> padHigh;
+
+      bool hasDynamicEdgePadding = llvm::any_of(
+          cast<RankedTensorType>(inputTen.getType()).getShape(),
+          [](int64_t s) { return s == mlir::ShapedType::kDynamic; });
+      SmallVector<Value> dynPadLow;
+      SmallVector<Value> dynPadHigh;
+      SmallVector<Value> dynPaddingInterior;
+      auto i64Ty = builder.getI64Type();
+      auto ti64Ty = RankedTensorType::get({1}, i64Ty);
+
+      for (auto [i, T] : llvm::enumerate(llvm::zip_equal(
+               accessValueMap.getAffineMap().getResults(), strides,
+               cast<RankedTensorType>(inputTen.getType()).getShape()))) {
+        auto E = std::get<0>(T);
+        auto stride = std::get<1>(T);
+        auto sz = std::get<2>(T);
+
+        int64_t start, limit;
+        if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
+          start = constOp.getValue();
+          limit = constOp.getValue() + 1;
+          stride = 1;
+        } else {
+          auto range = computeExprRange(accessValueMap, E);
+          if (!range.has_value())
+            return failure();
+          start = range->step < 0 ? range->ub - range->step : range->lb;
+          limit = range->step < 0 ? range->lb - range->step : range->ub;
+        }
+
+        needSlice |= sz != (limit - start) / stride;
+
+        int64_t pLow = 0;
+        int64_t pHigh = 0;
+
+        if (start < 0) {
+          pLow = -start;
+          start = 0;
+          limit += pLow;
+        }
+
+        if (hasDynamicEdgePadding) {
+          needPad = true;
+          needSlice = true;
+
+          auto pLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pLow})));
+          dynPadLow.push_back(pLowVal);
+
+          auto szVal = stablehlo::GetDimensionSizeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              inputTen, i);
+
+          auto szVal64 = stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get({}, builder.getI64Type()), szVal);
+
+          auto szVal1D_Cast = stablehlo::ReshapeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, szVal64);
+
+          auto limitVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({limit})));
+
+          auto sumVal = stablehlo::AddOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              szVal1D_Cast, pLowVal);
+          auto diffVal = stablehlo::SubtractOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              limitVal, sumVal);
+
+          auto zeroVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+          auto pHighVal = stablehlo::MaxOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              diffVal, zeroVal);
+
+          dynPadHigh.push_back(pHighVal);
+        } else {
+          if (limit > sz + pLow) {
+            pHigh = limit - (sz + pLow);
+          }
+
+          if (pLow != 0 || pHigh != 0) {
+            needPad = true;
+            needSlice = true;
+          }
+        }
+
+        padLow.push_back(pLow);
+        padHigh.push_back(pHigh);
+
+        startIndices.push_back(start);
+        limitIndices.push_back(limit);
+      }
+
+      if (needPad) {
+        auto elemType =
+            cast<RankedTensorType>(inputTen.getType()).getElementType();
+        auto tensorType = RankedTensorType::get({}, elemType);
+        auto padVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+
+        if (hasDynamicEdgePadding) {
+          auto edgePaddingLow = stablehlo::ConcatenateOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              dynPadLow, 0);
+          auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              dynPadHigh, 0);
+
+          auto interiorPadding0 = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+
+          auto interiorPadding = stablehlo::ConcatenateOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              SmallVector<Value>(dynPadLow.size(), interiorPadding0), 0);
+
+          SmallVector<int64_t> paddedShape(
+              cast<RankedTensorType>(inputTen.getType()).getShape().size(),
+              ShapedType::kDynamic);
+
+          inputTen = stablehlo::DynamicPadOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              cast<RankedTensorType>(inputTen.getType()).clone(paddedShape),
+              inputTen, padVal, edgePaddingLow, edgePaddingHigh,
+              interiorPadding);
+        } else {
+          SmallVector<int64_t> paddedShape;
+          SmallVector<int64_t> interior(
+              cast<RankedTensorType>(inputTen.getType()).getShape().size(), 0);
+          for (auto [sz, low, high] :
+               llvm::zip(cast<RankedTensorType>(inputTen.getType()).getShape(),
+                         padLow, padHigh)) {
+            paddedShape.push_back(sz + low + high);
+          }
+
+          inputTen = stablehlo::PadOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              cast<RankedTensorType>(inputTen.getType()).clone(paddedShape),
+              inputTen, padVal, padLow, padHigh, interior);
+        }
+      }
+
+      if (needSlice) {
+        newVal = stablehlo::SliceOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
+            inputTen, startIndices, limitIndices, strides);
+      } else {
+        newVal = inputTen;
+      }
+    }
+
+    if (reverseDims.size())
+      newVal = stablehlo::ReverseOp::create(
+          builder,
+          rewriteLocation(inputTen.getLoc(), pc.options.strip_llvm_debuginfo),
+          newVal, reverseDims);
+
+    SmallVector<AffineExpr> dynExprs;
+    SmallVector<int64_t> dynShape;
+
+    AffineMap affineMap = accessValueMap.getAffineMap();
+    for (auto [S, E] : llvm::zip_equal(outputShape, affineMap.getResults())) {
+      if (!E.isSymbolicOrConstant() &&
+          pc.isParallelIV(getIVForExpr(accessValueMap, E))) {
+        dynExprs.push_back(E);
+        dynShape.push_back(S);
+      }
+    }
+
+    auto val = loadOp.getResult();
+
+    newVal =
+        stablehlo::ReshapeOp::create(
+            builder,
+            rewriteLocation(newVal.getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(newVal.getType()).clone(dynShape), newVal)
+            .getResult();
+    mapping.map(val, newVal);
+
+    affine::AffineValueMap dynAffineValueMap(
+        AffineMap::get(affineMap.getNumDims(), affineMap.getNumSymbols(),
+                       dynExprs, newVal.getContext()),
+        accessValueMap.getOperands());
+    maps[newVal] = dynAffineValueMap;
+
+    return success();
+  }
+
+  // Affine store inside a loop becomes a dynamic_update_slice
+  if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
+    auto operand = mapping.lookup(storeOp.getMemref());
+    auto update = mapping.lookup(storeOp.getValue());
+
+    affine::MemRefAccess access(storeOp);
+
+    affine::AffineValueMap accessValueMap;
+    access.getAccessMap(&accessValueMap);
+    // See tryRaisingForOpToStableHLOUnroll
+    accessValueMap.composeSimplifyAndCanonicalize();
+
+    SmallVector<int64_t> strides;
+    SmallVector<int64_t> reverseDims;
+
+    bool emitAsScatter =
+        affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
+        llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
+        needsGeneralScatterGather(accessValueMap);
+
+    if (emitAsScatter) {
+      SmallVector<Value> sIndices;
+      for (auto E : accessValueMap.getAffineMap().getResults()) {
+        auto [expandedIndex, indexMap] = expandAffineExpr(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
+            accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        maps[expandedIndex] = indexMap;
+        sIndices.push_back(expandedIndex);
+      }
+
+      Value res = emitStoreAsScatter(
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          update, operand, sIndices, builder, maps);
+      if (!res) {
+        auto err = op->emitError("affine.store (scatter) is dependent on "
+                                 "less dims than stored value: ")
+                   << *op;
+        // for (auto iv : accessValueMap.getOperands()) {
+        //   printAsOperand(err, iv, OpPrintingFlags());
+        //   err << ", ";
+        // }
+        // err << "\n";
+        // err << accessValueMap.getAffineMap();
+
+        return err;
+      }
+      mapping.map(storeOp.getMemref(), res);
+      return success();
+    }
+
+    auto rank = access.getRank();
+    SmallVector<Value> startIndicesValues;
+    startIndicesValues.reserve(rank);
+
+    auto Ty = builder.getI64Type();
+    auto unrankedTensorType = RankedTensorType::get({}, Ty);
+
+    assert(maps.contains(update));
+    affine::AffineValueMap updateValueMap = maps.lookup(update);
+
+    // for each dim in update, where it will
+    // be located in broadcastedupdate
+    SmallVector<int64_t> broadcastDims(
+        cast<RankedTensorType>(update.getType()).getShape().size(), -1);
+    SmallVector<int64_t> updateShape;
+
+    bool needPad = false;
+    SmallVector<int64_t> padLow;
+    SmallVector<int64_t> padHigh;
+
+    bool hasDynamicEdgePadding =
+        llvm::any_of(cast<RankedTensorType>(operand.getType()).getShape(),
+                     [](int64_t s) { return s == mlir::ShapedType::kDynamic; });
+    SmallVector<Value> dynPadLow;
+    SmallVector<Value> dynPadHigh;
+    SmallVector<Value> dynNegPadLow;
+    SmallVector<Value> dynNegPadHigh;
+    SmallVector<Value> dynPaddingInterior;
+    auto i64Ty = builder.getI64Type();
+    auto ti64Ty = RankedTensorType::get({1}, i64Ty);
+
+    for (auto [i, T] : llvm::enumerate(llvm::zip_equal(
+             accessValueMap.getAffineMap().getResults(), strides,
+             cast<RankedTensorType>(operand.getType()).getShape()))) {
+      auto E = std::get<0>(T);
+      [[maybe_unused]] auto stride = std::get<1>(T);
+      auto sz = std::get<2>(T);
+
+      int64_t start = 0, limit = 0;
+      bool hasRange = true;
+      if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
+        start = constOp.getValue();
+        limit = constOp.getValue() + 1;
+      } else if (!E.isSymbolicOrConstant()) {
+        auto range = computeExprRange(accessValueMap, E);
+        if (!range.has_value())
+          return failure();
+        start = range->step < 0 ? range->ub - range->step : range->lb;
+        limit = range->step < 0 ? range->lb - range->step : range->ub;
+      } else {
+        hasRange = false;
+      }
+
+      int64_t pLow = 0;
+      int64_t pHigh = 0;
+
+      if (hasRange) {
+        if (start < 0) {
+          pLow = -start;
+          start = 0;
+          limit += pLow;
+        }
+        if (sz == ShapedType::kDynamic) {
+          needPad = true;
+
+          auto pLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pLow})));
+          dynPadLow.push_back(pLowVal);
+
+          auto szVal = stablehlo::GetDimensionSizeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              operand, i);
+
+          auto szVal64 = stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get({}, builder.getI64Type()), szVal);
+
+          auto szVal1D_Cast = stablehlo::ReshapeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, szVal64);
+
+          auto limitVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({limit})));
+
+          // pHigh = max(0, limit - (sz + pLow))
+          auto sumVal = stablehlo::AddOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              szVal1D_Cast, pLowVal);
+          auto diffVal = stablehlo::SubtractOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              limitVal, sumVal);
+
+          auto zeroVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+          auto pHighVal = stablehlo::MaxOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              diffVal, zeroVal);
+
+          dynPadHigh.push_back(pHighVal);
+
+          auto negOneVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({-1})));
+          auto negPLowVal = stablehlo::MulOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              pLowVal, negOneVal);
+          dynNegPadLow.push_back(negPLowVal);
+
+          auto negPHighVal = stablehlo::MulOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              pHighVal, negOneVal);
+          dynNegPadHigh.push_back(negPHighVal);
+        } else {
+          if (limit > sz + pLow) {
+            pHigh = limit - (sz + pLow);
+          }
+
+          if (pLow != 0 || pHigh != 0) {
+            needPad = true;
+          }
+
+          auto pLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pLow})));
+          dynPadLow.push_back(pLowVal);
+
+          auto pHighVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pHigh})));
+          dynPadHigh.push_back(pHighVal);
+
+          auto negPLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({-pLow})));
+          dynNegPadLow.push_back(negPLowVal);
+
+          auto negPHighVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({-pHigh})));
+          dynNegPadHigh.push_back(negPHighVal);
+        }
+      } else {
+        auto pLowVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+        dynPadLow.push_back(pLowVal);
+
+        auto pHighVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+        dynPadHigh.push_back(pHighVal);
+
+        dynNegPadLow.push_back(pLowVal);
+        dynNegPadHigh.push_back(pHighVal);
+      }
+
+      padLow.push_back(pLow);
+      padHigh.push_back(pHigh);
+
+      auto zeroVal = stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+      dynPaddingInterior.push_back(zeroVal);
+
+      Value startIndex;
+      if (E.isSymbolicOrConstant()) {
+        startIndex =
+            stablehlo::ConstantOp::create(
+                builder,
+                rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+                unrankedTensorType,
+                SplatElementsAttr::get(
+                    unrankedTensorType,
+                    ArrayRef<Attribute>(IntegerAttr::get(
+                        Ty, cast<AffineConstantExpr>(E).getValue()))))
+                .getResult();
+        updateShape.push_back(1);
+      } else {
+
+        unsigned dim = 0;
+        for (unsigned e = accessValueMap.getAffineMap().getNumDims(); dim < e;
+             ++dim) {
+          if (E.isFunctionOfDim(dim))
+            break;
+        }
+
+        auto iv = accessValueMap.getOperands()[dim];
+
+        AffineExpr exprToEmit = E;
+        if (pc.isParallelIV(iv)) {
+          auto r = computeExprRange(accessValueMap, E);
+          auto lb = r->step < 0 ? r->ub - r->step : r->lb;
+          exprToEmit = mlir::getAffineConstantExpr(lb, iv.getContext());
+          updateShape.push_back(r->getNumIters());
+        } else {
+          updateShape.push_back(1);
+        }
+
+        auto [startIndex_, _] = expandAffineExpr(
+            builder,
+            rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo),
+            exprToEmit, accessValueMap.getOperands(), mapping,
+            accessValueMap.getAffineMap().getNumDims(), pc);
+        startIndex = startIndex_;
+      }
+
+      if (pLow != 0) {
+        auto pLowVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            unrankedTensorType,
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(IntegerAttr::get(Ty, pLow))));
+        startIndex =
+            stablehlo::AddOp::create(
+                builder,
+                rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+                startIndex, pLowVal.getResult())
+                .getResult();
+      }
+
+      startIndicesValues.push_back(startIndex);
+
+      if (E.isSymbolicOrConstant())
+        continue;
+
+      // find dim in update which varies along the same iv
+      Value storeIv = getIVForExpr(accessValueMap, E);
+
+      for (auto [updateIdx, EE] :
+           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+        Value updateIv = getIVForExpr(updateValueMap, EE);
+        if (storeIv == updateIv) {
+          broadcastDims[updateIdx] = (updateShape.size() - 1);
+          break;
+        }
+      }
+    }
+
+    // Store has less ivs than load which can signify a reduction that is not
+    // handled.
+    if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
+      auto err =
+          op->emitError(
+              "affine.store is dependent on less dims than stored value:\n")
+          << *op;
+      // for (auto iv : accessValueMap.getOperands()) {
+      //   printAsOperand(err, iv, OpPrintingFlags());
+      //   err << ", ";
+      // }
+      err << "\n";
+      // err << accessValueMap.getAffineMap();
+      // for (auto iv : updateValueMap.getOperands()) {
+      //   printAsOperand(err, iv, OpPrintingFlags());
+      //   err << ", ";
+      // }
+      err << "\n";
+      // err << updateValueMap.getAffineMap();
+      return err;
+    }
+
+    update = stablehlo::BroadcastInDimOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        cast<RankedTensorType>(update.getType()).clone(updateShape), update,
+        broadcastDims);
+
+    if (!update)
+      return failure();
+
+    if (reverseDims.size())
+      update = stablehlo::ReverseOp::create(
+          builder,
+          rewriteLocation(storeOp.getLoc(), pc.options.strip_llvm_debuginfo),
+          update, reverseDims);
+
+    if (pc.mask) {
+      Value mask = pc.mask;
+      affine::AffineValueMap maskMap = maps.lookup(mask);
+
+      // here this is a bit annoying but alignMemoryAccess expects non constant
+      // dims in its value maps. as such, we remove constant dims from the
+      // update and subsequent previous value as to use the storeValueMap.
+      // we will put these constant dims (size = 1) to the masked update
+      // afterwards.
+      SmallVector<unsigned> nonConstantDims;
+
+      ShapedType updateType = cast<ShapedType>(update.getType());
+      SmallVector<int64_t> updateShapeWithoutConstantDims;
+
+      for (auto [i, E] : llvm::enumerate(storeOp.getMap().getResults())) {
+        if (!E.isSymbolicOrConstant()) {
+          nonConstantDims.push_back(i);
+          updateShapeWithoutConstantDims.push_back(updateType.getShape()[i]);
+        }
+      }
+
+      affine::AffineValueMap storeValueMap(
+          storeOp.getMap().getSubMap(nonConstantDims), storeOp.getIndices());
+
+      SmallVector<int64_t> updateShape(updateType.getShape().begin(),
+                                       updateType.getShape().end());
+      Value prev = stablehlo::DynamicSliceOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          operand, startIndicesValues, updateShape);
+
+      Value updateWithoutConstantDims = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          updateType.clone(updateShapeWithoutConstantDims), update);
+      Value prevWithoutConstantDims = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          updateType.clone(updateShapeWithoutConstantDims), prev);
+
+      Value vals[] = {updateWithoutConstantDims, prevWithoutConstantDims};
+      affine::AffineValueMap dsts[] = {storeValueMap, storeValueMap};
+
+      // update what if cond has more ivs dependence than the update?
+      // or different?
+      storeValueMap = alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc);
+
+      for (auto dim : storeValueMap.getOperands()) {
+        // This dim is present in the masked update and not in the stored
+        // dimensions.
+        if (!llvm::is_contained(storeOp.getIndices(), dim)) {
+          auto err = op->emitError(
+                         "masked affine.store is dependent on less dimensions "
+                         "than masked stored value:\n")
+                     << *op << "\n";
+          // for (auto iv : accessValueMap.getOperands()) {
+          //   printAsOperand(err, iv, OpPrintingFlags());
+          //   err << ", ";
+          // }
+          err << ": ";
+          // err << accessValueMap.getAffineMap() << "\n";
+          // for (auto iv : storeValueMap.getOperands()) {
+          //   printAsOperand(err, iv, OpPrintingFlags());
+          //   err << ", ";
+          // }
+          err << ": ";
+          // err << storeValueMap.getAffineMap();
+          return err;
+        }
+      }
+
+      Value maskedUpdate = stablehlo::SelectOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), mask,
+          vals[0], vals[1]);
+
+      update = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          updateType, maskedUpdate);
+    }
+
+    if (needPad) {
+      auto elemType =
+          cast<RankedTensorType>(operand.getType()).getElementType();
+      auto tensorType = RankedTensorType::get({}, elemType);
+      auto padVal = stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+
+      if (hasDynamicEdgePadding) {
+        auto edgePaddingLow = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPadLow, 0);
+        auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPadHigh, 0);
+        auto interiorPadding = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPaddingInterior, 0);
+
+        SmallVector<int64_t> paddedShape(
+            cast<RankedTensorType>(operand.getType()).getShape().size(),
+            ShapedType::kDynamic);
+
+        operand = stablehlo::DynamicPadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
+            operand, padVal, edgePaddingLow, edgePaddingHigh, interiorPadding);
+      } else {
+        SmallVector<int64_t> paddedShape;
+        SmallVector<int64_t> interior(
+            cast<RankedTensorType>(operand.getType()).getShape().size(), 0);
+        for (auto [sz, low, high] :
+             llvm::zip(cast<RankedTensorType>(operand.getType()).getShape(),
+                       padLow, padHigh)) {
+          paddedShape.push_back(sz + low + high);
+        }
+
+        operand = stablehlo::PadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
+            operand, padVal, padLow, padHigh, interior);
+      }
+    }
+
+    auto newOperand = stablehlo::DynamicUpdateSliceOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        operand, update, startIndicesValues);
+
+    Value finalResult = newOperand.getResult();
+
+    if (needPad) {
+      if (hasDynamicEdgePadding) {
+        auto elemType =
+            cast<RankedTensorType>(finalResult.getType()).getElementType();
+        auto tensorType = RankedTensorType::get({}, elemType);
+        auto padVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+
+        auto edgePaddingLow = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynNegPadLow, 0);
+        auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynNegPadHigh, 0);
+        auto interiorPadding = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPaddingInterior, 0);
+
+        finalResult = stablehlo::DynamicPadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(finalResult.getType())
+                .clone(
+                    cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
+            finalResult, padVal, edgePaddingLow, edgePaddingHigh,
+            interiorPadding);
+      } else {
+        SmallVector<int64_t> startSlice;
+        SmallVector<int64_t> limitSlice;
+        SmallVector<int64_t> stridesSlice;
+        for (auto [sz, low, high] : llvm::zip(
+                 cast<ShapedType>(storeOp.getMemref().getType()).getShape(),
+                 padLow, padHigh)) {
+          startSlice.push_back(low);
+          limitSlice.push_back(low + sz);
+          stridesSlice.push_back(1);
+        }
+        finalResult = stablehlo::SliceOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(finalResult.getType())
+                .clone(
+                    cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
+            finalResult, startSlice, limitSlice, stridesSlice);
+      }
+    }
+
+    mapping.map(storeOp.getMemref(), finalResult);
+    return success();
+  }
+
+  if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
+    auto memref = loadOp.getMemref();
+
+    SmallVector<Value> lIndices;
+    for (auto idx : loadOp.getIndices())
+      lIndices.push_back(mapping.lookup(idx));
+
+    Value res = emitLoadAsGather(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(memref), lIndices, builder, maps);
+    if (!res) {
+      return failure();
+    }
+    mapping.map(loadOp.getResult(), res);
+
+    return success();
+  }
+
+  if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
+    Value value = storeOp.getValueToStore();
+    Value memref = storeOp.getMemref();
+
+    SmallVector<Value> sIndices;
+    for (auto idx : storeOp.getIndices())
+      sIndices.push_back(mapping.lookup(idx));
+
+    Value res = emitStoreAsScatter(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps);
+    if (!res) {
+      return op->emitError(
+                 "memref.store is dependent on less dims than stored value: ")
+             << *op;
+    }
+
+    mapping.map(memref, res);
+
+    return success();
+  }
+
+  if (isa<ub::PoisonOp, LLVM::PoisonOp, LLVM::ZeroOp, LLVM::UndefOp>(op)) {
+    affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
+
+    Type ET = op->getResult(0).getType();
+    auto unrankedTensorType = RankedTensorType::get({}, ET);
+
+    if (!ET.isInteger() && !isa<FloatType>(ET))
+      return failure();
+
+    auto newConst = stablehlo::ConstantOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(
+                ET.isInteger() ? (Attribute)IntegerAttr::get(ET, 0)
+                               : (Attribute)FloatAttr::get(ET, APFloat(0.0)))));
+
+    auto newVal = newConst.getResult();
+    mapping.map(op->getResult(0), newVal);
+    maps[newVal] = accessMap;
+
+    return success();
+  }
+
+  if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
+    affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
+
+    auto isIndex = isa<IndexType>(constOp.getType());
+    auto ET = isIndex ? builder.getI64Type() : constOp.getType();
+    auto unrankedTensorType = RankedTensorType::get({}, ET);
+    auto newConst = stablehlo::ConstantOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        unrankedTensorType,
+        SplatElementsAttr::get(
+            unrankedTensorType,
+            ArrayRef<Attribute>(
+                isIndex
+                    ? IntegerAttr::get(
+                          ET, cast<IntegerAttr>(constOp.getValue()).getValue())
+                    : constOp.getValueAttr())));
+    auto newVal = newConst.getResult();
+    mapping.map(constOp.getResult(), newVal);
+    maps[newVal] = accessMap;
+
+    return success();
+  }
+
+  // Identity
+  // if (isa<enzymexla::Memref2PointerOp>(op)) {
+  //   Value operand = op->getOperand(0), result = op->getResult(0);
+  //   mapping.map(result, mapping.lookup(operand));
+  //   return success();
+  // }
+
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
+    Value operand = op->getOperand(0), result = op->getResult(0);
+    Value mappedResult = mapping.lookup(operand);
+
+    if (result.getType().isIndex()) {
+      Value newMappedResult =
+          stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get(
+                  cast<ShapedType>(mappedResult.getType()).getShape(),
+                  builder.getI64Type()),
+              mappedResult)
+              .getResult();
+      maps[newMappedResult] = maps.lookup(mappedResult);
+      mappedResult = newMappedResult;
+    }
+
+    mapping.map(result, mappedResult);
+    return success();
+  }
+
+  if (auto apply = dyn_cast<affine::AffineApplyOp>(op)) {
+    auto avm = apply.getAffineValueMap();
+    // See tryRaisingForOpToStableHLOUnroll
+    avm.composeSimplifyAndCanonicalize();
+    auto [expanded, expandedMap] = expandAffineExpr(
+        builder,
+        rewriteLocation(apply.getLoc(), pc.options.strip_llvm_debuginfo),
+        avm.getAffineMap().getResult(0), avm.getOperands(), mapping,
+        avm.getAffineMap().getNumDims(), pc);
+    mapping.map(apply.getResult(), expanded);
+    maps[expanded] = expandedMap;
+    return success();
+  }
+
+  // if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
+  //   Value operand = op->getOperand(0), result = op->getResult(0);
+  //   auto input = mapping.lookup(operand);
+  //   auto MT = p2m.getType();
+  //   if (!isXLACompatiblePrimitive(MT.getElementType())) {
+  //     return op->emitError("unsupported element type for XLA: ")
+  //            << MT.getElementType();
+  //   }
+  //
+  //   auto ty = RankedTensorType::get(MT.getShape(), MT.getElementType());
+  //
+  //   auto inTy = cast<RankedTensorType>(input.getType());
+  //   size_t outSize =
+  //       cast<AutoDiffTypeInterface>(ty.getElementType()).getApproxSize();
+  //   size_t inSize =
+  //       cast<AutoDiffTypeInterface>(inTy.getElementType()).getApproxSize();
+  //
+  //   Value res;
+  //   if (outSize == inSize) {
+  //     res = stablehlo::BitcastConvertOp::create(
+  //         builder,
+  //         rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
+  //         input);
+  //   } else if (outSize < inSize) {
+  //     SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+  //     auto oidx = dims2.size();
+  //     dims2.push_back(inSize / outSize);
+  //     if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
+  //       dims2[oidx - 1] /= inSize / outSize;
+  //     }
+  //     res = stablehlo::BitcastConvertOp::create(
+  //         builder,
+  //         rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //         RankedTensorType::get(dims2, ty.getElementType()), input);
+  //     bool anyDynamic = false;
+  //     for (auto idx : dims2) {
+  //       if (idx == ShapedType::kDynamic) {
+  //         anyDynamic = true;
+  //         break;
+  //       }
+  //     }
+  //     if (anyDynamic) {
+  //       SmallVector<Value> vals;
+  //       for (size_t i = 0; i < ty.getShape().size(); i++) {
+  //         auto val = stablehlo::GetDimensionSizeOp::create(
+  //             builder,
+  //             rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //             input, i);
+  //         Value vval = val;
+  //         if (i == ty.getShape().size() - 1) {
+  //           auto cst = arith::ConstantOp::create(
+  //               builder,
+  //               rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //               val.getType(),
+  //               cast<ElementsAttr>(makeAttr(val.getType(), inSize / outSize)));
+  //           vval = stablehlo::MulOp::create(
+  //               builder,
+  //               rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //               vval, cst);
+  //         }
+  //         vval = stablehlo::ReshapeOp::create(
+  //             builder,
+  //             rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //             RankedTensorType::get({1}, val.getType().getElementType()), vval);
+  //         vals.push_back(vval);
+  //       }
+  //
+  //       auto idxs = stablehlo::ConcatenateOp::create(
+  //           builder,
+  //           rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //           vals, 0);
+  //       res = stablehlo::DynamicReshapeOp::create(
+  //           builder,
+  //           rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
+  //           res, idxs);
+  //     } else {
+  //       res = stablehlo::ReshapeOp::create(
+  //           builder,
+  //           rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
+  //           res);
+  //     }
+  //   } else {
+  //     SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
+  //     auto oidx = dims2.size();
+  //     dims2.push_back(outSize / inSize);
+  //     if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
+  //       dims2[oidx - 1] /= outSize / inSize;
+  //     }
+  //     res = stablehlo::ReshapeOp::create(
+  //         builder,
+  //         rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+  //         RankedTensorType::get(dims2, inTy.getElementType()), input);
+  //     res = stablehlo::BitcastConvertOp::create(
+  //         builder,
+  //         rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
+  //         res);
+  //   }
+  //   mapping.map(result, res);
+  //   return success();
+  // }
+
+  // unary ops
+  if (mlir::isPure(op) && op->hasTrait<OpTrait::Elementwise>() &&
+      op->getNumOperands() == 1 && op->getNumResults() == 1) {
+
+    auto operand = op->getOperand(0);
+    auto newOperand = mapping.lookup(operand);
+
+    auto IT = cast<RankedTensorType>(newOperand.getType());
+    auto T = RankedTensorType::get(IT.getShape(),
+                                   makeIndexToI64(op->getResult(0).getType()));
+
+    auto newOp = Operation::create(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        op->getName(), {T}, {newOperand}, op->getAttrs(),
+        OpaqueProperties(nullptr), {}, 0);
+    mapping.map(op->getResult(0), newOp->getResult(0));
+    maps[newOp->getResult(0)] = maps.lookup(newOperand);
+
+    builder.insert(newOp);
+    return success();
+  }
+
+  // binary ops
+  if (isa<arith::MulIOp, arith::MulFOp, arith::AddIOp, arith::AddFOp,
+          arith::SubIOp, arith::SubFOp, arith::DivFOp, arith::DivSIOp,
+          arith::DivUIOp, arith::OrIOp, arith::AndIOp, arith::XOrIOp,
+          arith::CmpIOp, arith::CmpFOp, arith::ShRUIOp, arith::ShRSIOp,
+          arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
+          arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
+          arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, arith::RemFOp,
+          math::CopySignOp, math::PowFOp>(op)) {
+    assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
+
+    Value a = mapping.lookup(op->getOperand(0)),
+          b = mapping.lookup(op->getOperand(1));
+
+    auto mapA = maps.lookup(a), mapB = maps.lookup(b);
+    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder, pc);
+    assert(a.getType() == b.getType());
+
+    auto IT = cast<RankedTensorType>(a.getType());
+    Type result = RankedTensorType::get(
+        IT.getShape(), makeIndexToI64(op->getResult(0).getType()));
+
+    auto newOp = Operation::create(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        op->getName(), {result}, {a, b}, op->getAttrs(),
+        OpaqueProperties(nullptr), {}, 0);
+
+    builder.insert(newOp);
+
+    for (auto [oldRes, newRes] :
+         llvm::zip_equal(op->getResults(), newOp->getResults())) {
+      mapping.map(oldRes, newRes);
+      maps[newRes] = outputMap;
+    }
+
+    return success();
+  }
+
+  // ternary ops
+  if (isa<arith::SelectOp, math::FmaOp>(op)) {
+    assert(op->getNumOperands() == 3 && op->getNumResults() == 1);
+
+    Value a = mapping.lookup(op->getOperand(0)),
+          b = mapping.lookup(op->getOperand(1)),
+          c = mapping.lookup(op->getOperand(2));
+
+    auto mapA = maps.lookup(a), mapB = maps.lookup(b), mapC = maps.lookup(c);
+
+    Value dsts[] = {b, c};
+    affine::AffineValueMap submaps[] = {mapB, mapC};
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+    b = dsts[0];
+    c = dsts[1];
+    assert(b.getType() == c.getType());
+
+    Type result = b.getType();
+
+    auto newOp = Operation::create(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        op->getName(), {result}, {a, b, c}, op->getAttrs(),
+        OpaqueProperties(nullptr), {}, 0);
+
+    builder.insert(newOp);
+
+    for (auto [oldRes, newRes] :
+         llvm::zip_equal(op->getResults(), newOp->getResults())) {
+      mapping.map(oldRes, newRes);
+      maps[newRes] = outputMap;
+    }
+
+    return success();
+  }
+
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+
+    Value cond = mapping.lookup(ifOp.getCondition());
+    if (emitIfAsSelect(op, cond, maps.lookup(cond), builder, mapping, maps, pc)
+            .failed())
+      return failure();
+
+    return success();
+  }
+
+  if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+
+    auto is = ifOp.getIntegerSet();
+    if (is.getNumSymbols() != 0) {
+      return op->emitError("cannot raise integer set with symbols yet\n")
+             << *op;
+    }
+
+    Value cond = nullptr;
+    affine::AffineValueMap map(AffineMap::get(ifOp.getContext()), {});
+
+    affine::AffineValueMap constraintMap(
+        AffineMap::get(is.getNumDims(), is.getNumSymbols(), is.getConstraints(),
+                       is.getContext()),
+        ifOp.getOperands());
+    constraintMap.composeSimplifyAndCanonicalize();
+
+    for (auto [constraint, eq] : llvm::zip_equal(
+             constraintMap.getAffineMap().getResults(), is.getEqFlags())) {
+      auto [expandedExpr, outputMap] = expandAffineExpr(
+          builder,
+          rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
+          constraint, constraintMap.getOperands(), mapping,
+          constraintMap.getNumDims(), pc);
+      Value zero = stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
+          cast<ShapedType>(expandedExpr.getType()),
+          SplatElementsAttr::get(
+              cast<ShapedType>(expandedExpr.getType()),
+              ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), 0))));
+      Value newCond = stablehlo::CompareOp::create(
+          builder,
+          rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
+          expandedExpr, zero,
+          eq ? stablehlo::ComparisonDirection::EQ
+             : stablehlo::ComparisonDirection::GE);
+      if (cond) {
+        map = alignMemoryAccess(cond, map, newCond, outputMap, builder, pc);
+        cond = stablehlo::AndOp::create(
+            builder,
+            rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
+            cond, newCond);
+      } else {
+        cond = newCond;
+        map = outputMap;
+      }
+    }
+
+    maps[cond] = map;
+
+    if (emitIfAsSelect(op, cond, map, builder, mapping, maps, pc).failed())
+      return failure();
+
+    return success();
+  }
+
+  // Inner parallel for loops
+  if (auto parallelOp = dyn_cast<affine::AffineParallelOp>(op)) {
+    return tryRaisingParallelOpToStableHLO(parallelOp, mapping, builder, maps,
+                                           pc);
+  }
+
+  // Inner for op
+  if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+    if (pc.options.enableLockstepFor &&
+        tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
+            .succeeded()) {
+      return success();
+    }
+    if (pc.options.preferWhileRaising &&
+        tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
+            .succeeded()) {
+      return success();
+    }
+    if (tryRaisingForOpToStableHLOUnroll(forOp, mapping, builder, maps, pc)
+            .succeeded()) {
+      return success();
+    }
+  }
+
+  if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
+    return success();
+  }
+
+  return op->emitError("cannot raise op to stablehlo") << *op;
+}
+
+// static void
+// replaceAffineFuncWithStableHLOFunc(func::FuncOp oldFunc, func::FuncOp newFunc,
+//                                    llvm::ArrayRef<Operation *> users,
+//                                    bool strip_llvm_debuginfo) {
+//   for (auto op : users) {
+//     auto user = dyn_cast<enzymexla::JITCallOp>(op);
+//
+//     OpBuilder builder(user);
+//     auto newCall = func::CallOp::create(
+//         builder, rewriteLocation(user->getLoc(), strip_llvm_debuginfo), newFunc,
+//         user->getOperands());
+//
+//     auto operand_aliases = user.getOutputOperandAliases();
+//     assert(operand_aliases.size() == user.getNumResults());
+//
+//     SmallVector<Value> replacements;
+//     for (auto alias_attr : operand_aliases) {
+//       auto alias = cast<mlir::stablehlo::OutputOperandAliasAttr>(alias_attr);
+//       auto operandIndex = alias.getOperandIndex();
+//       replacements.push_back(newCall.getResult(operandIndex));
+//     }
+//
+//     for (auto [oldRes, newRes] :
+//          llvm::zip_equal(user->getResults(), replacements)) {
+//       oldRes.replaceAllUsesWith(newRes);
+//     }
+//
+//     user->erase();
+//   }
+//
+//   oldFunc->erase();
+// }
+
+static bool tryRaisingToStableHLO(func::FuncOp func,
+                                  ArrayRef<Operation *> users,
+                                  ParallelContext::Options &options) {
+  Block *body = &func->getRegion(0).front();
+  Block *newBlock = new Block();
+
+  IRMapping mapping;
+  mapping.map(body, newBlock);
+
+  SmallVector<Type> tensorTypes;
+  for (auto arg : body->getArguments()) {
+    auto MT = cast<MemRefType>(arg.getType());
+    if (!isXLACompatiblePrimitive(MT.getElementType())) {
+      func.emitError("unsupported element type for argument for XLA: ")
+          << MT.getElementType();
+      delete newBlock;
+      return false;
+    }
+    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    auto newArg = newBlock->addArgument(
+        TT, rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo));
+    mapping.map(arg, newArg);
+    tensorTypes.push_back(TT);
+  }
+
+  auto modOp = func->getParentOfType<ModuleOp>();
+
+  auto newFuncType =
+      FunctionType::get(func->getContext(), tensorTypes, tensorTypes);
+
+  std::string name = func.getSymName().str();
+  name += "_raised";
+
+  auto newFunc = func::FuncOp::create(
+      rewriteLocation(func->getLoc(), options.strip_llvm_debuginfo), name,
+      newFuncType);
+  newFunc.setVisibility(mlir::SymbolTable::Visibility::Private);
+  newFunc.getBody().push_back(newBlock);
+
+  OpBuilder builder(newBlock, newBlock->end());
+
+  bool anyFailed = false;
+
+  llvm::DenseMap<Value, affine::AffineValueMap> maps;
+
+  ParallelContext emptyPc = ParallelContext::getEmpty(options);
+  for (auto &it : body->without_terminator()) {
+    anyFailed =
+        tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc).failed();
+    if (anyFailed)
+      break;
+  }
+
+  if (anyFailed) {
+    newFunc->erase();
+    return false;
+  }
+
+  SmallVector<Value> results;
+  for (auto arg : body->getArguments()) {
+    auto val = mapping.lookup(arg);
+    results.push_back(val);
+  }
+
+  func::ReturnOp::create(
+      builder, rewriteLocation(func->getLoc(), options.strip_llvm_debuginfo),
+      results);
+  modOp.getBody()->push_back(newFunc);
+
+  // replaceAffineFuncWithStableHLOFunc(func, newFunc, users, options.strip_llvm_debuginfo);
+
+  return true;
+}
+
+namespace {
+
+// select(!op, lhs, rhs) --> select(op, rhs, lhs)
+struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddFOp op,
+                                PatternRewriter &rewriter) const final {
+    for (int i = 0; i < 2; i++) {
+      auto lhs = op->getOperand(i).getDefiningOp<arith::AddFOp>();
+      if (!lhs)
+        continue;
+      auto rhs = op->getOperand(1 - i);
+      if (auto ba0 = dyn_cast<BlockArgument>(rhs)) {
+        if (isa<affine::AffineForOp>(ba0.getOwner()->getParentOp()))
+          continue;
+      }
+      for (int j = 0; j < 2; j++) {
+        auto ba = dyn_cast<BlockArgument>(lhs->getOperand(j));
+        if (!ba)
+          continue;
+        if (!isa<affine::AffineForOp>(ba.getOwner()->getParentOp()))
+          continue;
+        auto add2 =
+            arith::AddFOp::create(rewriter, rewriteLocation(op.getLoc(), false),
+                                  rhs, lhs->getOperand(1 - j));
+        rewriter.replaceOpWithNewOp<arith::AddFOp>(op, add2, ba);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
+struct AffineToStableHLORaisingPass
+    : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>> {
+
+
+  StringRef getArgument() const override {
+    return "enzyme-affine-to-stablehlo";
+  }
+
+  void runOnOperation() override {
+    // ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
+    //                                  prefer_while_raising,
+    //                                  strip_llvm_debuginfo};
+    ParallelContext::Options options{false, false, false, false};
+    std::vector<func::FuncOp> funcs;
+
+    auto context = getOperation()->getContext();
+
+    // if (enable_lockstep_for) {
+    //
+    //   RewritePatternSet patterns(context);
+    //   patterns.add<PushReductionsDown>(context);
+    //   GreedyRewriteConfig config;
+    //   config.enableFolding();
+    //   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+    //                                    config))) {
+    //     signalPassFailure();
+    //   }
+    // }
+
+    auto op = getOperation();
+
+    op->walk([&](func::FuncOp func) {
+      auto FT = dyn_cast<FunctionType>(func.getFunctionType());
+
+      // Identify raised kernels which takes in memrefs instead of tensors
+      if (FT &&
+          llvm::all_of(FT.getInputs(),
+                       [](Type argTy) { return isa<MemRefType>(argTy); }) &&
+          FT.getNumResults() == 0 && FT.getNumInputs() != 0) {
+        funcs.push_back(func);
+      }
+    });
+
+    SymbolTableCollection symbolTable;
+    SymbolUserMap userMap(symbolTable, op);
+
+    bool anyRaised = false;
+    while (!funcs.empty()) {
+      auto kernelFunc = funcs.back();
+      ArrayRef<Operation *> users = userMap.getUsers(kernelFunc);
+      bool raised = tryRaisingToStableHLO(kernelFunc, users, options);
+      anyRaised |= raised;
+      // if (!raised && err_if_not_fully_raised) {
+      if (!raised) {
+        llvm::errs() << "failed to raise func: " << *kernelFunc << "\n";
+        signalPassFailure();
+      }
+      funcs.pop_back();
+    }
+    // std::vector<enzymexla::GPUWrapperOp> gwrap;
+    // op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
+    size_t raised_count = 0;
+    // for (auto g : gwrap) {
+    //   auto modOp = g->getParentOfType<ModuleOp>();
+    //   Block *body = &g->getRegion(0).front();
+    //   Block *newBlock = new Block();
+    //
+    //   IRMapping mapping;
+    //   llvm::DenseMap<Value, affine::AffineValueMap> maps;
+    //   mapping.map(body, newBlock);
+    //
+    //   SetVector<Value> operands;
+    //   {
+    //     SetVector<Value> operands0;
+    //     getUsedValuesDefinedAbove(g->getRegion(0), operands0);
+    //
+    //     DenseMap<Value, Value> buffered;
+    //     SmallVector<Operation *> loads;
+    //
+    //     for (auto arg : operands0) {
+    //
+    //       Attribute attr;
+    //
+    //       if (matchPattern(arg, m_Constant(&attr))) {
+    //         affine::AffineValueMap accessMap(AffineMap::get(arg.getContext()),
+    //                                          {});
+    //
+    //         auto isIndex = isa<IndexType>(arg.getType());
+    //         auto ET = isIndex ? IntegerType::get(arg.getContext(), 64)
+    //                           : arg.getType();
+    //         auto unrankedTensorType = RankedTensorType::get({}, ET);
+    //         OpBuilder builder(arg.getContext());
+    //         builder.setInsertionPointToEnd(newBlock);
+    //         Value newVal;
+    //         if (arg.getDefiningOp<ub::PoisonOp>()) {
+    //           newVal = cast<mlir::enzyme::AutoDiffTypeInterface>(arg.getType())
+    //                        .createNullValue(
+    //                            builder,
+    //                            rewriteLocation(arg.getLoc(),
+    //                                            options.strip_llvm_debuginfo));
+    //         } else {
+    //           auto newConst = stablehlo::ConstantOp::create(
+    //               builder,
+    //               rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo),
+    //               unrankedTensorType,
+    //               SplatElementsAttr::get(
+    //                   unrankedTensorType,
+    //                   ArrayRef<Attribute>(
+    //                       isIndex ? IntegerAttr::get(
+    //                                     ET, cast<IntegerAttr>(attr).getValue())
+    //                               : attr)));
+    //           newVal = newConst.getResult();
+    //         }
+    //         mapping.map(arg, newVal);
+    //         maps[newVal] = accessMap;
+    //         continue;
+    //       }
+    //
+    //       if (auto ic = arg.getDefiningOp<arith::IndexCastOp>()) {
+    //         if (arg.getType().isIndex()) {
+    //           OpBuilder b(g);
+    //           b.setInsertionPointToStart(body);
+    //           auto cl = b.clone(*ic);
+    //
+    //           auto found = buffered.find(ic.getOperand());
+    //           if (found != buffered.end()) {
+    //             cast<arith::IndexCastOp>(cl).setOperand(found->second);
+    //           }
+    //
+    //           arg.replaceUsesWithIf(
+    //               cl->getResult(0), [&](OpOperand &opOperand) {
+    //                 return g->isProperAncestor(opOperand.getOwner());
+    //               });
+    //           arg = ic.getOperand();
+    //
+    //           llvm::errs() << " unfolded cast to index new arg: " << arg
+    //                        << ", old arg: " << ic << "\n";
+    //         }
+    //       }
+    //
+    //       if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+    //         OpBuilder b(g);
+    //         b.setInsertionPoint(g);
+    //         bool legal = true;
+    //         MemRefType T = nullptr;
+    //         for (auto &U : arg.getUses()) {
+    //           if (g->isProperAncestor(U.getOwner())) {
+    //             auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(U.getOwner());
+    //             if (!p2m) {
+    //               legal = false;
+    //               llvm::errs()
+    //                   << " non pointermemref user of pointer arg in kernel: "
+    //                   << *U.getOwner() << "\n";
+    //               break;
+    //             }
+    //             if (!T) {
+    //               T = p2m.getType();
+    //             } else {
+    //               if (T != p2m.getType()) {
+    //                 if (T.getElementType().isInteger(8)) {
+    //                   T = p2m.getType();
+    //                   continue;
+    //                 }
+    //                 if (p2m.getType().getElementType().isInteger(8)) {
+    //                   continue;
+    //                 }
+    //                 legal = false;
+    //                 llvm::errs() << " inconsistent pointer2memref type " << T
+    //                              << " and " << p2m << " \n";
+    //                 break;
+    //               }
+    //             }
+    //           }
+    //         }
+    //
+    //         if (legal) {
+    //           auto cl = enzymexla::Pointer2MemrefOp::create(
+    //               b,
+    //               rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo),
+    //               T, arg);
+    //           for (auto U : llvm::make_early_inc_range(arg.getUsers())) {
+    //             if (!g->isProperAncestor(U))
+    //               continue;
+    //             if (U == cl)
+    //               continue;
+    //             if (U->getResult(0).getType() == T) {
+    //               U->replaceAllUsesWith(cl);
+    //               U->erase();
+    //             } else {
+    //               OpBuilder B(U);
+    //               U->setOperand(
+    //                   0, enzymexla::Memref2PointerOp::create(
+    //                          B,
+    //                          rewriteLocation(arg.getLoc(),
+    //                                          options.strip_llvm_debuginfo),
+    //                          arg.getType(), cl));
+    //             }
+    //           }
+    //           operands.insert(cl);
+    //           continue;
+    //         }
+    //       }
+    //
+    //       if (buffered.find(arg) != buffered.end()) {
+    //         continue;
+    //       }
+    //
+    //       if (isa<IntegerType, FloatType>(arg.getType())) {
+    //         OpBuilder b(g);
+    //         b.setInsertionPoint(g);
+    //         auto MT0 =
+    //             MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+    //                             b.getI64IntegerAttr(0));
+    //         auto MT =
+    //             MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+    //                             b.getI64IntegerAttr(1));
+    //
+    //         auto res =
+    //             gpu::AllocOp::create(
+    //                 b,
+    //                 rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //                 MT, (mlir::Type) nullptr, ValueRange(), ValueRange(),
+    //                 ValueRange())
+    //                 ->getResult(0);
+    //
+    //         auto res0 = memref::AllocaOp::create(
+    //             b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //             MT0);
+    //         affine::AffineStoreOp::create(
+    //             b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //             arg, res0, b.getMultiDimIdentityMap(0), ValueRange());
+    //         auto c1 = arith::ConstantIndexOp::create(
+    //             b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //             1);
+    //         enzymexla::MemcpyOp::create(
+    //             b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //             (mlir::Type) nullptr, ValueRange(), res, res0, c1);
+    //         b.setInsertionPointToStart(body);
+    //         auto ld = affine::AffineLoadOp::create(
+    //             b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //             res, b.getMultiDimIdentityMap(0), ValueRange());
+    //         loads.push_back(ld);
+    //         arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
+    //           return g->isProperAncestor(opOperand.getOwner());
+    //         });
+    //
+    //         b.setInsertionPointAfter(g);
+    //         gpu::DeallocOp::create(
+    //             b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+    //             (mlir::Type) nullptr, ValueRange(), res);
+    //         buffered[arg] = ld;
+    //         operands.insert(res);
+    //         continue;
+    //       }
+    //
+    //       if (isa<MemRefType>(arg.getType())) {
+    //         operands.insert(arg);
+    //         continue;
+    //       }
+    //
+    //       operands.insert(arg);
+    //     }
+    //
+    //     for (auto ld : loads) {
+    //       if (ld != &body->front()) {
+    //         ld->moveBefore(&body->front());
+    //       }
+    //     }
+    //   }
+    //
+    //   SmallVector<Type> tensorTypes;
+    //   bool failed = false;
+    //   for (auto arg : operands) {
+    //     auto MT = dyn_cast<MemRefType>(arg.getType());
+    //     if (!MT) {
+    //       failed = true;
+    //       if (err_if_not_fully_raised) {
+    //         llvm::errs() << "failed to raise operand: " << arg << "\n"
+    //                      << " within " << g << "\n";
+    //         ;
+    //         signalPassFailure();
+    //       }
+    //       break;
+    //     }
+    //     auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    //     auto newArg = newBlock->addArgument(
+    //         TT, rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo));
+    //     mapping.map(arg, newArg);
+    //     tensorTypes.push_back(TT);
+    //   }
+    //   if (failed) {
+    //     delete newBlock;
+    //     continue;
+    //   }
+    //
+    //   auto newFuncType =
+    //       FunctionType::get(g->getContext(), tensorTypes, tensorTypes);
+    //
+    //   std::string name = "rxla$raised_" + std::to_string(raised_count);
+    //   raised_count++;
+    //
+    //   auto newFunc = func::FuncOp::create(
+    //       rewriteLocation(g->getLoc(), options.strip_llvm_debuginfo), name,
+    //       newFuncType);
+    //   newFunc.setVisibility(mlir::SymbolTable::Visibility::Private);
+    //   newFunc.getBody().push_back(newBlock);
+    //
+    //   OpBuilder builder(newBlock, newBlock->end());
+    //
+    //   bool anyFailed = false;
+    //
+    //   ParallelContext emptyPc = ParallelContext::getEmpty(options);
+    //   for (auto &it : body->without_terminator()) {
+    //     anyFailed =
+    //         tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc)
+    //             .failed();
+    //     if (anyFailed) {
+    //       if (err_if_not_fully_raised) {
+    //         llvm::errs() << "failed to raise operation: " << *&it << "\n"
+    //                      << " within " << g << "\n";
+    //         signalPassFailure();
+    //       }
+    //       break;
+    //     }
+    //   }
+    //
+    //   if (anyFailed) {
+    //     newFunc->erase();
+    //     continue;
+    //   }
+    //
+    //   SmallVector<Value> results;
+    //   for (auto arg : operands) {
+    //     auto val = mapping.lookup(arg);
+    //     results.push_back(val);
+    //   }
+    //
+    //   func::ReturnOp::create(
+    //       builder, rewriteLocation(g->getLoc(), options.strip_llvm_debuginfo),
+    //       results);
+    //   modOp.getBody()->push_back(newFunc);
+    //   SymbolTable::setSymbolVisibility(newFunc,
+    //                                    SymbolTable::Visibility::Private);
+    //
+    //   {
+    //     OpBuilder builder(g);
+    //     enzymexla::XLAWrapperOp::create(
+    //         builder, g->getLoc(), SymbolRefAttr::get(newFunc),
+    //         llvm::to_vector(operands), nullptr, nullptr);
+    //     g->erase();
+    //     anyRaised = true;
+    //   }
+    // }
+
+    if (!anyRaised) {
+      markAllAnalysesPreserved();
+    }
+  }
+};
+} // namespace
+
+namespace xla_jit {
+  std::unique_ptr<mlir::Pass> createAffineToStableHLORaisingPass() {
+    return std::make_unique<AffineToStableHLORaisingPass>();
+  }   
+
+  void registerAffineToStableHLORaisingPass() {
+    ::mlir::registerPass([]()->std::unique_ptr<mlir::Pass>{return createAffineToStableHLORaisingPass();});
+  }
+}
+
