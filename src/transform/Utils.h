@@ -26,4 +26,3 @@ static mlir::arith::CmpIPredicate swapPredicate(mlir::arith::CmpIPredicate pred)
   llvm_unreachable("unknown cmpi predicate kind");
 } 
 
-

@@ -8,6 +8,8 @@ add_library(JitTransforms STATIC
   translate.cpp
   AffineCFG.cpp
   CleanFIRLoopPass.cpp
+  SimplifyDoLoopPass.cpp
+  AffineToStableHLO.cpp
 )
 
 target_include_directories(JitTransforms
@@ -27,6 +29,7 @@ target_link_libraries(JitTransforms
     MLIRQuantDialect
     MLIRMathDialect
     MLIRArithDialect
+    MLIRGPUDialect
     MLIRIR
     FIRTransforms
     HLFIRTransforms
