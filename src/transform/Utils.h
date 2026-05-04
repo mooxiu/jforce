@@ -1,4 +1,11 @@
+#include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/Types.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cstdlib>
 
 /// Swap side of predicate
 static mlir::arith::CmpIPredicate swapPredicate(mlir::arith::CmpIPredicate pred) {
@@ -25,4 +32,41 @@ static mlir::arith::CmpIPredicate swapPredicate(mlir::arith::CmpIPredicate pred)
   }
   llvm_unreachable("unknown cmpi predicate kind");
 } 
+
+///
+
+struct TypeInfo {
+  llvm::ArrayRef<int64_t> shape;
+  int64_t rank;
+  bool isDynamic;
+  mlir::Type elementTy;
+};
+
+static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
+  if (auto refTy = llvm::dyn_cast<fir::ReferenceType>(ty)) {
+    return inspectTypeInfoInternal(refTy.getEleTy(), typeInfo);
+  }
+  if (auto seqTy = llvm::dyn_cast<fir::SequenceType>(ty)) {
+    typeInfo.isDynamic = seqTy.hasDynamicExtents();
+    typeInfo.rank = seqTy.getShape().size();
+    typeInfo.shape = seqTy.getShape();
+    return inspectTypeInfoInternal(seqTy.getEleTy(), typeInfo);
+  }
+  if (ty.isIntOrIndexOrFloat()) {
+    if (typeInfo.rank == 0) {
+      // meaning this is not a sequence type
+      typeInfo.shape = {};
+      typeInfo.isDynamic = false;
+    }
+    typeInfo.elementTy = ty;
+    return typeInfo;
+  };
+  llvm::errs() << "Unexpected Type!\n";
+  std::exit(EXIT_FAILURE); 
+}
+
+static TypeInfo inspectTypeInfo(mlir::Type ty) {
+  TypeInfo typeInfo;
+  return inspectTypeInfoInternal(ty, typeInfo);
+}
 

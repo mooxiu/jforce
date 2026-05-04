@@ -10,6 +10,7 @@ add_library(JitTransforms STATIC
   CleanFIRLoopPass.cpp
   SimplifyDoLoopPass.cpp
   AffineToStableHLO.cpp
+  firLoadToAffineLoad.cpp
 )
 
 target_include_directories(JitTransforms
