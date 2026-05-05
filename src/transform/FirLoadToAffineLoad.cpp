@@ -30,6 +30,8 @@
 using namespace mlir;
 
 /// Objective:
+///   Replace `fir.load` with `affine.load`, replace `hlfir.assign` with `affine.store`.
+///
 /// Before:
 ///   %4:2 = hlfir.declare %arg3(%2) {uniq_name = "_QFFrun_benchmarkEx"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> (!fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>)
 ///   %10 = fir.do_loop %arg9 = %c1 to %8 step %c1 iter_args(%arg10 = %9) -> (i32) {
