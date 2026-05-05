@@ -1,4 +1,4 @@
-#include "passes.h"
+#include "Passes.h"
 
 void xla_jit::registerAllJitPasses() {
   registerAnnotatePass();

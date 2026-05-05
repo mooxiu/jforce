@@ -1,17 +1,16 @@
 add_library(JitTransforms STATIC 
-  annotatePass.cpp
-  aliasingPass.cpp
-  shapeInferPass.cpp
-  trimArgsPass.cpp
-  workdistributeToStableHLOPass.cpp
-  passes.cpp
   TranslatePass.cpp
-  Utils.cpp
+  AnnotatePass.cpp
+  AliasingPass.cpp
+  ShapeInferPass.cpp
+  TrimArgsPass.cpp
+  WorkdistributeToStableHLOPass.cpp
+  Passes.cpp
   AffineCFG.cpp
   CleanFIRLoopPass.cpp
   SimplifyDoLoopPass.cpp
   AffineToStableHLO.cpp
-  firLoadToAffineLoad.cpp
+  FirLoadToAffineLoad.cpp
 )
 
 target_include_directories(JitTransforms
