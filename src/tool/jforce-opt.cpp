@@ -1,4 +1,4 @@
-#include "../transform/passes.h"
+#include "../transform/Passes.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/Passes.h"
