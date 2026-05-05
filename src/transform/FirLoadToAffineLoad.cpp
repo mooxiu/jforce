@@ -47,6 +47,31 @@ using namespace mlir;
 ///     ...
 
 namespace {
+  static Value addMemrefToSlice(OpBuilder opBuilder, hlfir::DeclareOp sliceDeclareOp) {
+    opBuilder.setInsertionPointAfter(sliceDeclareOp);
+
+    // If memref result exists, just use it.
+    for (auto user : sliceDeclareOp.getResult(0).getUsers()) {
+      if (llvm::isa<mlir::UnrealizedConversionCastOp>(user)) {
+        return user->getResult(0);
+      }  
+    }
+
+    // Have to create a new memref casting operation.
+    // static UnrealizedConversionCastOp create(::mlir::OpBuilder &builder, ::mlir::Location location, ::mlir::TypeRange resultTypes, ::mlir::ValueRange operands, ::llvm::ArrayRef<::mlir::NamedAttribute> attributes = {});
+    auto memrefTypeInfo = inspectTypeInfo(sliceDeclareOp.getResultTypes()[0]); 
+    auto memrefType = MemRefType::get(memrefTypeInfo.shape, memrefTypeInfo.elementTy, {}, {});
+    llvm::ArrayRef<NamedAttribute> attributes; 
+    auto castOp = mlir::UnrealizedConversionCastOp::create(
+      opBuilder, 
+      sliceDeclareOp.getLoc(),
+      {memrefType},
+      {sliceDeclareOp.getResult(0)},
+      attributes
+    );
+    return castOp.getResult(0);
+  }
+
   static AffineExpr recursivelyBuildAffineExpr(Value idx, OpBuilder opBuilder, llvm::SmallVector<Value>& dims) {
     while (!idx.getType().isIndex()) {
       auto defOp = idx.getDefiningOp();
@@ -100,6 +125,26 @@ namespace {
     }
   }
 
+  static Value getAffineIndex(OpBuilder opBuilder, Value idx, llvm::SmallVector<Value>& dims, Operation* op) {
+    auto affineExpr = recursivelyBuildAffineExpr(idx, opBuilder, dims);
+    if (affineExpr == nullptr) {
+      // this is not affine, just return
+      return nullptr;
+    } 
+    
+    if (dims.empty()) {
+      // Pure constant      
+      int64_t constResult = llvm::cast<AffineConstantExpr>(affineExpr).getValue();
+      Value constIdx = arith::ConstantIndexOp::create(opBuilder, op->getLoc(), constResult);
+      return constIdx;
+    } else {
+      // Create map, apply...
+      auto map = AffineMap::get(dims.size(), 0, affineExpr);
+      auto finalIdx = affine::AffineApplyOp::create(opBuilder, op->getLoc(), map, dims).getResult();
+      return finalIdx;
+    }
+  } 
+
   static void tryToReplaceWithAffineLoad(OpBuilder opBuilder, hlfir::DesignateOp designateOp, llvm::SetVector<Operation*>& toDeleteOps) {
     auto users = designateOp->getUsers();
     llvm::SmallVector<fir::LoadOp> loadOpUsers;
@@ -116,50 +161,68 @@ namespace {
       llvm::dbgs() << "Definition of Slice is not a hlfir::declareOp";
       return;
     }
-    
-    opBuilder.setInsertionPointAfter(sliceDeclareOp);
-    // static UnrealizedConversionCastOp create(::mlir::OpBuilder &builder, ::mlir::Location location, ::mlir::TypeRange resultTypes, ::mlir::ValueRange operands, ::llvm::ArrayRef<::mlir::NamedAttribute> attributes = {});
-    auto memrefTypeInfo = inspectTypeInfo(sliceDeclareOp.getResultTypes()[0]); 
-    auto memrefType = MemRefType::get(memrefTypeInfo.shape, memrefTypeInfo.elementTy, {}, {});
-    llvm::ArrayRef<NamedAttribute> attributes; 
-    auto castOp = mlir::UnrealizedConversionCastOp::create(
-      opBuilder, 
-      designateOp.getLoc(),
-      {memrefType},
-      {sliceDeclareOp.getResult(0)},
-      attributes
-    );
-    
+    auto sliceMemref = addMemrefToSlice(opBuilder, sliceDeclareOp);
+     
     opBuilder.setInsertionPoint(designateOp);
     llvm::SmallVector<Value> dims;
     llvm::SmallVector<Value> indices;
     for (Value idx: designateOp.getIndices()) {
-      auto affineExpr = recursivelyBuildAffineExpr(idx, opBuilder, dims);
-      if (affineExpr == nullptr) {
-        // this is not affine, just return
+      auto affineIdx = getAffineIndex(opBuilder, idx, dims, designateOp);
+      if (affineIdx == nullptr) {
         return;
-      } 
-      
-      if (dims.empty()) {
-        // Pure constant      
-        int64_t constResult = llvm::cast<AffineConstantExpr>(affineExpr).getValue();
-        Value constIdx = arith::ConstantIndexOp::create(opBuilder, designateOp.getLoc(), constResult);
-        indices.push_back(constIdx);
-      } else {
-        // Create map, apply...
-        auto map = AffineMap::get(dims.size(), 0, affineExpr);
-          auto finalIdx = affine::AffineApplyOp::create(opBuilder, designateOp.getLoc(), map, dims).getResult();
-        indices.push_back(finalIdx); 
       }
+      indices.push_back(affineIdx);
     }
 
     for (auto loadOpUser: loadOpUsers) {
       opBuilder.setInsertionPoint(loadOpUser);
-      // static AffineLoadOp create(::mlir::OpBuilder &builder, ::mlir::Location location, Value memref, ValueRange indices = {});
       assert(designateOp.getIndices().size() == 1);
-      auto affineLoadOp = affine::AffineLoadOp::create(opBuilder, designateOp.getLoc(), castOp.getResult(0), indices);
+      auto affineLoadOp = affine::AffineLoadOp::create(opBuilder, designateOp.getLoc(), sliceMemref, indices);
       loadOpUser.getResult().replaceAllUsesWith(affineLoadOp.getResult());
       toDeleteOps.insert(loadOpUser);   
+    }
+    toDeleteOps.insert(designateOp);
+  }
+
+  /// Replace:
+  ///   %19 = hlfir.designate %3#0 (%14)  : (!fir.ref<!fir.array<4xf64>>, i64) -> !fir.ref<f64>
+  ///   hlfir.assign %18 to %19 : f64, !fir.ref<f64>
+  /// With:
+  ///   hlfir.store %18memref[affine-expr] to %19memref
+  static void tryToReplaceWithAffineStore(OpBuilder opBuilder, hlfir::DesignateOp designateOp, llvm::SetVector<Operation*>& toDeleteOps) {
+    auto users = designateOp->getUsers();
+    llvm::SmallVector<hlfir::AssignOp> assignOpUsers;
+    for (auto user: users) {
+      auto assignOpUser = llvm::dyn_cast<hlfir::AssignOp>(user); 
+      if (!assignOpUser) {
+        return;
+      }
+      assignOpUsers.push_back(assignOpUser);
+    }
+
+    auto sliceDeclareOp = llvm::dyn_cast<hlfir::DeclareOp>(designateOp.getMemref().getDefiningOp()); 
+    if (!sliceDeclareOp) {
+      llvm::dbgs() << "Definition of Slice is not a hlfir::declareOp";
+      return;
+    }
+    auto sliceMemref = addMemrefToSlice(opBuilder, sliceDeclareOp);
+     
+    opBuilder.setInsertionPoint(designateOp);
+    llvm::SmallVector<Value> dims;
+    llvm::SmallVector<Value> indices;
+    for (Value idx: designateOp.getIndices()) {
+      auto affineIdx = getAffineIndex(opBuilder, idx, dims, designateOp);
+      if (affineIdx == nullptr) {
+        return;
+      }
+      indices.push_back(affineIdx);
+    }
+
+    for (auto assignOpUser: assignOpUsers) {
+      opBuilder.setInsertionPoint(assignOpUser);
+      auto affineStoreOp = affine::AffineStoreOp::create(opBuilder, designateOp.getLoc(), assignOpUser.getRhs(), sliceMemref, indices);
+      // assignOpUser.getRhs().replaceAllUsesWith(affineStoreOp.getValueToStore());
+      toDeleteOps.insert(assignOpUser);   
     }
     toDeleteOps.insert(designateOp);
   }
@@ -185,6 +248,7 @@ namespace {
         llvm::SetVector<Operation*> toDeleteOps;
         forOp.walk([&](hlfir::DesignateOp designateOp){
           tryToReplaceWithAffineLoad(opBuilder, designateOp, toDeleteOps);
+          tryToReplaceWithAffineStore(opBuilder, designateOp, toDeleteOps);
         }); 
         for (auto toDeleteOp: toDeleteOps) {
           toDeleteOp->erase();
