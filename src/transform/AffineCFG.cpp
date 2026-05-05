@@ -1,3 +1,7 @@
+/// Copied and Adapted from EnzymeJAX.
+
+
+
 // #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
