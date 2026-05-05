@@ -2,7 +2,7 @@
 #include "mlir/Pass/Pass.h"
 #include "../support/profiler.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "passes.h"
+#include "Passes.h"
 #include <memory>
 
 using namespace mlir; 
