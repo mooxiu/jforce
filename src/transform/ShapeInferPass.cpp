@@ -20,7 +20,7 @@
 #include <memory>
 #include "../support/utilities.h"
 #include "../support/profiler.h"
-#include "passes.h"
+#include "Passes.h"
 
 using namespace mlir;
 

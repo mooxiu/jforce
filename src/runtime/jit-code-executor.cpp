@@ -1,6 +1,6 @@
 #include "../support/profiler.h"
 #include "../support/utilities.h"
-#include "../transform/passes.h"
+#include "../transform/Passes.h"
 #include "jit-manager.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"

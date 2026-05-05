@@ -22,7 +22,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
-#include "passes.h"
+#include "Passes.h"
 
 #include "Utils.h"
 #include "llvm/ADT/MapVector.h"
