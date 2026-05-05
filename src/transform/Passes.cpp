@@ -11,4 +11,5 @@ void xla_jit::registerAllJitPasses() {
   registerSimplifyDoLoopPass();
   registerAffineToStableHLORaisingPass();
   registerFIRLoadToAffineLoadPass();
+  registerFirLICMPass();
 }

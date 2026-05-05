@@ -49,7 +49,7 @@ using namespace mlir;
 ///     ...
 
 namespace {
-  static Value addMemrefToSlice(OpBuilder opBuilder, hlfir::DeclareOp sliceDeclareOp) {
+  static Value addMemrefToSlice(OpBuilder& opBuilder, hlfir::DeclareOp sliceDeclareOp) {
     opBuilder.setInsertionPointAfter(sliceDeclareOp);
 
     // If memref result exists, just use it.
@@ -74,7 +74,7 @@ namespace {
     return castOp.getResult(0);
   }
 
-  static AffineExpr recursivelyBuildAffineExpr(Value idx, OpBuilder opBuilder, llvm::SmallVector<Value>& dims) {
+  static AffineExpr recursivelyBuildAffineExpr(Value idx, OpBuilder& opBuilder, llvm::SmallVector<Value>& dims) {
     while (!idx.getType().isIndex()) {
       auto defOp = idx.getDefiningOp();
       auto convertOp = llvm::dyn_cast<fir::ConvertOp>(defOp);
@@ -127,7 +127,7 @@ namespace {
     }
   }
 
-  static Value getAffineIndex(OpBuilder opBuilder, Value idx, llvm::SmallVector<Value>& dims, Operation* op) {
+  static Value getAffineIndex(OpBuilder& opBuilder, Value idx, llvm::SmallVector<Value>& dims, Operation* op) {
     auto affineExpr = recursivelyBuildAffineExpr(idx, opBuilder, dims);
     if (affineExpr == nullptr) {
       // this is not affine, just return
@@ -147,7 +147,7 @@ namespace {
     }
   } 
 
-  static void tryToReplaceWithAffineLoad(OpBuilder opBuilder, hlfir::DesignateOp designateOp, llvm::SetVector<Operation*>& toDeleteOps) {
+  static void tryToReplaceWithAffineLoad(OpBuilder& opBuilder, hlfir::DesignateOp designateOp, llvm::SetVector<Operation*>& toDeleteOps) {
     auto users = designateOp->getUsers();
     llvm::SmallVector<fir::LoadOp> loadOpUsers;
     for (auto user: users) {
@@ -191,7 +191,7 @@ namespace {
   ///   hlfir.assign %18 to %19 : f64, !fir.ref<f64>
   /// With:
   ///   hlfir.store %18memref[affine-expr] to %19memref
-  static void tryToReplaceWithAffineStore(OpBuilder opBuilder, hlfir::DesignateOp designateOp, llvm::SetVector<Operation*>& toDeleteOps) {
+  static void tryToReplaceWithAffineStore(OpBuilder& opBuilder, hlfir::DesignateOp designateOp, llvm::SetVector<Operation*>& toDeleteOps) {
     auto users = designateOp->getUsers();
     llvm::SmallVector<hlfir::AssignOp> assignOpUsers;
     for (auto user: users) {
