@@ -11,6 +11,7 @@ add_library(JitTransforms STATIC
   SimplifyDoLoopPass.cpp
   AffineToStableHLO.cpp
   FirLoadToAffineLoad.cpp
+  FirLICMPass.cpp
 )
 
 target_include_directories(JitTransforms
