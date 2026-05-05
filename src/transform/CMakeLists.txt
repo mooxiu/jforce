@@ -11,6 +11,7 @@ add_library(JitTransforms STATIC
   AffineToStableHLO.cpp
   FirLoadToAffineLoad.cpp
   FirLICMPass.cpp
+  ArithRaising.cpp
 )
 
 target_include_directories(JitTransforms

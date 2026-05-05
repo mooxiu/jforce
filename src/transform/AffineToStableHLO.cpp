@@ -1,3 +1,8 @@
+/// Copied and Adapted from Enzyme-JAX.
+
+
+
+
 //===- AffineToStableHLORaising.cpp - Raise affine loops to stablehlo -----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
