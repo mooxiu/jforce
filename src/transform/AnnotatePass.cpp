@@ -1,6 +1,7 @@
 #include "../support/profiler.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Value.h"
@@ -91,7 +92,8 @@ static ArgType setArgType(func::FuncOp funcOp, Value arg) {
     mlir::Value val = worklist.pop_back_val();
 
     for (mlir::Operation *user : val.getUsers()) {
-      if (llvm::isa<hlfir::DeclareOp, fir::LoadOp, fir::ConvertOp>(user)) {
+      if (llvm::isa<
+            hlfir::DeclareOp, fir::DeclareOp, fir::LoadOp, fir::ConvertOp>(user)) {
         for (mlir::Value res : user->getResults()) {
           if (visited.insert(res).second) {
             worklist.push_back(res);
@@ -107,7 +109,13 @@ static ArgType setArgType(func::FuncOp funcOp, Value arg) {
             val)) {
           return ArgType::SHAPE_OR_BOUND;
         }
-      }  
+      } else if (llvm::isa<fir::ShapeOp, fir::ShapeShiftOp>(user)) {
+        return ArgType::SHAPE_OR_BOUND;
+      } else if (auto cmpIOp = llvm::dyn_cast<arith::CmpIOp>(user)) {
+        if (cmpIOp.getOperand(0).getType().isIndex()) {
+          return ArgType::SHAPE_OR_BOUND;
+        }
+      }
     }
   }
   return ArgType::OTHER;
