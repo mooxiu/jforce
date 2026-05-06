@@ -73,7 +73,7 @@ struct OutlineAffinePass:
       return;
     }
 
-    StringRef getArgument() const override { return "jforce-split-affine"; }
+    StringRef getArgument() const override { return "jforce-outline-affine"; }
 
     void runOnOperation() override {
       auto moduleOp = getOperation();
