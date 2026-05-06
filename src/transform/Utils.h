@@ -19,7 +19,8 @@
 #define ALIASING_ATTRIBUTE "tf.aliasing_output"
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
 #define JIT_OUTLINE_AFFINE_FUNC_PREFIX "outlined_affinefor_"
-
+#define JIT_COMPUTE_ARG_ATTR_NAME "jit.compute_arg"
+#define JIT_SHAPE_META_ATTR_NAME "jit.shape_meta"
 
 using namespace mlir;
 

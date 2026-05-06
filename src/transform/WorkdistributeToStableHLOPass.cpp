@@ -20,11 +20,9 @@
 #include <cstdio>
 #include "../support/profiler.h"
 #include "../support/utilities.h"
+#include "Utils.h"
 
 using namespace mlir;
-
-#define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
-#define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
 
 namespace {
 /// valueMap, argsTrackingMaps are 2 maps we'll keep updating when scanning

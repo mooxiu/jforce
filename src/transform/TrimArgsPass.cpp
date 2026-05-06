@@ -6,12 +6,9 @@
 #include "../support/profiler.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
-#include <string>
+#include "Utils.h"
 
 using namespace mlir;
-
-#define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
-#define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
 
 namespace {
 struct TrimArgsPass:
