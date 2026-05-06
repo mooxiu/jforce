@@ -4,10 +4,9 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "Passes.h"
 #include <memory>
+#include "Utils.h"
 
 using namespace mlir; 
-
-#define ALIASING_ATTRIBUTE "tf.aliasing_output"
 
 namespace {
 struct AliasingPass : 

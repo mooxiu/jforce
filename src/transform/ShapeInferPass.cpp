@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -21,12 +22,9 @@
 #include "../support/utilities.h"
 #include "../support/profiler.h"
 #include "Passes.h"
+#include "Utils.h"
 
 using namespace mlir;
-
-#define JIT_COMPUTE_ARG_ATTR_NAME "jit.compute_arg"
-#define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
-#define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
 
 namespace {
 struct ShapeInferPass
@@ -378,8 +376,8 @@ struct ShapeInferPass
 
     // some parameters containing the shape info are passed as pointer like
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      auto isComputeArg = funcOp.getArgAttr(i, JIT_COMPUTE_ARG_ATTR_NAME);
-      if (!isComputeArg) {
+      auto argType = funcOp.getArgAttrOfType<IntegerAttr>(i, JIT_ARG_TYPE_NAME_ATTR);
+      if (argType && (argType.getValue() == ArgType::SHAPE_OR_BOUND)) {
         auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
         if (intAttr) {
           // `intAttr` is the literal address, need to recover to specific number.
