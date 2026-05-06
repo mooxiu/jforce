@@ -12,6 +12,7 @@ add_library(JitTransforms STATIC
   FirLoadToAffineLoad.cpp
   FirLICMPass.cpp
   ArithRaising.cpp
+  OutlineAffinePass.cpp
 )
 
 target_include_directories(JitTransforms
