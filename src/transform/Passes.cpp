@@ -14,4 +14,5 @@ void xla_jit::registerAllJitPasses() {
   registerFIRLoadToAffineLoadPass();
   registerFirLICMPass();
   registerArithRaisingPass();
+  registerOutlineAffinePass();
 }
