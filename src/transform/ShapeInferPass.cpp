@@ -31,7 +31,6 @@ struct ShapeInferPass
     : public PassWrapper<ShapeInferPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ShapeInferPass)
 
-  llvm::DenseMap<Value, int> valueMap;
   llvm::DenseMap<Value, llvm::SmallVector<int64_t>> sliceShiftMap;
 
   /// Fill some known values to the mlir and use existing passes to do constant

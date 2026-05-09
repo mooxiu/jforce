@@ -14,6 +14,7 @@ add_library(JitTransforms STATIC
   FirLICMPass.cpp
   ArithRaising.cpp
   OutlineAffinePass.cpp
+  PropagateConstantsPass.cpp
 )
 
 target_include_directories(JitTransforms

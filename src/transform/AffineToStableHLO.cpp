@@ -2887,7 +2887,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
         op->getName(), {T}, {newOperand}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        {}, {}, 0);
     mapping.map(op->getResult(0), newOp->getResult(0));
     maps[newOp->getResult(0)] = maps.lookup(newOperand);
 
@@ -2920,7 +2920,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
         op->getName(), {result}, {a, b}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        {}, {}, 0);
 
     builder.insert(newOp);
 
@@ -2955,7 +2955,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
         op->getName(), {result}, {a, b, c}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        {}, {}, 0);
 
     builder.insert(newOp);
 
@@ -3209,6 +3209,11 @@ struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
 
 struct AffineToStableHLORaisingPass
     : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>> {
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<stablehlo::StablehloDialect>();
+    return;
+  }
 
 
   StringRef getArgument() const override {
