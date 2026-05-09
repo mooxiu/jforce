@@ -18,6 +18,7 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createFirLICMPass();  
   std::unique_ptr<mlir::Pass> createArithRaisingPass();
   std::unique_ptr<mlir::Pass> createOutlineAffinePass();
+  std::unique_ptr<mlir::Pass> createPropagateConstantsPass();
 
   void registerAnnotatePass();
   void registerAliasingPass();
@@ -32,6 +33,7 @@ namespace xla_jit {
   void registerFirLICMPass();
   void registerArithRaisingPass();
   void registerOutlineAffinePass();
+  void registerPropagateConstantsPass();
 
   void registerAllJitPasses();
 }
