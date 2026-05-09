@@ -1,7 +1,9 @@
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
@@ -12,11 +14,9 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
 #include "../support/utilities.h"
-#include "mlir/Transforms/Passes.h"
 
 using namespace mlir;
 
@@ -33,15 +33,15 @@ static void debugging(func::FuncOp fop) {
 
 
 static void cleanIterArgs(mlir::OpBuilder& opBuilder, func::FuncOp fop) {
-  llvm::SmallVector<fir::DoLoopOp, 4> dlOps;
+  llvm::SmallVector<fir::DoLoopOp, 4> doLoopOps;
   fop.walk([&](fir::DoLoopOp dlOp){
     if (dlOp.getNumRegionIterArgs() > 0) {
       assert(dlOp.getNumRegionIterArgs() == 1);
-      dlOps.push_back(dlOp);
+      doLoopOps.push_back(dlOp);
     }
   });
 
-  for (auto dlOp: dlOps) {
+  for (auto dlOp: doLoopOps) {
     assert(dlOp.getRegionIterArgs().size() == 1);
     // The real induction varaible IV
     auto loopIV = dlOp.getInductionVar();
@@ -87,7 +87,49 @@ static void cleanIterArgs(mlir::OpBuilder& opBuilder, func::FuncOp fop) {
 }
 
 
-// Jforce suppose the loop in included in
+// example: 
+//  %8 = fir.do_loop %arg9 = %c1 to %c4 step %c1 iter_args(%arg10 = %7) -> (i32) {
+// Inducation Variable (IV): %arg9 which we should use.
+// Iteration Arg: %arg10 which would be loaded and stored, we should avoid use it (them).
+static void cleanIterArgsNew(mlir::OpBuilder& opBuilder, func::FuncOp fop) {
+  llvm::SmallVector<fir::DoLoopOp> doLoops;
+  fop.walk([&](fir::DoLoopOp doLoop){doLoops.push_back(doLoop);});    
+  
+  llvm::SmallVector<Operation*> toDeleteOps;
+  for (auto doLoop: doLoops) {
+    assert(doLoop.getRegionIterArgs().size() == 1);
+    auto loopIV = doLoop.getInductionVar();
+    auto iterArg = doLoop.getRegionIterArgs()[0]; 
+
+    doLoop.walk([&](fir::StoreOp storeOp){
+      if (storeOp.getValue() == iterArg){
+        opBuilder.setInsertionPoint(storeOp);
+        auto convertOp = fir::ConvertOp::create(opBuilder, storeOp.getLoc(), iterArg.getType(), loopIV, {});
+        fir::StoreOp::create(opBuilder, storeOp.getLoc(), convertOp.getResult(), storeOp.getMemref());  
+        toDeleteOps.push_back(storeOp);
+      }
+      return;
+    });
+
+    doLoop.walk([&](memref::StoreOp storeOp){
+      if (storeOp.getValue() == iterArg){
+        opBuilder.setInsertionPoint(storeOp);
+        auto convertOp = fir::ConvertOp::create(opBuilder, storeOp.getLoc(), iterArg.getType(), loopIV, {});
+        memref::StoreOp::create(opBuilder, storeOp.getLoc(), convertOp.getResult(), storeOp.getMemref(), storeOp.getIndices());
+        toDeleteOps.push_back(storeOp);
+      }
+      return;
+    });
+  }
+
+  for (auto* toDeleteOp: toDeleteOps){
+    toDeleteOp->erase();
+  }
+}
+
+
+// Jforce suppose the loop in included in.
+// Should consider whether this is a first private.
 static void cleanLoopResult(OpBuilder& opBuilder, func::FuncOp fop) {
   llvm::SmallVector<fir::DoLoopOp, 4> oldDoLoopOps;
   fop.walk([&](fir::DoLoopOp dlOp){
@@ -115,21 +157,6 @@ static void cleanLoopResult(OpBuilder& opBuilder, func::FuncOp fop) {
 
     // Delete the return valus of do loop
     opBuilder.setInsertionPoint(dlOp);
-
-
-    // static DoLoopOp create(
-    //  ::mlir::OpBuilder &builder, 
-    //  ::mlir::Location location, 
-    //  mlir::Value lowerBound, 
-    //  mlir::Value upperBound, 
-    //  mlir::Value step, 
-    //  bool unordered = false, 
-    //  bool finalCountValue = false, 
-    //  mlir::ValueRange iterArgs = {}, 
-    //  mlir::ValueRange reduceOperands = {}, 
-    //  llvm::ArrayRef<mlir::Attribute> reduceAttrs = {}, 
-    //  llvm::ArrayRef<mlir::NamedAttribute> attributes = {});
-
     mlir::NamedAttrList filteredAttrs(dlOp->getAttrs());
     filteredAttrs.erase("unordered");
     filteredAttrs.erase("finalCountValue");
@@ -170,20 +197,19 @@ static void cleanLoopResult(OpBuilder& opBuilder, func::FuncOp fop) {
 
 struct CleanFIRLoopPass
     : public PassWrapper<CleanFIRLoopPass, OperationPass<func::FuncOp>> {
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<memref::MemRefDialect>();
+    return;
+  }
+
   StringRef getArgument() const override { return "jforce-clean-fir-loop"; }
 
   void runOnOperation() override {
     auto funcOp = getOperation();
     OpBuilder opBuilder(funcOp.getContext());
-    if (funcOp.walk([&](fir::DoLoopOp dlOp) { return WalkResult::interrupt(); })
-            .wasInterrupted() == false) {
-      // There is no do loop inside, just return
-      DEBUG_PRINT("There's no do loop inside, skip CleanFIRLoopPass.");
-      return;
-    };
-    // debugging(funcOp);
-    cleanIterArgs(opBuilder, funcOp);
-    cleanLoopResult(opBuilder, funcOp);
+    cleanIterArgsNew(opBuilder, funcOp);
+    // cleanLoopResult(opBuilder, funcOp);
   };
 };
 } // namespace
