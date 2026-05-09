@@ -35,6 +35,7 @@ target_link_libraries(JitTransforms
     MLIRArithDialect
     MLIRGPUDialect
     MLIRIR
+    MLIRMemRefDialect
     FIRTransforms
     HLFIRTransforms
 )
