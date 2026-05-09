@@ -186,6 +186,47 @@ namespace {
     toDeleteOps.insert(designateOp);
   }
 
+  static void tryToReplaceWithAffineLoad2(
+    func::FuncOp funcOp, 
+    affine::AffineForOp forOp, 
+    OpBuilder& opBuilder, 
+    fir::LoadOp loadOp,
+    llvm::SetVector<Operation*>& toDeleteOps
+  ) {
+    auto defOp = loadOp.getMemref().getDefiningOp();
+    if (llvm::isa<hlfir::DesignateOp>(defOp)) {
+      auto designateOp = llvm::cast<hlfir::DesignateOp>(defOp);
+      auto sliceDeclareOp = llvm::dyn_cast<hlfir::DeclareOp>(designateOp.getMemref().getDefiningOp()); 
+      if (!sliceDeclareOp) {
+        llvm::dbgs() << "Definition of Slice is not a hlfir::declareOp";
+        return;
+      }
+      auto sliceMemref = addMemrefToSlice(opBuilder, sliceDeclareOp);
+     
+      opBuilder.setInsertionPoint(loadOp);
+      llvm::SmallVector<Value> dims;
+      llvm::SmallVector<Value> indices;
+      for (Value idx: designateOp.getIndices()) {
+        auto affineIdx = getAffineIndex(opBuilder, idx, dims, loadOp);
+        if (affineIdx == nullptr) {
+          return;
+        }
+        indices.push_back(affineIdx);
+      }
+      auto affineLoadOp = affine::AffineLoadOp::create(opBuilder, loadOp.getLoc(), sliceMemref, indices);
+      loadOp.getResult().replaceAllUsesWith(affineLoadOp.getResult());
+      toDeleteOps.insert(loadOp);
+    } else if (llvm::isa<hlfir::DeclareOp>(defOp)) {
+      auto declaredOp = llvm::cast<hlfir::DeclareOp>(defOp);
+      auto sliceMemref = addMemrefToSlice(opBuilder, declaredOp);
+      opBuilder.setInsertionPoint(loadOp);
+      auto affineLoadOp = affine::AffineLoadOp::create(opBuilder, loadOp.getLoc(), sliceMemref, {});
+      loadOp.getResult().replaceAllUsesWith(affineLoadOp.getResult());
+      toDeleteOps.insert(loadOp);
+    }
+  };
+
+
   /// Replace:
   ///   %19 = hlfir.designate %3#0 (%14)  : (!fir.ref<!fir.array<4xf64>>, i64) -> !fir.ref<f64>
   ///   hlfir.assign %18 to %19 : f64, !fir.ref<f64>
@@ -229,6 +270,46 @@ namespace {
     toDeleteOps.insert(designateOp);
   }
 
+  static void tryToReplaceWithAffineStore2 (
+    func::FuncOp funcOp, 
+    affine::AffineForOp forOp, 
+    OpBuilder& opBuilder, 
+    hlfir::AssignOp assignOp,
+    llvm::SetVector<Operation*>& toDeleteOps
+  ) {
+    auto rhsDefOp = assignOp.getRhs().getDefiningOp();
+    if (llvm::isa<hlfir::DesignateOp>(rhsDefOp)) {
+      auto designateOp = llvm::cast<hlfir::DesignateOp>(rhsDefOp);
+      auto sliceDeclareOp = llvm::dyn_cast<hlfir::DeclareOp>(designateOp.getMemref().getDefiningOp()); 
+      if (!sliceDeclareOp) {
+        llvm::dbgs() << "Definition of Slice is not a hlfir::declareOp";
+        return;
+      }
+      auto sliceMemref = addMemrefToSlice(opBuilder, sliceDeclareOp);
+     
+      opBuilder.setInsertionPoint(assignOp);
+      llvm::SmallVector<Value> dims;
+      llvm::SmallVector<Value> indices;
+      for (Value idx: designateOp.getIndices()) {
+        auto affineIdx = getAffineIndex(opBuilder, idx, dims, assignOp);
+        if (affineIdx == nullptr) {
+          return;
+        }
+        indices.push_back(affineIdx);
+      }
+      auto affineStoreOp = affine::AffineStoreOp::create(opBuilder, assignOp.getLoc(), assignOp.getRhs(), sliceMemref, indices);
+      toDeleteOps.insert(assignOp);
+    } else if (llvm::isa<hlfir::DeclareOp>(rhsDefOp)) {
+      auto declaredOp = llvm::cast<hlfir::DeclareOp>(rhsDefOp);
+      auto sliceMemref = addMemrefToSlice(opBuilder, declaredOp);
+      opBuilder.setInsertionPoint(assignOp);
+      auto affineStoreOp = affine::AffineStoreOp::create(opBuilder, assignOp.getLoc(), assignOp.getRhs(), sliceMemref, {});
+      toDeleteOps.insert(assignOp);
+    }
+  };
+
+
+  
   struct FIRLoadToAffineLoadPass: 
     public mlir::PassWrapper<FIRLoadToAffineLoadPass, mlir::OperationPass<func::FuncOp>> {
     void getDependentDialects(DialectRegistry &registry) const override {
@@ -239,24 +320,45 @@ namespace {
       return "jforce-fir-load-to-affine-load";
     }
 
+    // void runOnOperation() override {
+    //   auto op= getOperation();
+    //   OpBuilder opBuilder(op.getContext());
+    //
+    //   llvm::SmallVector<affine::AffineForOp> forOps; 
+    //   op.walk([&](affine::AffineForOp forOp){forOps.push_back(forOp);});
+    //
+    //   for (auto forOp: forOps) {
+    //     llvm::SetVector<Operation*> toDeleteOps;
+    //     forOp.walk([&](hlfir::DesignateOp designateOp){
+    //       tryToReplaceWithAffineLoad(opBuilder, designateOp, toDeleteOps);
+    //       tryToReplaceWithAffineStore(opBuilder, designateOp, toDeleteOps);
+    //     }); 
+    //     for (auto toDeleteOp: toDeleteOps) {
+    //       toDeleteOp->erase();
+    //     }
+    //   }
+    // };  
+  
     void runOnOperation() override {
       auto op= getOperation();
       OpBuilder opBuilder(op.getContext());
 
       llvm::SmallVector<affine::AffineForOp> forOps; 
       op.walk([&](affine::AffineForOp forOp){forOps.push_back(forOp);});
-      
+
+      llvm::SetVector<Operation*> toDeleteOps;
       for (auto forOp: forOps) {
-        llvm::SetVector<Operation*> toDeleteOps;
-        forOp.walk([&](hlfir::DesignateOp designateOp){
-          tryToReplaceWithAffineLoad(opBuilder, designateOp, toDeleteOps);
-          tryToReplaceWithAffineStore(opBuilder, designateOp, toDeleteOps);
+        forOp.walk([&](fir::LoadOp loadOp){
+          tryToReplaceWithAffineLoad2(op, forOp, opBuilder, loadOp, toDeleteOps);
         }); 
-        for (auto toDeleteOp: toDeleteOps) {
-          toDeleteOp->erase();
-        }
+        forOp.walk([&](hlfir::AssignOp assignOp){
+          tryToReplaceWithAffineStore2(op, forOp, opBuilder, assignOp, toDeleteOps);
+        });
       }
-    };  
+      for (auto toDeleteOp: toDeleteOps) {
+        toDeleteOp->erase();
+      }
+    };
   };
 };
 
