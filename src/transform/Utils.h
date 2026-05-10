@@ -68,7 +68,7 @@ static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.isDynamic = !memrefTy.hasStaticShape();
     typeInfo.rank = memrefTy.getRank();
     typeInfo.shape = memrefTy.getShape();
-    return inspectTypeInfoInternal(memrefTy, typeInfo);
+    return inspectTypeInfoInternal(memrefTy.getElementType(), typeInfo);
   }
   if (ty.isIntOrIndexOrFloat()) {
     if (typeInfo.rank == 0) {
