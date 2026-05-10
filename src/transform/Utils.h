@@ -36,7 +36,6 @@ struct TypeInfo {
   mlir::Type elementTy;
 };
 
-
 TypeInfo inspectTypeInfo(mlir::Type ty);
 
 bool mayAccessMemory(Value val, Operation* op, fir::AliasAnalysis& aa);

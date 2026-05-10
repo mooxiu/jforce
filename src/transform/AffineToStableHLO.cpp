@@ -3211,7 +3211,7 @@ struct AffineToStableHLORaisingPass
     : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>> {
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<stablehlo::StablehloDialect>();
+    registry.insert<stablehlo::StablehloDialect, memref::MemRefDialect>();
     return;
   }
 
