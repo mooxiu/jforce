@@ -9,26 +9,25 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Support/WalkResult.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <cstdlib>
-#include "../support/utilities.h"
+#include <optional>
 
 using namespace mlir;
 
 namespace {
-enum StoreType {
+enum StoreOpType {
   FIR_STORE,
   MEMREF_STORE
 };
 
 struct IterArgsBuffer {
-  StoreType StoreInst;
-  Value StoreMemref;
+  StoreOpType StoreInst;
+  Value Mem;
 };
 
 IterArgsBuffer buffer;
@@ -45,8 +44,8 @@ static void replaceIterArgs(mlir::OpBuilder& opBuilder, fir::DoLoopOp doLoop) {
 
   doLoop.walk([&](fir::StoreOp storeOp){
     if (storeOp.getValue() == iterArg){
-      buffer.StoreInst = StoreType::FIR_STORE;
-      buffer.StoreMemref = storeOp.getMemref();
+      buffer.StoreInst = StoreOpType::FIR_STORE;
+      buffer.Mem = storeOp.getMemref();
 
       opBuilder.setInsertionPoint(storeOp);
       auto convertOp = fir::ConvertOp::create(opBuilder, storeOp.getLoc(), iterArg.getType(), loopIV, {});
@@ -58,8 +57,8 @@ static void replaceIterArgs(mlir::OpBuilder& opBuilder, fir::DoLoopOp doLoop) {
 
   doLoop.walk([&](memref::StoreOp storeOp){
     if (storeOp.getValue() == iterArg){
-      buffer.StoreInst = StoreType::MEMREF_STORE;
-      buffer.StoreMemref = storeOp.getMemref();
+      buffer.StoreInst = StoreOpType::MEMREF_STORE;
+      buffer.Mem = storeOp.getMemref();
 
       opBuilder.setInsertionPoint(storeOp);
       auto convertOp = fir::ConvertOp::create(opBuilder, storeOp.getLoc(), iterArg.getType(), loopIV, {});
@@ -108,17 +107,17 @@ static void replaceLoopSignature(OpBuilder& opBuilder, fir::DoLoopOp doLoop){
   assert(doLoop.getNumResults() == 1);
   Value newResult;
   switch (buffer.StoreInst) {
-    case StoreType::FIR_STORE:
+    case StoreOpType::FIR_STORE:
       opBuilder.setInsertionPoint(existingTerminator);
-      fir::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.StoreMemref);
+      fir::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.Mem);
       opBuilder.setInsertionPointAfter(newDoLoop);
-      newResult = fir::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.StoreMemref).getResult();
+      newResult = fir::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.Mem).getResult();
       break;
-    case StoreType::MEMREF_STORE:
+    case StoreOpType::MEMREF_STORE:
       opBuilder.setInsertionPoint(existingTerminator);
-      memref::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.StoreMemref, {});
+      memref::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.Mem, {});
       opBuilder.setInsertionPointAfter(newDoLoop);
-      newResult = memref::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.StoreMemref, {}).getResult();
+      newResult = memref::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.Mem, {}).getResult();
       break;
     default:
       break;
@@ -127,6 +126,34 @@ static void replaceLoopSignature(OpBuilder& opBuilder, fir::DoLoopOp doLoop){
   oldTerminator.erase();
   assert(doLoop.use_empty());
   doLoop.erase();
+}
+
+static void cleanRedundantStore(func::FuncOp funcOp) {
+  auto isStoreToLoadedMem = [](Value valueToStore, Value memStoredTo) -> bool {
+    if (fir::LoadOp loadOp = llvm::dyn_cast<fir::LoadOp>(valueToStore.getDefiningOp())) {
+      return loadOp.getMemref() == memStoredTo;
+    } else if (memref::LoadOp loadOp = llvm::dyn_cast<memref::LoadOp>(valueToStore.getDefiningOp())) {
+      return loadOp.getMemRef() == memStoredTo;
+    } else {
+      return false;
+    }
+  };
+
+  llvm::SmallVector<Operation*> toDeleteOps;
+  funcOp.walk([&](Operation* operation){
+    llvm::TypeSwitch<Operation*>(operation)
+      .Case<fir::StoreOp>([&](fir::StoreOp storeOp){
+        isStoreToLoadedMem(storeOp.getValue(), storeOp.getMemref()) ?
+          toDeleteOps.push_back(operation) : void(); 
+      })
+      .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
+        isStoreToLoadedMem(storeOp.getValueToStore(), storeOp.getMemRef())?
+          toDeleteOps.push_back(operation) : void(); 
+      });
+    return;
+  });
+
+  llvm::for_each(toDeleteOps, [](Operation* op){op->erase();});
 }
 
 struct CleanFIRLoopPass
@@ -152,6 +179,7 @@ struct CleanFIRLoopPass
         replaceLoopSignature(opBuilder, doLoop);
       }
     } 
+    cleanRedundantStore(funcOp);
   };
 };
 } // namespace

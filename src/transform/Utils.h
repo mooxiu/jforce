@@ -28,16 +28,6 @@ enum ArgType {
   OTHER
 };
 
-#define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
-#define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
-#define JIT_ARG_TYPE_NAME_ATTR "jit.arg_type"
-#define ALIASING_ATTRIBUTE "tf.aliasing_output"
-#define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
-
-enum ArgType {
-  SHAPE_OR_BOUND, 
-  OTHER
-};
 
 struct TypeInfo {
   llvm::ArrayRef<int64_t> shape;
@@ -45,7 +35,6 @@ struct TypeInfo {
   bool isDynamic;
   mlir::Type elementTy;
 };
-
 
 TypeInfo inspectTypeInfo(mlir::Type ty);
 
