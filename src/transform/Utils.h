@@ -1,5 +1,6 @@
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -62,6 +63,12 @@ static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.rank = seqTy.getShape().size();
     typeInfo.shape = seqTy.getShape();
     return inspectTypeInfoInternal(seqTy.getEleTy(), typeInfo);
+  }
+  if (auto memrefTy = llvm::dyn_cast<mlir::MemRefType>(ty)) {
+    typeInfo.isDynamic = !memrefTy.hasStaticShape();
+    typeInfo.rank = memrefTy.getRank();
+    typeInfo.shape = memrefTy.getShape();
+    return inspectTypeInfoInternal(memrefTy, typeInfo);
   }
   if (ty.isIntOrIndexOrFloat()) {
     if (typeInfo.rank == 0) {
