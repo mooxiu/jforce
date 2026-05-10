@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/InitAllPasses.h"
@@ -30,6 +31,7 @@ int main(int argc, char** argv) {
     mlir::omp::OpenMPDialect,
     mlir::scf::SCFDialect,
     mlir::affine::AffineDialect,
+    mlir::memref::MemRefDialect,
     mlir::stablehlo::StablehloDialect>();
 
   return mlir::asMainReturnCode(
