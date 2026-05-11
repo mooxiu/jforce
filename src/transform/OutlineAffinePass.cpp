@@ -98,19 +98,22 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   llvm::for_each(forOp.getOperands(),
                  [&](Value forOpVal) { outDefinedVals.insert(forOpVal); });
 
-  int inputArgSize = outDefinedVals.size();
-  llvm::SmallVector<Type> outlinedFuncInputTypes(inputArgSize);
-  for (int i = 0; i < inputArgSize; i++) {
+
+  llvm::SmallVector<Type> outlinedFuncInputTypes;
+  for (int i = 0; i < outDefinedVals.size(); i++) {
     auto valType = outDefinedVals[i].getType();
     auto valTypeInfo = inspectTypeInfo(valType);
-    if (llvm::isa<mlir::MemRefType>(valType)) {
-      outlinedFuncInputTypes[i] = valType;
+
+    if (matchPattern(outDefinedVals[i], m_Constant())) {
+      // DO NOTHING
+    } else if (llvm::isa<mlir::MemRefType>(valType)) {
+      outlinedFuncInputTypes.push_back(valType);
     } else if (valType.isIntOrFloat()) {
-      outlinedFuncInputTypes[i] =
-          MemRefType::get(valTypeInfo.shape, valTypeInfo.elementTy, {}, {});
+      outlinedFuncInputTypes.push_back(
+          MemRefType::get(valTypeInfo.shape, valTypeInfo.elementTy, {}, {}));
     } else if (valType.isIndex()) {
-      outlinedFuncInputTypes[i] =
-          MemRefType::get(valTypeInfo.shape, IntegerType::get(ctx, 32), {}, {});
+      outlinedFuncInputTypes.push_back(
+          MemRefType::get(valTypeInfo.shape, IntegerType::get(ctx, 64), {}, {}));
     } else {
       llvm::errs() << "Cannot handle this!\n";
       std::exit(EXIT_FAILURE);
@@ -132,11 +135,13 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
 
   // Copy from old to new
   opBuilder.setInsertionPoint(forOp);
-  llvm::SmallVector<Value> realInputArgs(inputArgSize);
-  for (int i = 0; i < inputArgSize; i++) {
+  llvm::SmallVector<Value> realInputArgs;
+  for (int i = 0; i < outDefinedVals.size(); i++) {
     auto outVal = outDefinedVals[i];
-    if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
-      realInputArgs[i] = outVal;
+    if (matchPattern(outVal, m_Constant())) {
+      // DO NOTHING
+    } else if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
+      realInputArgs.push_back(outVal);
     } else if (outVal.getType().isIndex()) {
       Type elementType = IntegerType::get(ctx, 32);
       auto castOp = arith::IndexCastOp::create(opBuilder, forOp.getLoc(),
@@ -146,14 +151,14 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
       auto storeOp =
           memref::StoreOp::create(opBuilder, forOp.getLoc(), castOp.getResult(),
                                   allocaOp.getResult(), {});
-      realInputArgs[i] = storeOp.getMemRef();
+      realInputArgs.push_back(storeOp.getMemRef());
     } else if (outVal.getType().isIntOrFloat()) {
       auto allocaOp = memref::AllocaOp::create(
           opBuilder, forOp.getLoc(),
           MemRefType::get({}, outVal.getType(), {}, {}));
       auto storeOp = memref::StoreOp::create(opBuilder, forOp.getLoc(), outVal,
                                              allocaOp.getResult(), {});
-      realInputArgs[i] = storeOp.getMemRef();
+      realInputArgs.push_back(storeOp.getMemRef());
     } else {
       llvm::errs() << "Unexpected Type!\n";
       std::exit(EXIT_FAILURE);
@@ -165,10 +170,23 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   // Insert to the outlined function.
   opBuilder.setInsertionPointToEnd(entryBlock);
   IRMapping mapping;
-  for (int i = 0; i < inputArgSize; i++) {
+  for (int i = 0; i < outDefinedVals.size(); i++) {
     auto outVal = outDefinedVals[i];
     auto blockArg = entryBlock->getArgument(i);
-    if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
+    
+    mlir::IntegerAttr attr;
+    if (matchPattern(outVal, m_Constant(&attr))) {
+      if (outVal.getType().isIndex()) {
+        auto constIndexOp = arith::ConstantIndexOp::create(opBuilder, forOp.getLoc(), attr.getInt());
+        mapping.map(outVal, constIndexOp.getResult());
+      } else if (outVal.getType().isInteger()) {
+        auto constIntOp = arith::ConstantIntOp::create(opBuilder, forOp.getLoc(), attr.getInt(), outVal.getType().getIntOrFloatBitWidth());
+        mapping.map(outVal, constIntOp.getResult());
+      } else {
+        llvm::errs() << "Unexpected value type!\n";
+        std::exit(EXIT_FAILURE);
+      }
+    } else if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
       mapping.map(outVal, blockArg);
     } else if (outVal.getType().isIndex()) {
       // auto loadOp = memref::LoadOp::create(opBuilder, forOp.getLoc(),
@@ -191,7 +209,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
     }
   }
 
-  for (int i = 0; i < inputArgSize; i++) {
+  for (int i = 0; i < realInputArgs.size(); i++) {
     mapping.map(*(realInputArgs.begin() + i), entryBlock->getArgument(i));
   }
   opBuilder.clone(*forOp.getOperation(), mapping);
