@@ -12,6 +12,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -47,6 +48,23 @@ struct ReplaceFIRConvert : public OpRewritePattern<fir::ConvertOp> {
     auto fromValType = fromVal.getType();
     auto toVal = convertOp.getResult();
     auto toValType = toVal.getType();
+
+    if (!(fromValType.isIntOrIndex() && toValType.isIntOrIndex())) {
+      return failure();
+    }
+
+    mlir::IntegerAttr attr;
+    if (matchPattern(fromVal, m_Constant(&attr))) {
+      auto constVal = attr.getInt();
+      if (toValType.isIndex()) {
+        // arith::ConstantIndexOp::create(rewriter, convertOp.getLoc(), constVal);
+        rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(convertOp, constVal);
+      } else if (toValType.isInteger()) {
+        rewriter.replaceOpWithNewOp<arith::ConstantIntOp>(convertOp, constVal, toValType.getIntOrFloatBitWidth());
+      } else {
+        return failure();
+      }
+    }
 
     Operation *castOp;
     if (fromValType.isIndex() && toValType.isInteger()) {
@@ -197,15 +215,23 @@ struct OutlineAffinePass
     MLIRContext* ctx = getOperation()->getContext();
     OpBuilder opBuilder(moduleOp.getContext());
 
+    RewritePatternSet patterns(ctx);
+    patterns.add<ReplaceFIRConvert>(ctx);
+    GreedyRewriteConfig config;
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns), config))) {
+      signalPassFailure();
+      return;
+    }
+
     llvm::SmallVector<func::FuncOp> funcOps;
     moduleOp.walk([&](func::FuncOp funcOp) { funcOps.push_back(funcOp); });
 
-    llvm::SmallVector<func::FuncOp> outlinedFuncs;
     for (auto funcOp : funcOps) {
       llvm::SmallVector<Operation *> toDelete;
       funcOp.walk([&](affine::AffineForOp affineForOp) {
         // creating a function, which has the inputs for all the slices and affine bounds.
-        outlinedFuncs.push_back(outlineAffineForOp(ctx, funcOp, opBuilder, affineForOp));
+        outlineAffineForOp(ctx, funcOp, opBuilder, affineForOp);
         toDelete.push_back(affineForOp);
         return;
       });
@@ -213,16 +239,6 @@ struct OutlineAffinePass
         op->erase();
       }
     }
-
-    RewritePatternSet patterns(ctx);
-    patterns.add<ReplaceFIRConvert>(ctx);
-    GreedyRewriteConfig config;
-    config.enableFolding();
-    llvm::for_each(outlinedFuncs, [&](auto outlinedFunc) {
-      if (failed(applyPatternsGreedily(outlinedFunc, std::move(patterns), config))) {
-        signalPassFailure();
-      }
-    });
   }
 };
 } // namespace
