@@ -45,7 +45,7 @@ struct ReplaceFIRConvert : public OpRewritePattern<fir::ConvertOp> {
                                 PatternRewriter &rewriter) const final {
     auto fromVal = convertOp.getOperand();
     auto fromValType = fromVal.getType();
-    auto toVal = convertOp.getOperand();
+    auto toVal = convertOp.getResult();
     auto toValType = toVal.getType();
 
     Operation *castOp;
@@ -212,7 +212,6 @@ struct OutlineAffinePass
       for (auto *op : toDelete) {
         op->erase();
       }
-      return;
     }
 
     RewritePatternSet patterns(ctx);
