@@ -363,10 +363,12 @@ namespace {
 };
 
 namespace xla_jit {
+  [[deprecated("")]]
   std::unique_ptr<mlir::Pass> createFIRLoadToAffineLoadPass() {
     return std::make_unique<FIRLoadToAffineLoadPass>();
   }
 
+  [[deprecated("")]]
   void registerFIRLoadToAffineLoadPass() {
     ::mlir::registerPass([]()->std::unique_ptr<mlir::Pass>{return createFIRLoadToAffineLoadPass();});
   };

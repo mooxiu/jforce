@@ -8,6 +8,7 @@ add_library(JitTransforms STATIC
   Passes.cpp
   AffineCFG.cpp
   CleanFIRLoopPass.cpp
+  CleanFIRLoadPass.cpp
   SimplifyDoLoopPass.cpp
   AffineToStableHLO.cpp
   FirLoadToAffineLoad.cpp
