@@ -16,4 +16,5 @@ void xla_jit::registerAllJitPasses() {
   registerArithRaisingPass();
   registerOutlineAffinePass();
   registerPropagateConstantsPass();
+  registerCleanFIRLoadPass();
 }
