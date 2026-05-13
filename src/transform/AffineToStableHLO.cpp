@@ -270,8 +270,8 @@ emitIVToStableHLO(OpBuilder &builder, Value iv, InductionVariableRange range,
 struct ParallelContext {
   struct Options {
     bool enableLockstepFor = true;
-    bool dump_failed_lockstep = false;
-    bool preferWhileRaising = true;
+    bool dump_failed_lockstep = true;
+    bool preferWhileRaising = false;
     bool strip_llvm_debuginfo = false;
   } options;
 
@@ -3214,6 +3214,56 @@ struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
 struct AffineToStableHLORaisingPass
     : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>> {
 
+    Option<bool> err_if_not_fully_raised{
+      *this,
+      "err_if_not_fully_raised",
+      llvm::cl::desc(
+          "Whether to throw a pass error if not fully raised"),
+      llvm::cl::init(true)};
+
+  Option<bool> enable_lockstep_for{
+      *this,
+      "enable_lockstep_for",
+      llvm::cl::desc(
+          "Whether to enable the lockstep for raising"),
+      llvm::cl::init(true)};
+
+  Option<bool> dump_failed_lockstep{
+      *this,
+      "dump_failed_lockstep",
+      llvm::cl::desc(
+          "Whether to dump failed lockstep"),
+      llvm::cl::init(false)};
+
+  Option<bool> strip_llvm_debuginfo{
+      *this,
+      "strip_llvm_debuginfo",
+      llvm::cl::desc(
+          "Whether to strip llvm debug info"),
+      llvm::cl::init(false)};
+
+  Option<bool> prefer_while_raising{
+      *this,
+      "prefer_while_raising",
+      llvm::cl::desc(
+          "Whether to prefer raising to while instead of unrolling"),
+      llvm::cl::init(true)};
+
+  AffineToStableHLORaisingPass() = default;
+
+  AffineToStableHLORaisingPass(const AffineToStableHLORaisingPass &other)
+      : mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>>(other) {}
+
+  AffineToStableHLORaisingPass(bool errIfNotFullyRaised, bool enableLockstep,
+                               bool dumpFailed, bool stripDebug, bool preferWhile) {
+    this->err_if_not_fully_raised = errIfNotFullyRaised;
+    this->enable_lockstep_for = enableLockstep;
+    this->dump_failed_lockstep = dumpFailed;
+    this->strip_llvm_debuginfo = stripDebug;
+    this->prefer_while_raising = preferWhile;
+  }
+  
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<stablehlo::StablehloDialect, memref::MemRefDialect>();
     return;
@@ -3225,25 +3275,25 @@ struct AffineToStableHLORaisingPass
   }
 
   void runOnOperation() override {
-    // ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
-    //                                  prefer_while_raising,
-    //                                  strip_llvm_debuginfo};
-    ParallelContext::Options options{false, false, false, false};
+    ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
+                                     prefer_while_raising,
+                                     strip_llvm_debuginfo};
+    // ParallelContext::Options options{false, false, false, false};
     std::vector<func::FuncOp> funcs;
 
     auto context = getOperation()->getContext();
 
-    // if (enable_lockstep_for) {
-    //
-    //   RewritePatternSet patterns(context);
-    //   patterns.add<PushReductionsDown>(context);
-    //   GreedyRewriteConfig config;
-    //   config.enableFolding();
-    //   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
-    //                                    config))) {
-    //     signalPassFailure();
-    //   }
-    // }
+    if (enable_lockstep_for) {
+
+      RewritePatternSet patterns(context);
+      patterns.add<PushReductionsDown>(context);
+      GreedyRewriteConfig config;
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                       config))) {
+        signalPassFailure();
+      }
+    }
 
     auto op = getOperation();
 
