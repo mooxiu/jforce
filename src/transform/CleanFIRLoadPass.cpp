@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -13,11 +14,29 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cassert>
 #include <cstdlib>
 
 using namespace mlir;
 
 namespace {
+
+static llvm::SmallVector<Value> getReadFromAddr(Operation* op) {
+  llvm::SmallVector<Value> addrs;
+  if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(op)) {
+    addrs.push_back(loadOp.getMemref());
+  } else if (auto desigOp = llvm::dyn_cast<hlfir::DesignateOp>(op)) {
+    addrs.push_back(desigOp.getMemref());
+  } else if (auto callOp = llvm::dyn_cast<func::CallOp>(op)) {
+    for (auto param : callOp.getOperands()) {
+      addrs.push_back(param);
+    }
+  } 
+  return addrs;
+}
+
+// Mem2reg is supposed to cover this? But it does not work.
+// 
 // Before:
 // fir.store %8 to %0#0 : !fir.ref<i32>
 // %10 = fir.load %0#0 : !fir.ref<i32>
@@ -156,6 +175,89 @@ struct ReduceRepeatedStore: public OpRewritePattern<fir::DoLoopOp> {
     if (deletedSize > 0) {
       return success();
     }
+    return failure();
+  }
+};
+
+// After the above patterns, now inside of doloop, it should be:
+// "ReadOp* (StoreOp ReadOp)* StoreOp?"
+// If there's only a `StoreOp` for an address in this DoLoop, we have the chance to hoist it out of the doLoop.
+//
+// Before:
+//  DOLOOP{
+//    ...
+//    fir.store %18 to %0#0
+//    ...
+//  }
+//
+// After:
+//  DOLOOP{
+//    ...
+//  }
+//  fir.store ??? to %0#0
+//
+// Precondition:
+// - no aliasing and sharing of %0#0
+// - an address, there should only be one storeOp for that
+// - no goto or return or other control operation in the loop
+//
+struct HoistDoLoopStoreOp: public OpRewritePattern<fir::DoLoopOp> {
+ using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(fir::DoLoopOp doLoopOp,
+                                PatternRewriter &rewriter) const final {
+    llvm::DenseMap<Value, fir::StoreOp> storeOps;   
+    llvm::DenseMap<Value, llvm::SmallVector<bool>> addrOpStateMachine; // storeOp -> true, readOp -> flase
+    doLoopOp.walk([&](Operation* op){
+      llvm::TypeSwitch<Operation*> (op)
+        .Case<fir::LoadOp, hlfir::DesignateOp, func::CallOp>([&](Operation* typedOp){
+          auto readAddrs = getReadFromAddr(typedOp);
+          for (auto addr: readAddrs) {
+            auto it = addrOpStateMachine.find(addr);
+            if (it != addrOpStateMachine.end()) {
+              it->getSecond().push_back(false);
+            } else {
+              addrOpStateMachine[addr] = {false};
+            }
+          }
+        })
+        .Case<fir::StoreOp>([&](fir::StoreOp storeOp){
+          auto addr = storeOp.getMemref();
+          storeOps[addr] = storeOp;
+          auto it = addrOpStateMachine.find(addr);
+          if (it != addrOpStateMachine.end()) {
+            it->getSecond().push_back(true);
+          } else {
+            addrOpStateMachine[addr] = {true};
+          }
+        })
+        .Default([](auto){});
+    });
+
+    llvm::DenseMap<Value, fir::StoreOp> toHoistStoreOps;
+    llvm::DenseMap<Value, Value> toHoistStoredValues;
+    for (const auto& entry: addrOpStateMachine) {
+      // Have only one addr operation and it is a store
+      if (entry.getSecond().size() == 1 && entry.getSecond()[0]) {
+        auto addr = entry.getFirst();
+        assert(storeOps.find(addr) != storeOps.end());
+        auto internalStoreOp = storeOps[addr];
+        toHoistStoreOps[addr] = internalStoreOp;
+        // Do back track about the value, should store in where?
+      } else {
+        continue;
+      }
+    }
+
+    
+    rewriter.setInsertionPointAfter(doLoopOp);
+    return failure();
+  } 
+};
+
+struct HoistDoLoopLoadOp: public OpRewritePattern<fir::DoLoopOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(fir::DoLoopOp doLoopOp,
+                                PatternRewriter &rewriter) const final {
     return failure();
   }
 };
