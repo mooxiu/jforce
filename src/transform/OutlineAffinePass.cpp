@@ -116,6 +116,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
           MemRefType::get(valTypeInfo.shape, IntegerType::get(ctx, 64), {}, {}));
     } else {
       llvm::errs() << "Cannot handle this!\n";
+      outDefinedVals[i].dump();
       std::exit(EXIT_FAILURE);
     }
   }
@@ -170,12 +171,15 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   // Insert to the outlined function.
   opBuilder.setInsertionPointToEnd(entryBlock);
   IRMapping mapping;
+  int outlinedFuncIdx = 0;
   for (int i = 0; i < outDefinedVals.size(); i++) {
     auto outVal = outDefinedVals[i];
-    auto blockArg = entryBlock->getArgument(i);
+    auto blockArg = entryBlock->getArgument(outlinedFuncIdx);
+    outlinedFuncIdx += 1;
     
     mlir::IntegerAttr attr;
     if (matchPattern(outVal, m_Constant(&attr))) {
+      outlinedFuncIdx -= 1;
       if (outVal.getType().isIndex()) {
         auto constIndexOp = arith::ConstantIndexOp::create(opBuilder, forOp.getLoc(), attr.getInt());
         mapping.map(outVal, constIndexOp.getResult());
