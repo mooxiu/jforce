@@ -5,7 +5,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -17,6 +16,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <optional>
+#include "../support/utilities.h"
 
 using namespace mlir;
 
@@ -129,6 +129,18 @@ static void replaceLoopSignature(OpBuilder& opBuilder, fir::DoLoopOp doLoop){
   doLoop.erase();
 }
 
+// Before:
+//  fir::store %val to %mem
+//  %val2 fir::load %mem
+//  ...use %val2
+//
+// After:
+//  ...use %val
+//
+// Precondition:
+//  - after fir::store, the there's no other store to mem
+//
+[[deprecated("This should be done by mem2reg!")]]
 static void cleanRedundantStore(func::FuncOp funcOp) {
   auto isStoreToLoadedMem = [](Value valueToStore, Value memStoredTo) -> bool {
     if (fir::LoadOp loadOp = llvm::dyn_cast<fir::LoadOp>(valueToStore.getDefiningOp())) {
@@ -180,7 +192,6 @@ struct CleanFIRLoopPass
         replaceLoopSignature(opBuilder, doLoop);
       }
     } 
-    cleanRedundantStore(funcOp);
   };
 };
 } // namespace
