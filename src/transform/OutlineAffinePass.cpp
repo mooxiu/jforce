@@ -36,57 +36,6 @@ using namespace mlir;
 /// separate function, so the Enzyme-JAX's AffineToStableHLO pass can work.
 namespace {
 
-// fir.convert index -> i32/64 should be arith.index_case
-// fir.i32 -> i64 should be arith.extsi or arith.extui
-// fir.i64 -> i32 should be arith.trunci
-struct ReplaceFIRConvert : public OpRewritePattern<fir::ConvertOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(fir::ConvertOp convertOp,
-                                PatternRewriter &rewriter) const final {
-    auto fromVal = convertOp.getOperand();
-    auto fromValType = fromVal.getType();
-    auto toVal = convertOp.getResult();
-    auto toValType = toVal.getType();
-
-    if (!(fromValType.isIntOrIndex() && toValType.isIntOrIndex())) {
-      return failure();
-    }
-
-    mlir::IntegerAttr attr;
-    if (matchPattern(fromVal, m_Constant(&attr))) {
-      auto constVal = attr.getInt();
-      if (toValType.isIndex()) {
-        // arith::ConstantIndexOp::create(rewriter, convertOp.getLoc(), constVal);
-        rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(convertOp, constVal);
-      } else if (toValType.isInteger()) {
-        rewriter.replaceOpWithNewOp<arith::ConstantIntOp>(convertOp, constVal, toValType.getIntOrFloatBitWidth());
-      } else {
-        return failure();
-      }
-    }
-
-    Operation *castOp;
-    if (fromValType.isIndex() && toValType.isInteger()) {
-      rewriter.replaceOpWithNewOp<arith::IndexCastOp>(convertOp, toValType,
-                                                      fromVal);
-      return success();
-    } else if (fromValType.isInteger() && toValType.isInteger()) {
-      if (fromValType.getIntOrFloatBitWidth() <
-          toValType.getIntOrFloatBitWidth()) {
-        rewriter.replaceOpWithNewOp<arith::ExtSIOp>(convertOp, toValType,
-                                                    fromVal);
-        return success();
-      } else {
-        rewriter.replaceOpWithNewOp<arith::TruncIOp>(convertOp, toValType,
-                                                     fromVal);
-        return success();
-      }
-    }
-    return failure();
-  }
-};
-
 static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
                                        OpBuilder &opBuilder,
                                        affine::AffineForOp forOp) {
@@ -236,15 +185,6 @@ struct OutlineAffinePass
     auto moduleOp = getOperation();
     MLIRContext* ctx = getOperation()->getContext();
     OpBuilder opBuilder(moduleOp.getContext());
-
-    RewritePatternSet patterns(ctx);
-    patterns.add<ReplaceFIRConvert>(ctx);
-    GreedyRewriteConfig config;
-    config.enableFolding();
-    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns), config))) {
-      signalPassFailure();
-      return;
-    }
 
     llvm::SmallVector<func::FuncOp> funcOps;
     moduleOp.walk([&](func::FuncOp funcOp) { funcOps.push_back(funcOp); });
