@@ -13,9 +13,11 @@
 #define SET_XLA_FLAG()                                                         \
   setenv("XLA_FLAGS", "--xla_dump_to=/tmp/xla_dump --xla_dump_hlo_as_text", 1)
 #define DEBUG_PRINT(str) llvm::dbgs() << "[DEBUG]" << str << "\n"
+#define DEBUG_PRINT_VAL(val) llvm::dbgs() << "[DEBUG] "; val.print(llvm::dbgs()); llvm::dbgs() << " \n"
 #else
 #define SET_XLA_FLAG()
 #define DEBUG_PRINT(str)
+#define DEBUG_PRINT_VAL(val)
 #endif
 
 
