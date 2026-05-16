@@ -7,17 +7,20 @@
 #include "../../third_party/headers/pjrt_c_api.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/Operation.h"
 #include "llvm/Support/Debug.h"
 
 #ifdef ENABLE_XLA_DEBUG
 #define SET_XLA_FLAG()                                                         \
   setenv("XLA_FLAGS", "--xla_dump_to=/tmp/xla_dump --xla_dump_hlo_as_text", 1)
 #define DEBUG_PRINT(str) llvm::dbgs() << "[DEBUG]" << str << "\n"
-#define DEBUG_PRINT_VAL(val) llvm::dbgs() << "[DEBUG] "; val.print(llvm::dbgs()); llvm::dbgs() << " \n"
+#define DEBUG_PRINT_VAL(val) llvm::dbgs() << "[DEBUG] "; val.printAsOperand(llvm::dbgs(), {}); llvm::dbgs() << " \n";
+#define DEBUG_PRINT_OP(op) llvm::dbgs() << "[DEBUG] "; op->print(llvm::dbgs()); llvm::dbgs() << " \n"
 #else
 #define SET_XLA_FLAG()
 #define DEBUG_PRINT(str)
 #define DEBUG_PRINT_VAL(val)
+#define DEBUG_PRINT_OP(op)
 #endif
 
 

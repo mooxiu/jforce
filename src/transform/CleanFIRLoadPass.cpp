@@ -19,6 +19,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
@@ -88,6 +89,27 @@ static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
   return addrs;
 }
 
+static bool isOperationPossiblelyWriteToAddr(Operation* op, Value addr) {
+  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memInterface) {
+    if (llvm::is_contained(op->getOperands(), addr)) {
+      return true;
+    }
+  }
+  
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
+  memInterface.getEffects(effects);
+  for (const auto &effect : effects) {
+    if (isa<MemoryEffects::Write>(effect.getEffect())) {
+      Value effectValue = effect.getValue();
+      if (effectValue == addr || effectValue == nullptr) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Mem2reg is supposed to cover alloca, but we need aliasing analysis here.
 //
 // Before:
@@ -110,7 +132,7 @@ static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
 // Notice that we do not erase the store operation as it can be DCE-ed if it is
 // not been used.
 template <typename LoadTy>
-struct ReduceLoadStoredAddress : public OpRewritePattern<LoadTy> {
+struct ReduceWriteAndReadSameAddr : public OpRewritePattern<LoadTy> {
   using OpRewritePattern<LoadTy>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(LoadTy loadOp,
@@ -118,7 +140,7 @@ struct ReduceLoadStoredAddress : public OpRewritePattern<LoadTy> {
     auto addr = loadOp.getMemref();
     // Target or pointer can be aliased, here we conservatively stop doing this
     // optimization.
-    if (isTargetOrPointer(addr)) {
+    if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
       return failure();
     }
     Operation *currOp = loadOp;
@@ -147,6 +169,61 @@ struct ReduceLoadStoredAddress : public OpRewritePattern<LoadTy> {
 };
 
 // Before:
+//   %13 = memref.load %8[] : memref<i32>
+//   memref.store %13, %8[] : memref<i32>
+// After:
+//    (only delete the store, and hope the load will be erased in other pattern matchings)
+//   %13 = memref.load %8[] : memref<i32>
+//
+// Precondition:
+//   - address should be non aliasing
+//   - between the load and store, there should not be any other store to the addr!
+template<typename StoreTy>
+struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
+  using OpRewritePattern<StoreTy>::OpRewritePattern;
+  
+  LogicalResult matchAndRewrite(StoreTy storeOp,
+                                PatternRewriter &rewriter) const final {
+    Value addr = storeOp.getMemref();
+    if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
+      return failure();
+    }
+
+    Value val = storeOp.getValue();
+    Operation* readOp = val.getDefiningOp();
+    if (readOp->getBlock() != storeOp->getBlock()) {
+      // We do not consider cross block situation, it will makes the analysis much more difficult.
+      return failure();
+    }
+
+    // Require the load address and the store address, load value and read value be the same.
+    if (auto memLoad = llvm::dyn_cast<memref::LoadOp>(readOp)) {
+      if (memLoad.getMemref() != addr || memLoad.getResult() != val) {
+        return failure();
+      }
+    } else if (auto firLoad = llvm::dyn_cast<fir::LoadOp>(readOp)) {
+      if (firLoad.getMemref() != addr || firLoad.getResult() != val) {
+        return failure();
+      }
+    } else {
+      DEBUG_PRINT("Unexpected readOp: ");
+      DEBUG_PRINT_OP(readOp);
+      return failure();
+    }
+
+    for (Operation* op = readOp->getNextNode(); op != storeOp; op = op->getNextNode()) {
+      if (isOperationPossiblelyWriteToAddr(op, addr)) {
+        return failure();
+      }
+    }
+
+    rewriter.eraseOp(storeOp);
+    
+    return failure();
+  }
+};
+
+// Before:
 // fir.do_loop .. {
 //  ...
 //  fir.store %8 to %0#0
@@ -170,7 +247,7 @@ struct ReduceLoadStoredAddress : public OpRewritePattern<LoadTy> {
 // Why correct:
 // - if no read between, write to the same address is idempotent.
 template <typename LoopTy>
-struct ReduceRepeatedStore : public OpRewritePattern<LoopTy> {
+struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
   using OpRewritePattern<LoopTy>::OpRewritePattern;
   LogicalResult matchAndRewrite(LoopTy doLoopOp,
                                 PatternRewriter &rewriter) const final {
@@ -180,6 +257,10 @@ struct ReduceRepeatedStore : public OpRewritePattern<LoopTy> {
     llvm::DenseMap<Value, llvm::SmallVector<Operation *>> repeatedStoreOps;
 
     auto popLast = [&](Value addr) {
+      if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
+        // DO NOTHING
+        return;
+      }
       auto it = repeatedStoreOps.find(addr);
       if (it != repeatedStoreOps.end() && !it->getSecond().empty()) {
         if (it->getSecond().size() == 1) {
@@ -338,10 +419,12 @@ struct CleanFIRLoadPass
     MLIRContext *ctx = getOperation()->getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns.add<ReduceLoadStoredAddress<fir::LoadOp>>(ctx);
-    patterns.add<ReduceLoadStoredAddress<memref::LoadOp>>(ctx);
-    patterns.add<ReduceRepeatedStore<fir::StoreOp>>(ctx);
-    patterns.add<ReduceRepeatedStore<memref::StoreOp>>(ctx);
+    patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp>>(ctx);
+    patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp>>(ctx);
+    patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp>>(ctx);
+    patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp>>(ctx);
+    patterns.add<ReduceRepeatWriteAddr<fir::StoreOp>>(ctx);
+    patterns.add<ReduceRepeatWriteAddr<memref::StoreOp>>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
