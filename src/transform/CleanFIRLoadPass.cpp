@@ -3,14 +3,18 @@
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/WalkResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -19,7 +23,6 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
@@ -92,15 +95,32 @@ static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
 static bool isOperationPossiblelyWriteToAddr(Operation* op, Value addr) {
   auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
   if (!memInterface) {
-    if (llvm::is_contained(op->getOperands(), addr)) {
-      return true;
-    }
+    return llvm::is_contained(op->getOperands(), addr);
   }
   
   SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
   memInterface.getEffects(effects);
   for (const auto &effect : effects) {
     if (isa<MemoryEffects::Write>(effect.getEffect())) {
+      Value effectValue = effect.getValue();
+      if (effectValue == addr || effectValue == nullptr) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static bool isOperationPossiblelyReadFromAddr(Operation* op, Value addr) {
+  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memInterface) {
+    return llvm::is_contained(op->getOperands(), addr);
+  }
+  
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
+  memInterface.getEffects(effects);
+  for (const auto &effect : effects) {
+    if (isa<MemoryEffects::Read>(effect.getEffect())) {
       Value effectValue = effect.getValue();
       if (effectValue == addr || effectValue == nullptr) {
         return true;
@@ -218,8 +238,7 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
     }
 
     rewriter.eraseOp(storeOp);
-    
-    return failure();
+    return success();
   }
 };
 
@@ -396,11 +415,60 @@ struct HoistDoLoopStoreOp : public OpRewritePattern<fir::DoLoopOp> {
   }
 };
 
-struct HoistDoLoopLoadOp : public OpRewritePattern<fir::DoLoopOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(fir::DoLoopOp doLoopOp,
+
+// Before:
+//    // no write to %addr
+//    loop {
+//      ... no write to %addr
+//      val = read %addr
+//      ... no write to %addr
+//    }
+//
+// After:
+//    val = read %addr
+//    loop {
+//      ... no write to %addr
+//    }
+// 
+// Precondition:
+// - addr is not target or pointer, so no aliasing problem
+// - in the loop, there's no possible write to %addr
+// - addr and indices are defined outside of the loop
+template<typename ReadOpTy>
+struct HoistReadOpFromLoop : public OpRewritePattern<ReadOpTy> {
+  using OpRewritePattern<ReadOpTy>::OpRewritePattern;
+  LogicalResult matchAndRewrite(ReadOpTy readOp,
                                 PatternRewriter &rewriter) const final {
-    return failure();
+    auto loopOp = readOp->template getParentOfType<LoopLikeOpInterface>();
+    if (!loopOp) {
+      return failure();
+    }
+
+    Value addr = readOp.getMemref();
+    if (!loopOp.isDefinedOutsideOfLoop(addr)) {
+      return failure();
+    }
+
+    for (Value operand : readOp->getOperands()) {
+      if (!loopOp.isDefinedOutsideOfLoop(operand)) {
+        return failure();       
+      }
+    }
+
+    bool hasWrite = false;
+    loopOp->walk([&](Operation* op){
+      if (isOperationPossiblelyWriteToAddr(op, addr)) {
+        hasWrite = true;
+        return WalkResult::interrupt();
+      };
+      return WalkResult::advance();
+    });
+    if (hasWrite) {
+      return failure();
+    }
+
+    rewriter.moveOpBefore(readOp, loopOp);
+    return success();
   }
 };
 
@@ -423,8 +491,11 @@ struct CleanFIRLoadPass
     patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp>>(ctx);
     patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp>>(ctx);
     patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<fir::StoreOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<memref::StoreOp>>(ctx);
+    patterns.add<ReduceRepeatWriteAddr<fir::DoLoopOp>>(ctx);
+    patterns.add<ReduceRepeatWriteAddr<scf::ForOp>>(ctx);
+    patterns.add<ReduceRepeatWriteAddr<affine::AffineForOp>>(ctx);
+    patterns.add<HoistReadOpFromLoop<fir::LoadOp>>(ctx);
+    patterns.add<HoistReadOpFromLoop<memref::LoadOp>>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
