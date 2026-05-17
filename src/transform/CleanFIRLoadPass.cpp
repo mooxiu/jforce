@@ -11,6 +11,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
@@ -19,10 +20,12 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdlib>
@@ -31,6 +34,22 @@
 using namespace mlir;
 
 namespace {
+
+// TODO: this is not used for now, but for more aggressive optimization, 
+// we should use this instead of the memref itself.
+struct MemoryLocation {
+  Value base;
+  SmallVector<Value> indices;
+
+  bool isExactly(const MemoryLocation& other) const {
+    if (base != other.base) return false;
+    if (indices.size() != other.indices.size()) return false;
+    for (auto [idx1, idx2] : llvm::zip(indices, other.indices)) {
+      if (idx1 != idx2) return false;
+    }
+    return true;
+  }
+};
 
 static std::optional<Value> __getAncient(Value val) {
   DEBUG_PRINT_VAL(val);
@@ -340,13 +359,13 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
 
 // After the above patterns, now inside of doloop, it should be:
 // "ReadOp* (StoreOp ReadOp)* StoreOp?"
-// If there's only a `StoreOp` for an address in this DoLoop, we have the chance
+// If there's only a `StoreOp` for an addressxindices in this DoLoop, we have the chance
 // to hoist it out of the doLoop.
 //
 // Before:
 //  DOLOOP{
 //    ...
-//    fir.store %18 to %0#0
+//    write %val to addr[indices]
 //    ...
 //  }
 //
@@ -354,64 +373,112 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
 //  DOLOOP{
 //    ...
 //  }
-//  fir.store ??? to %0#0
+//  write %val to addr[indices]
 //
 // Precondition:
-// - no aliasing and sharing of %0#0
-// - an address, there should only be one storeOp for that
-// - no goto or return or other control operation in the loop
+// - no aliasing and sharing of memref
+// - there should be no other access to the same address (memref x indices)
+//  - thinking about this: 
+//      store %val1 to addr1[1]
+//      store %val2 to addr1[2]
+//    we can actually hoist both of them out of the loop!
+// - no goto or return or other control operation in the loop: no break!
 //
-struct HoistDoLoopStoreOp : public OpRewritePattern<fir::DoLoopOp> {
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(fir::DoLoopOp doLoopOp,
-                                PatternRewriter &rewriter) const final {
-    llvm::DenseMap<Value, fir::StoreOp> storeOps;
-    llvm::DenseMap<Value, llvm::SmallVector<bool>>
-        addrOpStateMachine; // storeOp -> true, readOp -> flase
-    doLoopOp.walk([&](Operation *op) {
-      llvm::TypeSwitch<Operation *>(op)
-          .Case<fir::LoadOp, hlfir::DesignateOp, func::CallOp>(
-              [&](Operation *typedOp) {
-                auto readAddrs = getReadFromAddr(typedOp);
-                for (auto addr : readAddrs) {
-                  auto it = addrOpStateMachine.find(addr);
-                  if (it != addrOpStateMachine.end()) {
-                    it->getSecond().push_back(false);
-                  } else {
-                    addrOpStateMachine[addr] = {false};
-                  }
-                }
-              })
-          .Case<fir::StoreOp>([&](fir::StoreOp storeOp) {
-            auto addr = storeOp.getMemref();
-            storeOps[addr] = storeOp;
-            auto it = addrOpStateMachine.find(addr);
-            if (it != addrOpStateMachine.end()) {
-              it->getSecond().push_back(true);
-            } else {
-              addrOpStateMachine[addr] = {true};
-            }
-          })
-          .Default([](auto) {});
-    });
+template<typename WriteOpTy>
+struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
+  using OpRewritePattern<WriteOpTy>::OpRewritePattern;
 
-    llvm::DenseMap<Value, fir::StoreOp> toHoistStoreOps;
-    llvm::DenseMap<Value, Value> toHoistStoredValues;
-    for (const auto &entry : addrOpStateMachine) {
-      // Have only one addr operation and it is a store
-      if (entry.getSecond().size() == 1 && entry.getSecond()[0]) {
-        auto addr = entry.getFirst();
-        assert(storeOps.find(addr) != storeOps.end());
-        auto internalStoreOp = storeOps[addr];
-        toHoistStoreOps[addr] = internalStoreOp;
-        // Do back track about the value, should store in where?
-      } else {
-        continue;
-      }
+  static Value getIV(Operation* loopOp) {
+    if (auto firLoopOp = llvm::dyn_cast<fir::DoLoopOp>(loopOp)) {
+      return firLoopOp.getInductionVar();
+    } else if (auto scfForOp = llvm::dyn_cast<scf::ForOp>(loopOp)) {
+      return scfForOp.getInductionVar();
+    } else if (auto affineForOp = llvm::dyn_cast<affine::AffineForOp>(loopOp)) {
+      return affineForOp.getInductionVar();
+    } else {
+      llvm::errs() << "Unexpected loopOp type, cannot get IV!\n";
+      DEBUG_PRINT_OP(loopOp);
+      return nullptr;
+    }
+  }
+
+  LogicalResult matchAndRewrite(WriteOpTy writeOp,
+                                PatternRewriter &rewriter) const final {
+    auto loopOp = writeOp->template getParentOfType<LoopLikeOpInterface>();
+    if (!loopOp) {
+      return failure();
     }
 
-    rewriter.setInsertionPointAfter(doLoopOp);
-    return failure();
+    Value mem = writeOp.getMemref();
+    Value val = writeOp.getValue();
+
+    bool hasOtherMemAccess = false;
+    bool hasBreak = false;
+    loopOp->walk([&](Operation* op){
+      if (isOperationPossiblelyReadFromAddr(op, mem)) {
+        hasOtherMemAccess = true;
+        WalkResult::interrupt();
+      } 
+      if (isOperationPossiblelyWriteToAddr(op, mem)) {
+        if (op != writeOp) {
+          hasOtherMemAccess = true;
+          WalkResult::interrupt();
+        }
+      }
+      if (llvm::isa<func::ReturnOp>(op)) {
+        hasBreak = true;
+        WalkResult::interrupt(); 
+      }
+      WalkResult::advance();
+    });
+    if (hasOtherMemAccess || hasBreak) {
+      return failure();
+    }
+
+    // value should only be made of constants or IV
+    Value IV = getIV(loopOp);
+    if (!IV) {
+      return failure();
+    }
+
+
+    llvm::SmallSetVector<Value, 0> operandsToVisit;
+    llvm::DenseSet<Value> visitedOperands{IV};
+    llvm::SmallVector<Operation *> valTrack;    
+
+    operandsToVisit.insert(val);
+
+    while (operandsToVisit.size() > 0) {
+      Value currOp = operandsToVisit.pop_back_val();
+      visitedOperands.insert(currOp);
+      Operation* defOp = currOp.getDefiningOp();
+      if (loopOp.isDefinedOutsideOfLoop(defOp)) {
+        continue;
+      }      
+      // defOp is defined inside of loopOp
+      auto operands = defOp -> getOperands(); 
+      if (llvm::isa<memref::LoadOp, fir::LoadOp>(defOp)) {
+        // Value of definition operation should not be a loadOp!
+        return failure();
+      }
+
+      auto shouldTrackDefOp = false;
+      for (auto operand : operands) {
+        if (!visitedOperands.contains(operand)) {
+          operandsToVisit.insert(operand);
+          shouldTrackDefOp = true;
+        }
+      }
+      if (shouldTrackDefOp) {
+        valTrack.push_back(defOp);
+      }
+    }
+    rewriter.setInsertionPointAfter(loopOp);
+    // reconstruct IV
+
+    // copy the track
+    // reconstruct the write operation
+    // erase original store
   }
 };
 
