@@ -4,6 +4,7 @@
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -402,6 +403,26 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     }
   }
 
+  static Operation* reconstructFinalIV(Operation* loopOp, PatternRewriter& rewriter) {
+    auto loc = loopOp->getLoc();
+    if (auto doLoopOp = llvm::dyn_cast<fir::DoLoopOp>(loopOp)) {
+      // doloop start with index 1, and includes [lowerbound, upperbound]
+      Value lb = doLoopOp.getLowerBound();
+      Value ub = doLoopOp.getUpperBound();
+      Value step = doLoopOp.getStep();
+
+      // final_iv = lb + ((ub - lb) / step) * step
+      Value diff = arith::SubIOp::create(rewriter, loc, ub.getType(), ub, lb, {});
+      Value iters = arith::DivSIOp::create(rewriter, loc, diff.getType(), diff, step, {});
+      Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), step, {});
+      return arith::AddIOp::create(rewriter, loc, lb.getType(), lb, offset, {});
+    } else if (auto affineForLoopOp = llvm::dyn_cast<affine::AffineForOp>(loopOp)) {
+      auto v = affineForLoopOp.getUpperBound();
+       
+    }
+    return nullptr;
+  }
+
   LogicalResult matchAndRewrite(WriteOpTy writeOp,
                                 PatternRewriter &rewriter) const final {
     auto loopOp = writeOp->template getParentOfType<LoopLikeOpInterface>();
@@ -475,7 +496,7 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     }
     rewriter.setInsertionPointAfter(loopOp);
     // reconstruct IV
-
+    
     // copy the track
     // reconstruct the write operation
     // erase original store
