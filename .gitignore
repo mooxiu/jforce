@@ -10,4 +10,4 @@ third_party/protos/generated
 leak_report.txt
 err.log
 xla_dump/
-tests/
+tests/fortran/
