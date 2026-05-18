@@ -4,11 +4,14 @@
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
@@ -29,6 +32,7 @@
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <optional>
 
@@ -407,20 +411,50 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     auto loc = loopOp->getLoc();
     if (auto doLoopOp = llvm::dyn_cast<fir::DoLoopOp>(loopOp)) {
       // doloop start with index 1, and includes [lowerbound, upperbound]
+      // final_iv = lb + ((ub - lb) / step) * step
       Value lb = doLoopOp.getLowerBound();
       Value ub = doLoopOp.getUpperBound();
       Value step = doLoopOp.getStep();
 
-      // final_iv = lb + ((ub - lb) / step) * step
       Value diff = arith::SubIOp::create(rewriter, loc, ub.getType(), ub, lb, {});
       Value iters = arith::DivSIOp::create(rewriter, loc, diff.getType(), diff, step, {});
       Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), step, {});
       return arith::AddIOp::create(rewriter, loc, lb.getType(), lb, offset, {});
     } else if (auto affineForLoopOp = llvm::dyn_cast<affine::AffineForOp>(loopOp)) {
-      auto v = affineForLoopOp.getUpperBound();
-       
+      // affineFor starts from 0, and it is [lb, ub)
+      // final_iv = lb + ((ub - lb - 1) / step) * step
+      //
+      // affine.for iv = lb to ub step
+      assert(affineForLoopOp.getLowerBound().getNumOperands() == 1);
+      assert(affineForLoopOp.getUpperBound().getNumOperands() == 1);
+      auto lb = affineForLoopOp.getLowerBound().getOperand(0);
+      Value ub = affineForLoopOp.getUpperBound().getOperand(0);
+      int64_t stepInt = affineForLoopOp.getStepAsInt();
+      Value step = arith::ConstantIndexOp::create(rewriter, loc, stepInt);
+
+      Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      Value realub = arith::SubIOp::create(rewriter, loc, ub.getType(), ub, c1, {});
+      Value diff = arith::SubIOp::create(rewriter, loc, realub.getType(), realub, lb, {});
+      Value iters = arith::DivSIOp::create(rewriter, loc, diff.getType(), diff, step, {});
+      Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), step, {});
+      return arith::AddIOp::create(rewriter, loc, lb.getType(), lb, offset, {});
     }
     return nullptr;
+  }
+
+  static Operation* reconstructStore(
+    Operation* writeOp, 
+    Value val, 
+    llvm::SmallVector<Value> indices, 
+    PatternRewriter &rewriter
+  ) {
+    if (auto firStoreOp = llvm::dyn_cast<fir::StoreOp>(writeOp)) {
+      fir::StoreOp::create(rewriter, writeOp->getLoc(), val, firStoreOp.getMemref());
+    } else if (auto memStoreOp = llvm::dyn_cast<memref::StoreOp>(writeOp)){
+      memref::StoreOp::create(rewriter, writeOp->getLoc(), val, memStoreOp.getMemref(), indices);
+    } else {
+      return nullptr;
+    }
   }
 
   LogicalResult matchAndRewrite(WriteOpTy writeOp,
@@ -466,6 +500,7 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     llvm::SmallSetVector<Value, 0> operandsToVisit;
     llvm::DenseSet<Value> visitedOperands{IV};
     llvm::SmallVector<Operation *> valTrack;    
+    IRMapping valTrackMapping;
 
     operandsToVisit.insert(val);
 
@@ -496,9 +531,17 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     }
     rewriter.setInsertionPointAfter(loopOp);
     // reconstruct IV
-    
+    Operation* finalIVOp = reconstructFinalIV(loopOp, rewriter);
+    assert(finalIVOp->getNumResults() == 1);
+    valTrackMapping.map(IV, finalIVOp->getResult(0));
     // copy the track
+    Operation* lastOp;
+    for (int i = valTrack.size() - 1; i>=0; i --) {
+      lastOp = rewriter.clone(*valTrack[i], valTrackMapping);
+    } 
     // reconstruct the write operation
+    
+    
     // erase original store
   }
 };
