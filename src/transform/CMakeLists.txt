@@ -1,3 +1,13 @@
+find_path(ISL_INCLUDE_DIR NAMES isl/aff.h)
+find_library(ISL_LIBRARY NAMES isl)
+
+if(NOT ISL_INCLUDE_DIR OR NOT ISL_LIBRARY)
+  message(FATAL_ERROR "ISL library or headers not found. Please specify -DCMAKE_PREFIX_PATH.")
+else()
+  message(STATUS "Found ISL include: ${ISL_INCLUDE_DIR}")
+  message(STATUS "Found ISL library: ${ISL_LIBRARY}")
+endif()
+
 add_library(JitTransforms STATIC 
   AnnotatePass.cpp
   AliasingPass.cpp
@@ -21,6 +31,8 @@ add_library(JitTransforms STATIC
 target_include_directories(JitTransforms
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
+  PRIVATE
+    ${ISL_INCLUDE_DIR}
 )
 
 target_link_libraries(JitTransforms
@@ -28,6 +40,7 @@ target_link_libraries(JitTransforms
     JitSupport
     MLIRPass
   PRIVATE
+    ${ISL_LIBRARY}
     -Wl,--start-group ${stablehlo_all_libs}  -Wl,--end-group
     FIRDialect
     HLFIRDialect
