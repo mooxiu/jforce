@@ -14,10 +14,8 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -81,7 +79,6 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
       func::FuncOp::create(opBuilder, funcOp.getLoc(), outlinedFuncName,
                            outlinedFuncType, attrs, argAttrs);
   auto entryBlock = outlinedFunc.addEntryBlock();
-  opBuilder.setInsertionPointToEnd(entryBlock);
 
   // Copy from old to new
   opBuilder.setInsertionPoint(forOp);
