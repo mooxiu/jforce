@@ -12,18 +12,16 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createWorkdistributeToStableHLOPass(); 
   std::unique_ptr<mlir::Pass> createAffineCFGPass();
   std::unique_ptr<mlir::Pass> createCleanFIRLoopPass();
-  [[deprecated("Use CleanFIRLoopPass and CleanFIRLoadPass")]]
+  [[deprecated("Use CleanFIRLoopPass and other passes")]]
   std::unique_ptr<mlir::Pass> createSimplifyDoLoopPass();
   std::unique_ptr<mlir::Pass> createAffineToStableHLORaisingPass();
-  [[deprecated("")]]
-  std::unique_ptr<mlir::Pass> createFIRLoadToAffineLoadPass();
   std::unique_ptr<mlir::Pass> createFirLICMPass();  
   std::unique_ptr<mlir::Pass> createArithRaisingPass();
   std::unique_ptr<mlir::Pass> createOutlineAffinePass();
   std::unique_ptr<mlir::Pass> createPropagateConstantsPass();
   std::unique_ptr<mlir::Pass> createCleanFIRLoadPass();
   std::unique_ptr<mlir::Pass> createCleanFIROpsPass();
-
+  std::unique_ptr<mlir::Pass> createOptimizeMemOpsPass();
 
   void registerAnnotatePass();
   void registerAliasingPass();
@@ -32,18 +30,15 @@ namespace xla_jit {
   void registerWorkdistributeToStableHLOPass();
   void registerAffineCFGPass();
   void registerCleanFIRLoopPass();
-  [[deprecated("Use CleanFIRLoopPass and CleanFIRLoadPass")]]
+  [[deprecated("Use CleanFIRLoopPass and other passes")]]
   void registerSimplifyDoLoopPass();
   void registerAffineToStableHLORaisingPass();
-  [[deprecated("")]]
-  void registerFIRLoadToAffineLoadPass();
   void registerFirLICMPass();
   void registerArithRaisingPass();
   void registerOutlineAffinePass();
   void registerPropagateConstantsPass();
-  void registerCleanFIRLoadPass();
   void registerCleanFIROpsPass();
-
+  void registerOptimizeMemOpsPass();
   void registerAllJitPasses();
 }
 
