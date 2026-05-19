@@ -33,9 +33,10 @@ using namespace mlir;
 /// separate function, so the Enzyme-JAX's AffineToStableHLO pass can work.
 namespace {
 
+template<typename LoopType>
 static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
                                        OpBuilder &opBuilder,
-                                       affine::AffineForOp forOp) {
+                                       LoopType forOp) {
   // Collect all values defined outside of the affineOp itself.
   llvm::SetVector<Value> outDefinedVals;
   // Values defined outside of forOp used in forOp region.
@@ -189,10 +190,17 @@ struct OutlineAffinePass
       llvm::SmallVector<Operation *> toDelete;
       funcOp.walk([&](affine::AffineForOp affineForOp) {
         // creating a function, which has the inputs for all the slices and affine bounds.
-        outlineAffineForOp(ctx, funcOp, opBuilder, affineForOp);
+        outlineAffineForOp<affine::AffineForOp>(ctx, funcOp, opBuilder, affineForOp);
         toDelete.push_back(affineForOp);
         return;
       });
+      funcOp.walk([&](affine::AffineParallelOp affineParallelOp) {
+        // creating a function, which has the inputs for all the slices and affine bounds.
+        outlineAffineForOp<affine::AffineParallelOp>(ctx, funcOp, opBuilder, affineParallelOp);
+        toDelete.push_back(affineParallelOp);
+        return;
+      });
+
       for (auto *op : toDelete) {
         op->erase();
       }
