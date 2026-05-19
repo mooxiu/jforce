@@ -58,8 +58,6 @@ struct MemoryLocation {
 };
 
 static std::optional<Value> __getAncient(Value val) {
-  DEBUG_PRINT_VAL(val);
-
   if (!llvm::isa<fir::ReferenceType, MemRefType>(val.getType())) {
     llvm::errs() << "This is not a address\n";
     return std::nullopt;
@@ -481,6 +479,56 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     return valTrack;
   }
 
+  // example: store %val to %mem[indices]
+  // allowIV: allow value to be relied on IV, but not allow indices to rely on IV as it changes during each iteration.
+  static LogicalResult collectDependencies(
+    mlir::LoopLikeOpInterface loopOp,
+    Value IV,
+    Value val,
+    llvm::DenseSet<Operation*>& opsToClone,
+    bool allowIV
+  ) {
+    if (val == IV) {
+      return allowIV? success(): failure();
+    }
+
+    llvm::SmallVector<Value> workList;
+    workList.push_back(val);
+    llvm::DenseSet<Value> visited;
+
+    while (!workList.empty()) {
+      Value currValue = workList.pop_back_val();
+      if (!visited.contains(currValue)) {
+        continue;
+      }
+      if (currValue == IV) {
+        if (allowIV) {
+          continue;
+        } else {
+          return failure();
+        }
+      }
+
+      if (loopOp.isDefinedOutsideOfLoop(currValue)) {continue;}
+
+      Operation* defOp = currValue.getDefiningOp();
+      if (!defOp) {
+        return failure();
+      }
+      
+      if (llvm::isa<memref::LoadOp, fir::LoadOp>(defOp)) {
+        DEBUG_PRINT("Dependency chain relies on LoadOp!");
+        return failure();
+      }
+
+      opsToClone.insert(defOp);
+      for (Value operand: defOp->getOperands()) {
+        workList.push_back(operand);
+      }
+    }
+    return success();
+  }
+
   static Operation* reconstructFinalIV(Operation* loopOp, PatternRewriter& rewriter) {
     auto loc = loopOp->getLoc();
     if (auto doLoopOp = llvm::dyn_cast<fir::DoLoopOp>(loopOp)) {
@@ -499,10 +547,24 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       // final_iv = lb + ((ub - lb - 1) / step) * step
       //
       // affine.for iv = lb to ub step
-      assert(affineForLoopOp.getLowerBound().getNumOperands() == 1);
-      assert(affineForLoopOp.getUpperBound().getNumOperands() == 1);
-      auto lb = affineForLoopOp.getLowerBound().getOperand(0);
-      Value ub = affineForLoopOp.getUpperBound().getOperand(0);
+      
+      assert(affineForLoopOp.getLowerBound().getNumOperands() <= 1); // if constant bound, then this is zero
+      assert(affineForLoopOp.getUpperBound().getNumOperands() <= 1);
+      Value lb, ub;
+      if (affineForLoopOp.hasConstantLowerBound()) {
+        int64_t lbInt = affineForLoopOp.getConstantLowerBound();
+        rewriter.setInsertionPoint(affineForLoopOp);
+        lb = arith::ConstantIndexOp::create(rewriter, affineForLoopOp.getLoc(), lbInt);
+      } else {
+        lb = affineForLoopOp.getLowerBound().getOperand(0);
+      }
+      if (affineForLoopOp.hasConstantUpperBound()) {
+        int64_t ubInt = affineForLoopOp.getConstantUpperBound(); 
+        rewriter.setInsertionPoint(affineForLoopOp);
+        ub = arith::ConstantIndexOp::create(rewriter, affineForLoopOp.getLoc(), ubInt);
+      } else {
+        ub = affineForLoopOp.getUpperBound().getOperand(0);
+      }
       int64_t stepInt = affineForLoopOp.getStepAsInt();
       Value step = arith::ConstantIndexOp::create(rewriter, loc, stepInt);
 
@@ -510,7 +572,8 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       Value realub = arith::SubIOp::create(rewriter, loc, ub.getType(), ub, c1, {});
       Value diff = arith::SubIOp::create(rewriter, loc, realub.getType(), realub, lb, {});
       Value iters = arith::DivSIOp::create(rewriter, loc, diff.getType(), diff, step, {});
-      Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), step, {});
+      // static MulIOp create(::mlir::OpBuilder &builder, ::mlir::Location location, ::mlir::Type result, ::mlir::Value lhs, ::mlir::Value rhs, ::mlir::arith::IntegerOverflowFlags overflowFlags = ::mlir::arith::IntegerOverflowFlags::none);
+      Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), iters, step, {});
       return arith::AddIOp::create(rewriter, loc, lb.getType(), lb, offset, {});
     }
     return nullptr;
@@ -570,24 +633,18 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       return failure();
     }
 
-    auto valueToStoreTrackOptional = trackValueInLoop(loopOp, IV, valueToStore);
-    if (!valueToStoreTrackOptional.has_value()) {
+    llvm::DenseSet<Operation*> opsToClone;
+    if (failed(collectDependencies(loopOp, IV, valueToStore, opsToClone, true))) {
       return failure();
     }
-    auto valTrack = valueToStoreTrackOptional.value();
     
     // If memref, we should also reconstruct the indices 
-    llvm::SmallVector<llvm::SmallVector<Operation*>> indicesTracks;  
-    if (memref::StoreOp memrefStoreOp = llvm::dyn_cast<memref::StoreOp>(writeOp)) {
-      auto indices = memrefStoreOp.getIndices();
+    if constexpr (std::is_same_v<WriteOpTy, memref::StoreOp>) {
+      auto indices = writeOp.getIndices();
       for (const auto& idx: indices) {
-        auto idxTrackOptional = trackIdxInLoop(loopOp, IV, idx);
-        if (!idxTrackOptional.has_value()){
-          DEBUG_PRINT("Index relies on loadOp or IV!\n");
+        if (failed(collectDependencies(loopOp, IV, idx, opsToClone, false))) {
           return failure();
-        } else {
-          indicesTracks.push_back(idxTrackOptional.value());  
-        }
+        }    
       }
     }
   
@@ -595,33 +652,25 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     rewriter.setInsertionPointAfter(loopOp);
     Operation* finalIVOp = reconstructFinalIV(loopOp, rewriter);
     assert(finalIVOp->getNumResults() == 1);
-    IRMapping valTrackMapping;
-    valTrackMapping.map(IV, finalIVOp->getResult(0));
 
-    // copy the value track
-    Operation* lastOp;
-    for (int i = valTrack.size() - 1; i>=0; i --) {
-      lastOp = rewriter.clone(*valTrack[i], valTrackMapping);
-    } 
-    assert(lastOp->getNumResults() == 1);
-    Value resVal = lastOp->getResult(0);
-    lastOp = nullptr;
-    // copy the indices track 
-    llvm::SmallVector<Value> resIndices;
-    for (int dim = 0; dim < indicesTracks.size(); dim++) {
-      llvm::SmallVector<Operation*> indicesTrack = indicesTracks[dim];
-      for (int i = indicesTrack.size() - 1; i >=0; i--) {
-        lastOp = rewriter.clone(*indicesTrack[i]);  
-      }   
-      assert(lastOp->getNumResults() == 1);
-      resIndices.push_back(lastOp->getResult(0));
-      lastOp = nullptr;
-    }
-    
+    // copy the value track and indices track
+    IRMapping mapping;
+    mapping.map(IV, finalIVOp->getResult(0));
+    loopOp.walk([&](Operation* op){
+      if (opsToClone.contains(op)) {
+        rewriter.clone(*op, mapping);
+      }
+    });
+    Value resVal = mapping.lookupOrDefault(valueToStore);
+
     // reconstruct the write operation
-    if (llvm::isa<fir::StoreOp>(writeOp)) {
+    if constexpr (std::is_same_v<WriteOpTy, fir::StoreOp>) {
       fir::StoreOp::create(rewriter, writeOp->getLoc(), resVal, mem);
-    } else if (llvm::isa<memref::StoreOp>(writeOp)) {
+    } else if constexpr (std::is_same_v<WriteOpTy, memref::StoreOp>) {
+      llvm::SmallVector<Value> resIndices;
+      for (Value idx: writeOp.getIndices()) {
+        resIndices.push_back(mapping.lookupOrDefault(idx));
+      }
       memref::StoreOp::create(rewriter, writeOp->getLoc(), resVal, mem, resIndices);
     } else {
       llvm::errs() << "Unexpected write type!\n";
@@ -630,6 +679,7 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     
     // erase original store
     rewriter.eraseOp(writeOp);
+    return success();
   }
 };
 
@@ -714,6 +764,8 @@ struct CleanFIRLoadPass
     patterns.add<ReduceRepeatWriteAddr<affine::AffineForOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<fir::LoadOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<memref::LoadOp>>(ctx);
+    patterns.add<HoistWriteOpFromLoop<fir::StoreOp>>(ctx);
+    patterns.add<HoistWriteOpFromLoop<memref::StoreOp>>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
