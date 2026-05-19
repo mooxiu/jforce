@@ -16,10 +16,12 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "support/utilities.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
@@ -36,13 +38,13 @@ namespace {
 template<typename LoopType>
 static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
                                        OpBuilder &opBuilder,
-                                       LoopType forOp) {
+                                       LoopType loopOp) {
   // Collect all values defined outside of the affineOp itself.
   llvm::SetVector<Value> outDefinedVals;
   // Values defined outside of forOp used in forOp region.
-  mlir::getUsedValuesDefinedAbove({forOp.getRegion()}, outDefinedVals);
+  mlir::getUsedValuesDefinedAbove({loopOp.getRegion()}, outDefinedVals);
   // Insert values of forOp itself.
-  llvm::for_each(forOp.getOperands(),
+  llvm::for_each(loopOp.getOperands(),
                  [&](Value forOpVal) { outDefinedVals.insert(forOpVal); });
 
 
@@ -71,7 +73,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   auto outlinedFuncType = opBuilder.getFunctionType(outlinedFuncInputTypes, {});
   auto outlinedFuncName =
       llvm::formatv("outlined_affinefor_{0}", reinterpret_cast<std::uintptr_t>(
-                                                  forOp.getAsOpaquePointer()))
+                                                  loopOp.getAsOpaquePointer()))
           .str();
   llvm::SmallVector<NamedAttribute> attrs = {};
   llvm::SmallVector<DictionaryAttr> argAttrs = {};
@@ -81,7 +83,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   auto entryBlock = outlinedFunc.addEntryBlock();
 
   // Copy from old to new
-  opBuilder.setInsertionPoint(forOp);
+  opBuilder.setInsertionPoint(loopOp);
   llvm::SmallVector<Value> realInputArgs;
   for (int i = 0; i < outDefinedVals.size(); i++) {
     auto outVal = outDefinedVals[i];
@@ -92,19 +94,19 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
       realInputArgs.push_back(outVal);
     } else if (outVal.getType().isIndex()) {
       Type elementType = IntegerType::get(ctx, 32);
-      auto castOp = arith::IndexCastOp::create(opBuilder, forOp.getLoc(),
+      auto castOp = arith::IndexCastOp::create(opBuilder, loopOp.getLoc(),
                                                elementType, outVal);
       auto allocaOp = memref::AllocaOp::create(
-          opBuilder, forOp.getLoc(), MemRefType::get({}, elementType, {}, {}));
+          opBuilder, loopOp.getLoc(), MemRefType::get({}, elementType, {}, {}));
       auto storeOp =
-          memref::StoreOp::create(opBuilder, forOp.getLoc(), castOp.getResult(),
+          memref::StoreOp::create(opBuilder, loopOp.getLoc(), castOp.getResult(),
                                   allocaOp.getResult(), {});
       realInputArgs.push_back(storeOp.getMemRef());
     } else if (outVal.getType().isIntOrFloat()) {
       auto allocaOp = memref::AllocaOp::create(
-          opBuilder, forOp.getLoc(),
+          opBuilder, loopOp.getLoc(),
           MemRefType::get({}, outVal.getType(), {}, {}));
-      auto storeOp = memref::StoreOp::create(opBuilder, forOp.getLoc(), outVal, allocaOp.getResult(), {});
+      auto storeOp = memref::StoreOp::create(opBuilder, loopOp.getLoc(), outVal, allocaOp.getResult(), {});
       realInputArgs.push_back(storeOp.getMemRef());
     } else {
       llvm::errs() << "Unexpected Type!\n";
@@ -112,7 +114,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
     }
   }
   // add Call function.
-  func::CallOp::create(opBuilder, forOp.getLoc(), outlinedFunc, realInputArgs);
+  func::CallOp::create(opBuilder, loopOp.getLoc(), outlinedFunc, realInputArgs);
 
   // Insert to the outlined function.
   opBuilder.setInsertionPointToEnd(entryBlock);
@@ -127,10 +129,10 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
     if (matchPattern(outVal, m_Constant(&attr))) {
       outlinedFuncIdx -= 1;
       if (outVal.getType().isIndex()) {
-        auto constIndexOp = arith::ConstantIndexOp::create(opBuilder, forOp.getLoc(), attr.getInt());
+        auto constIndexOp = arith::ConstantIndexOp::create(opBuilder, loopOp.getLoc(), attr.getInt());
         mapping.map(outVal, constIndexOp.getResult());
       } else if (outVal.getType().isInteger()) {
-        auto constIntOp = arith::ConstantIntOp::create(opBuilder, forOp.getLoc(), attr.getInt(), outVal.getType().getIntOrFloatBitWidth());
+        auto constIntOp = arith::ConstantIntOp::create(opBuilder, loopOp.getLoc(), attr.getInt(), outVal.getType().getIntOrFloatBitWidth());
         mapping.map(outVal, constIntOp.getResult());
       } else {
         llvm::errs() << "Unexpected value type!\n";
@@ -141,16 +143,16 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
     } else if (outVal.getType().isIndex()) {
       // auto loadOp = memref::LoadOp::create(opBuilder, forOp.getLoc(),
       // blockArg, {});
-      auto loadOp = affine::AffineLoadOp::create(opBuilder, forOp.getLoc(),
+      auto loadOp = affine::AffineLoadOp::create(opBuilder, loopOp.getLoc(),
                                                  AffineMap::get(ctx), blockArg);
       auto castBackOp = arith::IndexCastOp::create(
-          opBuilder, forOp.getLoc(), IndexType::get(forOp.getContext()),
+          opBuilder, loopOp.getLoc(), IndexType::get(loopOp.getContext()),
           loadOp.getResult());
       mapping.map(outVal, castBackOp.getResult());
     } else if (outVal.getType().isIntOrFloat()) {
       // auto loadOp = memref::LoadOp::create(opBuilder, forOp.getLoc(),
       // blockArg, {});
-      auto loadOp = affine::AffineLoadOp::create(opBuilder, forOp.getLoc(),
+      auto loadOp = affine::AffineLoadOp::create(opBuilder, loopOp.getLoc(),
                                                  AffineMap::get(ctx), blockArg);
       mapping.map(outVal, loadOp.getResult());
     } else {
@@ -162,7 +164,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   for (int i = 0; i < realInputArgs.size(); i++) {
     mapping.map(*(realInputArgs.begin() + i), entryBlock->getArgument(i));
   }
-  opBuilder.clone(*forOp.getOperation(), mapping);
+  opBuilder.clone(*loopOp.getOperation(), mapping);
   func::ReturnOp::create(opBuilder,
                          outlinedFunc.getLoc()); // the returnOp should be empty
   return outlinedFunc;
@@ -173,6 +175,9 @@ struct OutlineAffinePass
                                mlir::OperationPass<mlir::ModuleOp>> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect>();
+    registry.insert<memref::MemRefDialect>();
+    registry.insert<func::FuncDialect>();
+    registry.insert<arith::ArithDialect>();
     return;
   }
 
