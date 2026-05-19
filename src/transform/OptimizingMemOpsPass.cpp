@@ -543,7 +543,7 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
 
       Value diff = arith::SubIOp::create(rewriter, loc, ub.getType(), ub, lb, {});
       Value iters = arith::DivSIOp::create(rewriter, loc, diff.getType(), diff, step, {});
-      Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), step, {});
+      Value offset = arith::MulIOp::create(rewriter, loc, iters.getType(), iters, step, {});
       return arith::AddIOp::create(rewriter, loc, lb.getType(), lb, offset, {});
     } else if (auto affineForLoopOp = llvm::dyn_cast<affine::AffineForOp>(loopOp)) {
       // affineFor starts from 0, and it is [lb, ub)
@@ -743,15 +743,15 @@ struct HoistReadOpFromLoop : public OpRewritePattern<ReadOpTy> {
   }
 };
 
-struct CleanFIRLoadPass
-    : public mlir::PassWrapper<CleanFIRLoadPass,
+struct OptimizeMemOpsPass
+    : public mlir::PassWrapper<OptimizeMemOpsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
     return;
   }
 
-  StringRef getArgument() const override { return "jforce-clean-fir-load"; }
+  StringRef getArgument() const override { return "jforce-optimize-mem-ops"; }
 
   void runOnOperation() override {
     auto funcOp = getOperation();
@@ -780,12 +780,12 @@ struct CleanFIRLoadPass
 }; // namespace
 
 namespace xla_jit {
-std::unique_ptr<mlir::Pass> createCleanFIRLoadPass() {
-  return std::make_unique<CleanFIRLoadPass>();
+std::unique_ptr<mlir::Pass> createOptimizeMemOpsPass() {
+  return std::make_unique<OptimizeMemOpsPass>();
 }
 
-void registerCleanFIRLoadPass() {
+void registerOptimizeMemOpsPass() {
   ::mlir::registerPass(
-      []() -> std::unique_ptr<mlir::Pass> { return createCleanFIRLoadPass(); });
+      []() -> std::unique_ptr<mlir::Pass> { return createOptimizeMemOpsPass(); });
 }
 } // namespace xla_jit
