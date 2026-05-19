@@ -24,6 +24,7 @@ add_library(JitTransforms STATIC
   ArithRaising.cpp
   OutlineAffinePass.cpp
   PropagateConstantsPass.cpp
+  LoopSinkingPass.cpp
 )
 
 target_include_directories(JitTransforms
