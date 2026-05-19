@@ -28,6 +28,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
@@ -383,6 +384,7 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
 // Precondition:
 // - no aliasing and sharing of memref
 // - there should be no other access to the same address (memref x indices)
+// - the indice should not rely on IV.
 //  - thinking about this: 
 //      store %val1 to addr1[1]
 //      store %val2 to addr1[2]
@@ -405,6 +407,78 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       DEBUG_PRINT_OP(loopOp);
       return nullptr;
     }
+  }
+
+  // Record all the operations in the loop required to construct for the value
+  static std::optional<llvm::SmallVector<Operation*>> trackValueInLoop(mlir::LoopLikeOpInterface loopOp, Value IV, Value val) {
+    llvm::SmallSetVector<Value, 0> operandsToVisit;
+    llvm::DenseSet<Value> visitedOperands{IV};
+    llvm::SmallVector<Operation *> valTrack;    
+    operandsToVisit.insert(val);
+    while (operandsToVisit.size() > 0) {
+      Value currOp = operandsToVisit.pop_back_val();
+      visitedOperands.insert(currOp);
+      Operation* defOp = currOp.getDefiningOp();
+      // defOp is defined inside of loopOp
+      auto operands = defOp -> getOperands(); 
+      if (llvm::isa<memref::LoadOp, fir::LoadOp>(defOp)) {
+        // Value of definition operation should not be a loadOp!
+        return std::nullopt;
+      }
+      auto shouldTrackDefOp = false;
+      for (auto operand : operands) {
+        if (loopOp.isDefinedOutsideOfLoop(operand)) {
+          continue;
+        } 
+        if (!visitedOperands.contains(operand)) {
+          operandsToVisit.insert(operand);
+          shouldTrackDefOp = true;
+        }
+      }
+      if (shouldTrackDefOp) {
+        valTrack.push_back(defOp);
+      }
+    }
+    return valTrack;
+  }
+
+  static std::optional<llvm::SmallVector<Operation*>> trackIdxInLoop(mlir::LoopLikeOpInterface loopOp, Value IV, Value val) {
+    if (val == IV) {
+      return std::nullopt;
+    }
+    llvm::SmallSetVector<Value, 0> operandsToVisit;
+    llvm::DenseSet<Value> visitedOperands{};
+    llvm::SmallVector<Operation *> valTrack;    
+    operandsToVisit.insert(val);
+    while (operandsToVisit.size() > 0) {
+      Value currOp = operandsToVisit.pop_back_val();
+      visitedOperands.insert(currOp);
+      Operation* defOp = currOp.getDefiningOp();
+      // defOp is defined inside of loopOp
+      auto operands = defOp -> getOperands(); 
+      if (llvm::isa<memref::LoadOp, fir::LoadOp>(defOp)) {
+        // Value of definition operation should not be a loadOp!
+        return std::nullopt;
+      }
+      auto shouldTrackDefOp = false;
+      for (auto operand : operands) {
+        if (operand == IV) {
+          // should not rely on IV
+          return std::nullopt;
+        }
+        if (loopOp.isDefinedOutsideOfLoop(operand)) {
+          continue;
+        } 
+        if (!visitedOperands.contains(operand)) {
+          operandsToVisit.insert(operand);
+          shouldTrackDefOp = true;
+        }
+      }
+      if (shouldTrackDefOp) {
+        valTrack.push_back(defOp);
+      }
+    }
+    return valTrack;
   }
 
   static Operation* reconstructFinalIV(Operation* loopOp, PatternRewriter& rewriter) {
@@ -459,13 +533,13 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
 
   LogicalResult matchAndRewrite(WriteOpTy writeOp,
                                 PatternRewriter &rewriter) const final {
-    auto loopOp = writeOp->template getParentOfType<LoopLikeOpInterface>();
+    mlir::LoopLikeOpInterface loopOp = writeOp->template getParentOfType<LoopLikeOpInterface>();
     if (!loopOp) {
       return failure();
     }
 
     Value mem = writeOp.getMemref();
-    Value val = writeOp.getValue();
+    Value valueToStore = writeOp.getValue();
 
     bool hasOtherMemAccess = false;
     bool hasBreak = false;
@@ -490,59 +564,72 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       return failure();
     }
 
-    // value should only be made of constants or IV
+    // reconstruct value to store: value should only be made of constants or IV
     Value IV = getIV(loopOp);
     if (!IV) {
       return failure();
     }
 
-
-    llvm::SmallSetVector<Value, 0> operandsToVisit;
-    llvm::DenseSet<Value> visitedOperands{IV};
-    llvm::SmallVector<Operation *> valTrack;    
-    IRMapping valTrackMapping;
-
-    operandsToVisit.insert(val);
-
-    while (operandsToVisit.size() > 0) {
-      Value currOp = operandsToVisit.pop_back_val();
-      visitedOperands.insert(currOp);
-      Operation* defOp = currOp.getDefiningOp();
-      if (loopOp.isDefinedOutsideOfLoop(defOp)) {
-        continue;
-      }      
-      // defOp is defined inside of loopOp
-      auto operands = defOp -> getOperands(); 
-      if (llvm::isa<memref::LoadOp, fir::LoadOp>(defOp)) {
-        // Value of definition operation should not be a loadOp!
-        return failure();
-      }
-
-      auto shouldTrackDefOp = false;
-      for (auto operand : operands) {
-        if (!visitedOperands.contains(operand)) {
-          operandsToVisit.insert(operand);
-          shouldTrackDefOp = true;
+    auto valueToStoreTrackOptional = trackValueInLoop(loopOp, IV, valueToStore);
+    if (!valueToStoreTrackOptional.has_value()) {
+      return failure();
+    }
+    auto valTrack = valueToStoreTrackOptional.value();
+    
+    // If memref, we should also reconstruct the indices 
+    llvm::SmallVector<llvm::SmallVector<Operation*>> indicesTracks;  
+    if (memref::StoreOp memrefStoreOp = llvm::dyn_cast<memref::StoreOp>(writeOp)) {
+      auto indices = memrefStoreOp.getIndices();
+      for (const auto& idx: indices) {
+        auto idxTrackOptional = trackIdxInLoop(loopOp, IV, idx);
+        if (!idxTrackOptional.has_value()){
+          DEBUG_PRINT("Index relies on loadOp or IV!\n");
+          return failure();
+        } else {
+          indicesTracks.push_back(idxTrackOptional.value());  
         }
       }
-      if (shouldTrackDefOp) {
-        valTrack.push_back(defOp);
-      }
     }
-    rewriter.setInsertionPointAfter(loopOp);
+  
     // reconstruct IV
+    rewriter.setInsertionPointAfter(loopOp);
     Operation* finalIVOp = reconstructFinalIV(loopOp, rewriter);
     assert(finalIVOp->getNumResults() == 1);
+    IRMapping valTrackMapping;
     valTrackMapping.map(IV, finalIVOp->getResult(0));
-    // copy the track
+
+    // copy the value track
     Operation* lastOp;
     for (int i = valTrack.size() - 1; i>=0; i --) {
       lastOp = rewriter.clone(*valTrack[i], valTrackMapping);
     } 
-    // reconstruct the write operation
+    assert(lastOp->getNumResults() == 1);
+    Value resVal = lastOp->getResult(0);
+    lastOp = nullptr;
+    // copy the indices track 
+    llvm::SmallVector<Value> resIndices;
+    for (int dim = 0; dim < indicesTracks.size(); dim++) {
+      llvm::SmallVector<Operation*> indicesTrack = indicesTracks[dim];
+      for (int i = indicesTrack.size() - 1; i >=0; i--) {
+        lastOp = rewriter.clone(*indicesTrack[i]);  
+      }   
+      assert(lastOp->getNumResults() == 1);
+      resIndices.push_back(lastOp->getResult(0));
+      lastOp = nullptr;
+    }
     
+    // reconstruct the write operation
+    if (llvm::isa<fir::StoreOp>(writeOp)) {
+      fir::StoreOp::create(rewriter, writeOp->getLoc(), resVal, mem);
+    } else if (llvm::isa<memref::StoreOp>(writeOp)) {
+      memref::StoreOp::create(rewriter, writeOp->getLoc(), resVal, mem, resIndices);
+    } else {
+      llvm::errs() << "Unexpected write type!\n";
+      return failure();
+    }    
     
     // erase original store
+    rewriter.eraseOp(writeOp);
   }
 };
 
