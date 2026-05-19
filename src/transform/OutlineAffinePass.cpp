@@ -86,7 +86,8 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
   for (int i = 0; i < outDefinedVals.size(); i++) {
     auto outVal = outDefinedVals[i];
     if (matchPattern(outVal, m_Constant())) {
-      // DO NOTHING
+      // DO NOTHING (constants are supposed to be already folded, so they will not be used as arguments of outlined function).
+      // (Compute args will not be folded in the outer function as constants, they will be wrapped by memref usually).
     } else if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
       realInputArgs.push_back(outVal);
     } else if (outVal.getType().isIndex()) {
@@ -103,8 +104,7 @@ static func::FuncOp outlineAffineForOp(MLIRContext *ctx, func::FuncOp funcOp,
       auto allocaOp = memref::AllocaOp::create(
           opBuilder, forOp.getLoc(),
           MemRefType::get({}, outVal.getType(), {}, {}));
-      auto storeOp = memref::StoreOp::create(opBuilder, forOp.getLoc(), outVal,
-                                             allocaOp.getResult(), {});
+      auto storeOp = memref::StoreOp::create(opBuilder, forOp.getLoc(), outVal, allocaOp.getResult(), {});
       realInputArgs.push_back(storeOp.getMemRef());
     } else {
       llvm::errs() << "Unexpected Type!\n";
@@ -186,15 +186,26 @@ struct OutlineAffinePass
     llvm::SmallVector<func::FuncOp> funcOps;
     moduleOp.walk([&](func::FuncOp funcOp) { funcOps.push_back(funcOp); });
 
+    auto isUnderOtherLoop = [](Operation* op) -> bool {
+      return op->getParentOfType<affine::AffineForOp>()
+          || op->getParentOfType<affine::AffineParallelOp>();
+    };
+
     for (auto funcOp : funcOps) {
       llvm::SmallVector<Operation *> toDelete;
       funcOp.walk([&](affine::AffineForOp affineForOp) {
+        if (isUnderOtherLoop(affineForOp)) {
+          return;
+        }
         // creating a function, which has the inputs for all the slices and affine bounds.
         outlineAffineForOp<affine::AffineForOp>(ctx, funcOp, opBuilder, affineForOp);
         toDelete.push_back(affineForOp);
         return;
       });
       funcOp.walk([&](affine::AffineParallelOp affineParallelOp) {
+        if (isUnderOtherLoop(affineParallelOp)) {
+          return;
+        }
         // creating a function, which has the inputs for all the slices and affine bounds.
         outlineAffineForOp<affine::AffineParallelOp>(ctx, funcOp, opBuilder, affineParallelOp);
         toDelete.push_back(affineParallelOp);
