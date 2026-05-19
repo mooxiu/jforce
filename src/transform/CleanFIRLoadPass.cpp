@@ -234,6 +234,9 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
 
     Value val = storeOp.getValue();
     Operation* readOp = val.getDefiningOp();
+    DEBUG_PRINT("compare reading and storeOp");
+    DEBUG_PRINT_OP(storeOp);
+    DEBUG_PRINT_OP(readOp);
     if (readOp->getBlock() != storeOp->getBlock()) {
       // We do not consider cross block situation, it will makes the analysis much more difficult.
       return failure();
@@ -498,7 +501,7 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
 
     while (!workList.empty()) {
       Value currValue = workList.pop_back_val();
-      if (!visited.contains(currValue)) {
+      if (visited.contains(currValue)) {
         continue;
       }
       if (currValue == IV) {
@@ -649,8 +652,8 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     }
   
     // reconstruct IV
-    rewriter.setInsertionPointAfter(loopOp);
     Operation* finalIVOp = reconstructFinalIV(loopOp, rewriter);
+    rewriter.setInsertionPointAfter(loopOp);
     assert(finalIVOp->getNumResults() == 1);
 
     // copy the value track and indices track
