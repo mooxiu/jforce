@@ -6,6 +6,8 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Rewrite/FrozenRewritePatternSet.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -51,6 +53,7 @@ struct ReplaceFIRConvertOps : OpRewritePattern<fir::ConvertOp> {
       } else {
         return failure();
       }
+      return success();
     }
 
     Operation *castOp;
@@ -100,9 +103,10 @@ struct CleanFIROpsPass
     patterns.add<ReplaceFIRConvertOps>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
+    FrozenRewritePatternSet frozenPatterns(std::move(patterns));
     
     for (auto loopOp: loopOps) {
-      if (failed(applyPatternsGreedily(loopOp, std::move(patterns), config))) {
+      if (failed(applyPatternsGreedily(loopOp, frozenPatterns, config))) {
         signalPassFailure();
         return;
       }
