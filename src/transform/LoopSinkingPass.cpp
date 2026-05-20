@@ -1,5 +1,6 @@
-/// Objective of this pass is to construct pefect nested loop for latter affine operations. 
-/// 
+/// Objective of this pass is to construct pefect nested loop for latter affine
+/// operations.
+///
 /// Before Example:
 ///   affine.for %arg14 = 1 to 4 {
 ///     %19 = arith.index_cast %arg14 : index to i32
@@ -35,6 +36,7 @@
 ///   }
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -44,7 +46,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "support/utilities.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include <memory>
 
 using namespace mlir;
@@ -67,8 +69,9 @@ namespace {
 //
 // Precondition:
 // - Statements has no side effect (like reading or storing to mem)
-// - Maybe I should also assert both loops are affine so this pass is meaningful?
-struct SinkToInnerLoop: OpRewritePattern<affine::AffineForOp> {
+// - Maybe I should also assert both loops are affine so this pass is
+// meaningful?
+struct SinkToInnerLoop : OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(affine::AffineForOp innerLoop,
@@ -78,27 +81,31 @@ struct SinkToInnerLoop: OpRewritePattern<affine::AffineForOp> {
       return failure();
     }
 
-    llvm::SmallVector<Operation*> operationsToMove;
+    llvm::SmallVector<Operation *> operationsToMove;
     auto currOp = innerLoop->getPrevNode();
     while (currOp) {
-      DEBUG_PRINT("hello?");
-      auto memInterfaceOp = llvm::dyn_cast<MemoryEffectOpInterface>(currOp);
-      if (memInterfaceOp) {
-        DEBUG_PRINT("failed!");
+      if (!isMemoryEffectFree(currOp)) {
         return failure();
       }
-      operationsToMove.push_back(currOp); 
+      operationsToMove.push_back(currOp);
+      currOp = currOp->getPrevNode();
+    }
+    if (operationsToMove.empty()) {
+      return failure();
     }
 
     while (!operationsToMove.empty()) {
       auto opToMove = operationsToMove.pop_back_val();
-      rewriter.moveOpBefore(opToMove, innerLoop.getBody(), innerLoop.getBody()->begin());
+      rewriter.moveOpBefore(opToMove, innerLoop.getBody(),
+                            innerLoop.getBody()->begin());
     }
     return success();
   }
 };
 
-struct LoopSinkingPass : public mlir::PassWrapper<LoopSinkingPass, mlir::OperationPass<mlir::func::FuncOp>> {
+struct LoopSinkingPass
+    : public mlir::PassWrapper<LoopSinkingPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect>();
     registry.insert<memref::MemRefDialect>();
@@ -115,13 +122,15 @@ struct LoopSinkingPass : public mlir::PassWrapper<LoopSinkingPass, mlir::Operati
     patterns.add<SinkToInnerLoop>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns), config))) {
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
       return;
     }
+    return;
   }
 };
-}
+} // namespace
 
 namespace xla_jit {
 std::unique_ptr<mlir::Pass> createLoopSinkingPass() {
@@ -129,18 +138,7 @@ std::unique_ptr<mlir::Pass> createLoopSinkingPass() {
 }
 
 void registerLoopSinkingPass() {
-  ::mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createLoopSinkingPass();
-  });
+  ::mlir::registerPass(
+      []() -> std::unique_ptr<mlir::Pass> { return createLoopSinkingPass(); });
 };
 } // namespace xla_jit
-
-
-
-
-
-
-
-
-
-
