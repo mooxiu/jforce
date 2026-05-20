@@ -20,9 +20,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
-#include "support/utilities.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -34,7 +32,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
-#include <string>
 #include <utility>
 
 using namespace mlir;
