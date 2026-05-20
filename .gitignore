@@ -11,3 +11,4 @@ leak_report.txt
 err.log
 xla_dump/
 tests/fortran/
+tests/tmp.mlir
