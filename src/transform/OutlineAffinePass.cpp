@@ -90,7 +90,7 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
       } else if (llvm::isa<mlir::MemRefType>(val.getType())) {
         realInputArgs.push_back(val);
       } else if (val.getType().isIndex()) {
-        Type elementType = IntegerType::get(ctx, 32);
+        Type elementType = IntegerType::get(ctx, 64);
         auto castOp = arith::IndexCastOp::create(rewritter, loopOp.getLoc(), elementType, val);
         auto allocaOp = memref::AllocaOp::create(rewritter, loopOp.getLoc(), MemRefType::get({}, elementType, {}, {}));
         auto storeOp = memref::StoreOp::create(rewritter, loopOp.getLoc(), castOp.getResult(), allocaOp.getResult(), {});
@@ -289,6 +289,7 @@ struct OutlineAffinePass
         return;
       }
     });
+    moduleOp.dump();
     return;
   }
 };
