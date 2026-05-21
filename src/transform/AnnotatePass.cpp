@@ -31,8 +31,8 @@ static ArgType setArgType(func::FuncOp funcOp, Value arg) {
     mlir::Value val = worklist.pop_back_val();
 
     for (mlir::Operation *user : val.getUsers()) {
-      if (llvm::isa<
-            hlfir::DeclareOp, fir::DeclareOp, fir::LoadOp, fir::ConvertOp>(user)) {
+      if (llvm::isa<hlfir::DeclareOp, fir::DeclareOp, fir::LoadOp, fir::ConvertOp,
+          arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp, arith::DivUIOp>(user)) {
         for (mlir::Value res : user->getResults()) {
           if (visited.insert(res).second) {
             worklist.push_back(res);
