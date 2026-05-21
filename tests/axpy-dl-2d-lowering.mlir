@@ -1,16 +1,16 @@
 // ./build/src/tool/jforce-opt ./tests/axpy-dl-2d.mlir \
-//  	--jforce-annotate \
-//  	--jforce-propagate-constants \
-//  	--canonicalize --sccp --cse --canonicalize \
-//  	--jforce-shape-infer --canonicalize \
-//  	--convert-hlfir-to-fir --fir-to-memref --canonicalize \
-//   --loop-invariant-code-motion --cse --canonicalize \
-//  	--jforce-clean-fir-loop --canonicalize --jforce-clean-fir-op  --promote-to-affine --canonicalize \
-//  	--jforce-optimize-mem-ops --canonicalize \
-// 	--jforce-loop-sink \
-//  	--enzyme-affinecfg --jforce-outline-affine \
-//   --enzyme-affine-to-stablehlo --canonicalize \
-//   --mlir-print-ir-after-all
+//    --jforce-annotate \
+//    --jforce-propagate-constants \
+//    --canonicalize --sccp --cse --canonicalize \
+//    --jforce-shape-infer --canonicalize \
+//    --convert-hlfir-to-fir --fir-to-memref --canonicalize \
+//    --loop-invariant-code-motion --cse --canonicalize \
+//    --jforce-clean-fir-loop --canonicalize --jforce-clean-fir-op  --promote-to-affine --canonicalize \
+//    --jforce-optimize-mem-ops --canonicalize \
+//    --jforce-loop-sink \
+//    --enzyme-affinecfg --jforce-outline-affine \
+//    --enzyme-affine-to-stablehlo --canonicalize \
+//    --mlir-print-ir-after-all
 
 
 // -----// IR Dump After {anonymous}::AnnotatePass (jforce-annotate) //----- //
