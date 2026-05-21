@@ -1,4 +1,4 @@
-func.func @kernel(%arg0: !fir.ref<i32>, %arg1: !fir.ref<i32>, %arg2: !fir.ref<i32>, %arg3: !fir.ref<!fir.array<?x?xf64>>, %arg4: !fir.ref<!fir.array<?x?xf64>>, %arg5: !fir.ref<i32>, %arg6: !fir.ref<i32>, %arg7: !fir.ref<i32>, %arg8: !fir.ref<i32>) {
+func.func @kernel(%arg0: !fir.ref<i32> {jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<?x?xf64>>, %arg4: !fir.ref<!fir.array<?x?xf64>>, %arg5: !fir.ref<i32> {jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.literal_val = 1024 : i64}) {
   %0 = fir.load %arg8 : !fir.ref<i32>
   %1 = fir.load %arg7 : !fir.ref<i32>
   %2 = fir.load %arg6 : !fir.ref<i32>
