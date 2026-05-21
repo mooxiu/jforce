@@ -92,10 +92,8 @@ struct SinkToInnerLoop : OpRewritePattern<affine::AffineForOp> {
       return failure();
     }
 
-    while (!operationsToMove.empty()) {
-      auto opToMove = operationsToMove.pop_back_val();
-      rewriter.moveOpBefore(opToMove, innerLoop.getBody(),
-                            innerLoop.getBody()->begin());
+    for (auto opToMove: operationsToMove) {
+      rewriter.moveOpBefore(opToMove, innerLoop.getBody(), innerLoop.getBody()->begin());
     }
     return success();
   }
@@ -125,6 +123,7 @@ struct LoopSinkingPass
       signalPassFailure();
       return;
     }
+    getOperation()->dump();
     return;
   }
 };
