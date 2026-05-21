@@ -5,7 +5,7 @@
 //    --jforce-shape-infer --canonicalize \
 //    --convert-hlfir-to-fir --fir-to-memref --canonicalize \
 //    --loop-invariant-code-motion --cse --canonicalize \
-//    --jforce-clean-fir-loop --canonicalize --jforce-clean-fir-op  --promote-to-affine --canonicalize \
+//    --jforce-clean-fir-loop --canonicalize --jforce-clean-fir-op  --promote-to-affine --affine-loop-normalize --canonicalize \
 //    --jforce-optimize-mem-ops --canonicalize \
 //    --jforce-loop-sink \
 //    --enzyme-affinecfg --jforce-outline-affine \
