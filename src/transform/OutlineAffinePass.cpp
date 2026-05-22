@@ -65,8 +65,11 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
   ) {
     rewritter.setInsertionPoint(funcOp);
     auto outlinedFuncType = rewritter.getFunctionType(outlinedFuncInputTypes, outlinedFuncOutputTypes);
-    auto outlinedFuncName = llvm::formatv("outlined_affinefor_{0}",
-                                          reinterpret_cast<std::uintptr_t>(loopOp.getAsOpaquePointer())).str();
+    auto outlinedFuncName = llvm::formatv(
+      "{0}{1}",
+      JIT_OUTLINE_AFFINE_FUNC_PREFIX,
+      reinterpret_cast<std::uintptr_t>(loopOp.getAsOpaquePointer()))
+      .str();
     llvm::SmallVector<NamedAttribute> attrs = {};
     llvm::SmallVector<DictionaryAttr> argAttrs = {};
     auto outlinedFunc = func::FuncOp::create(rewritter, funcOp.getLoc(), outlinedFuncName, outlinedFuncType, attrs, argAttrs);

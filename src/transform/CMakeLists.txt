@@ -25,6 +25,7 @@ add_library(JitTransforms STATIC
   OutlineAffinePass.cpp
   PropagateConstantsPass.cpp
   LoopSinkingPass.cpp
+  RemergePass.cpp
 )
 
 target_include_directories(JitTransforms
@@ -52,6 +53,7 @@ target_link_libraries(JitTransforms
     MLIRMemRefDialect
     FIRTransforms
     HLFIRTransforms
+    BufferizationDialect
 )
 
 # -DCMAKE_BUILD_TYPE=Debug

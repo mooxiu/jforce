@@ -1,14 +1,16 @@
-// ./build/src/tool/jforce-opt ./tests/axpy-dl.mlir \
-// 	--jforce-annotate \
-// 	--jforce-propagate-constants \
-// 	--canonicalize --sccp --cse --canonicalize \
-// 	--jforce-shape-infer --canonicalize \
-// 	--convert-hlfir-to-fir --fir-to-memref --canonicalize \
-//   --loop-invariant-code-motion --cse --canonicalize \
-// 	--jforce-clean-fir-loop --canonicalize --jforce-clean-fir-op  --promote-to-affine --canonicalize \
-// 	--jforce-optimize-mem-ops --canonicalize \
-// 	--enzyme-affinecfg --jforce-outline-affine \
-//   --enzyme-affine-to-stablehlo --canonicalize
+// ./build/src/tool/jforce-opt ./tests/stencil-2d.mlir \
+//    --jforce-annotate \
+//    --jforce-propagate-constants \
+//    --canonicalize --sccp --cse --canonicalize \
+//    --jforce-shape-infer --canonicalize \
+//    --convert-hlfir-to-fir --fir-to-memref --canonicalize \
+//    --loop-invariant-code-motion --cse --canonicalize \
+//    --jforce-clean-fir-loop --canonicalize --jforce-clean-fir-op  --promote-to-affine --affine-loop-normalize --canonicalize \
+//    --jforce-optimize-mem-ops --canonicalize \
+//    --jforce-loop-sink \
+//    --enzyme-affinecfg --jforce-outline-affine \
+//    --enzyme-affine-to-stablehlo --canonicalize --mlir-print-ir-after-all 2> ./tests/stencil-2d-lowering.mlir
+
 
 // -----// IR Dump After {anonymous}::AnnotatePass (jforce-annotate) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<?xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<?xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<?xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
@@ -787,7 +789,48 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   omp.terminator
 }
 
+// -----// IR Dump After AffineLoopNormalize (affine-loop-normalize) //----- //
+func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %0 = fir.declare %arg0 {uniq_name = "_QFFrun_benchmarkEi"} : (!fir.ref<i32>) -> !fir.ref<i32>
+  %1 = fir.declare %arg1 {uniq_name = "_QFFrun_benchmarkEn"} : (!fir.ref<i32>) -> !fir.ref<i32>
+  %2 = fir.shape %c4 : (index) -> !fir.shape<1>
+  %3 = fir.declare %arg2(%2) {uniq_name = "_QFFrun_benchmarkEz"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %4 = fir.declare %arg3(%2) {uniq_name = "_QFFrun_benchmarkEx"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %5 = fir.declare %arg4(%2) {uniq_name = "_QFFrun_benchmarkEy"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %6 = fir.declare %arg5 {uniq_name = "_QFFrun_benchmarkEa"} : (!fir.ref<f64>) -> !fir.ref<f64>
+  %7 = fir.convert %c1 : (index) -> i32
+  %8 = fir.convert %0 : (!fir.ref<i32>) -> memref<i32>
+  %9 = fir.convert %6 : (!fir.ref<f64>) -> memref<f64>
+  %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  affine.for %arg9 = 0 to 4 {
+    %14 = affine.apply affine_map<(d0) -> (d0 + 1)>(%arg9)
+    %15 = arith.index_cast %14 : index to i32
+    memref.store %15, %8[] : memref<i32>
+    %16 = memref.load %9[] : memref<f64>
+    %17 = memref.load %8[] : memref<i32>
+    %18 = arith.extsi %17 : i32 to i64
+    %19 = arith.index_cast %18 : i64 to index
+    %20 = arith.subi %19, %c1 : index
+    %21 = memref.load %10[%20] : memref<4xf64>
+    %22 = arith.mulf %16, %21 fastmath<contract> : f64
+    %23 = memref.load %11[%20] : memref<4xf64>
+    %24 = arith.addf %22, %23 fastmath<contract> : f64
+    memref.store %24, %12[%20] : memref<4xf64>
+    %25 = memref.load %8[] : memref<i32>
+    %26 = arith.addi %25, %7 overflow<nsw> : i32
+    memref.store %26, %8[] : memref<i32>
+  }
+  %13 = memref.load %8[] : memref<i32>
+  memref.store %13, %8[] : memref<i32>
+  omp.terminator
+}
+
 // -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
+#map = affine_map<(d0) -> (d0 + 1)>
 module {
   func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
     %c4 = arith.constant 4 : index
@@ -805,21 +848,22 @@ module {
     %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
     %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
     %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
-    affine.for %arg9 = 1 to 5 {
-      %14 = arith.index_cast %arg9 : index to i32
-      memref.store %14, %8[] : memref<i32>
-      %15 = memref.load %9[] : memref<f64>
-      %16 = memref.load %8[] : memref<i32>
-      %17 = arith.index_cast %16 : i32 to index
-      %18 = arith.subi %17, %c1 : index
-      %19 = memref.load %10[%18] : memref<4xf64>
-      %20 = arith.mulf %15, %19 fastmath<contract> : f64
-      %21 = memref.load %11[%18] : memref<4xf64>
-      %22 = arith.addf %20, %21 fastmath<contract> : f64
-      memref.store %22, %12[%18] : memref<4xf64>
-      %23 = memref.load %8[] : memref<i32>
-      %24 = arith.addi %23, %7 overflow<nsw> : i32
-      memref.store %24, %8[] : memref<i32>
+    affine.for %arg9 = 0 to 4 {
+      %14 = affine.apply #map(%arg9)
+      %15 = arith.index_cast %14 : index to i32
+      memref.store %15, %8[] : memref<i32>
+      %16 = memref.load %9[] : memref<f64>
+      %17 = memref.load %8[] : memref<i32>
+      %18 = arith.index_cast %17 : i32 to index
+      %19 = arith.subi %18, %c1 : index
+      %20 = memref.load %10[%19] : memref<4xf64>
+      %21 = arith.mulf %16, %20 fastmath<contract> : f64
+      %22 = memref.load %11[%19] : memref<4xf64>
+      %23 = arith.addf %21, %22 fastmath<contract> : f64
+      memref.store %23, %12[%19] : memref<4xf64>
+      %24 = memref.load %8[] : memref<i32>
+      %25 = arith.addi %24, %7 overflow<nsw> : i32
+      memref.store %25, %8[] : memref<i32>
     }
     %13 = memref.load %8[] : memref<i32>
     memref.store %13, %8[] : memref<i32>
@@ -832,36 +876,36 @@ module {
 [DEBUG] memref.store %13, %8[] : memref<i32> 
 [DEBUG] %13 = memref.load %8[] : memref<i32> 
 [DEBUG]compare reading and storeOp
-[DEBUG] memref.store %23, %8[] : memref<i32> 
-[DEBUG] %23 = arith.addi %22, %7 overflow<nsw> : i32 
+[DEBUG] memref.store %24, %8[] : memref<i32> 
+[DEBUG] %24 = arith.addi %23, %7 overflow<nsw> : i32 
 [DEBUG]Unexpected readOp: 
-[DEBUG] %23 = arith.addi %22, %7 overflow<nsw> : i32 
+[DEBUG] %24 = arith.addi %23, %7 overflow<nsw> : i32 
 [DEBUG]compare reading and storeOp
-[DEBUG] memref.store %21, %12[%17] : memref<4xf64> 
-[DEBUG] %21 = arith.addf %19, %20 fastmath<contract> : f64 
+[DEBUG] memref.store %22, %12[%18] : memref<4xf64> 
+[DEBUG] %22 = arith.addf %20, %21 fastmath<contract> : f64 
 [DEBUG]Unexpected readOp: 
-[DEBUG] %21 = arith.addf %19, %20 fastmath<contract> : f64 
+[DEBUG] %22 = arith.addf %20, %21 fastmath<contract> : f64 
 [DEBUG]Dependency chain relies on LoadOp!
 [DEBUG]compare reading and storeOp
-[DEBUG] memref.store %14, %8[] : memref<i32> 
-[DEBUG] %14 = arith.index_cast %arg9 : index to i32 
+[DEBUG] memref.store %15, %8[] : memref<i32> 
+[DEBUG] %15 = arith.index_cast %14 : index to i32 
 [DEBUG]Unexpected readOp: 
-[DEBUG] %14 = arith.index_cast %arg9 : index to i32 
+[DEBUG] %15 = arith.index_cast %14 : index to i32 
+[DEBUG]compare reading and storeOp
+[DEBUG] memref.store %22, %8[] : memref<i32> 
+[DEBUG] %22 = arith.addi %15, %7 overflow<nsw> : i32 
+[DEBUG]Unexpected readOp: 
+[DEBUG] %22 = arith.addi %15, %7 overflow<nsw> : i32 
 [DEBUG]compare reading and storeOp
 [DEBUG] memref.store %21, %8[] : memref<i32> 
-[DEBUG] %21 = arith.addi %14, %7 overflow<nsw> : i32 
+[DEBUG] %21 = arith.addi %20, %7 overflow<nsw> : i32 
 [DEBUG]Unexpected readOp: 
-[DEBUG] %21 = arith.addi %14, %7 overflow<nsw> : i32 
+[DEBUG] %21 = arith.addi %20, %7 overflow<nsw> : i32 
 [DEBUG]compare reading and storeOp
-[DEBUG] memref.store %20, %8[] : memref<i32> 
-[DEBUG] %20 = arith.addi %19, %7 overflow<nsw> : i32 
+[DEBUG] memref.store %22, %12[%18] : memref<4xf64> 
+[DEBUG] %22 = arith.addf %20, %21 fastmath<contract> : f64 
 [DEBUG]Unexpected readOp: 
-[DEBUG] %20 = arith.addi %19, %7 overflow<nsw> : i32 
-[DEBUG]compare reading and storeOp
-[DEBUG] memref.store %21, %12[%17] : memref<4xf64> 
-[DEBUG] %21 = arith.addf %19, %20 fastmath<contract> : f64 
-[DEBUG]Unexpected readOp: 
-[DEBUG] %21 = arith.addf %19, %20 fastmath<contract> : f64 
+[DEBUG] %22 = arith.addf %20, %21 fastmath<contract> : f64 
 [DEBUG]Dependency chain relies on LoadOp!
 [DEBUG]compare reading and storeOp
 [DEBUG] memref.store %14, %8[] : memref<i32> 
@@ -869,10 +913,10 @@ module {
 [DEBUG]Unexpected readOp: 
 [DEBUG] %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32 
 [DEBUG]compare reading and storeOp
-[DEBUG] memref.store %21, %12[%17] : memref<4xf64> 
-[DEBUG] %21 = arith.addf %19, %20 fastmath<contract> : f64 
+[DEBUG] memref.store %22, %12[%18] : memref<4xf64> 
+[DEBUG] %22 = arith.addf %20, %21 fastmath<contract> : f64 
 [DEBUG]Unexpected readOp: 
-[DEBUG] %21 = arith.addf %19, %20 fastmath<contract> : f64 
+[DEBUG] %22 = arith.addf %20, %21 fastmath<contract> : f64 
 [DEBUG]Dependency chain relies on LoadOp!
 // -----// IR Dump After {anonymous}::OptimizeMemOpsPass (jforce-optimize-mem-ops) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
@@ -893,15 +937,16 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
   %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
   %13 = memref.load %9[] : memref<f64>
-  affine.for %arg9 = 1 to 5 {
-    %15 = arith.index_cast %arg9 : index to i32
-    %16 = arith.index_cast %15 : i32 to index
-    %17 = arith.subi %16, %c1 : index
-    %18 = memref.load %10[%17] : memref<4xf64>
-    %19 = arith.mulf %13, %18 fastmath<contract> : f64
-    %20 = memref.load %11[%17] : memref<4xf64>
-    %21 = arith.addf %19, %20 fastmath<contract> : f64
-    memref.store %21, %12[%17] : memref<4xf64>
+  affine.for %arg9 = 0 to 4 {
+    %15 = affine.apply affine_map<(d0) -> (d0 + 1)>(%arg9)
+    %16 = arith.index_cast %15 : index to i32
+    %17 = arith.index_cast %16 : i32 to index
+    %18 = arith.subi %17, %c1 : index
+    %19 = memref.load %10[%18] : memref<4xf64>
+    %20 = arith.mulf %13, %19 fastmath<contract> : f64
+    %21 = memref.load %11[%18] : memref<4xf64>
+    %22 = arith.addf %20, %21 fastmath<contract> : f64
+    memref.store %22, %12[%18] : memref<4xf64>
   }
   %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
   memref.store %14, %8[] : memref<i32>
@@ -909,6 +954,7 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
 }
 
 // -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
+#map = affine_map<(d0) -> (d0 + 1)>
 module {
   func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
     %c4_i32 = arith.constant 4 : i32
@@ -928,15 +974,16 @@ module {
     %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
     %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
     %13 = memref.load %9[] : memref<f64>
-    affine.for %arg9 = 1 to 5 {
-      %15 = arith.index_cast %arg9 : index to i32
-      %16 = arith.index_cast %15 : i32 to index
-      %17 = arith.subi %16, %c1 : index
-      %18 = memref.load %10[%17] : memref<4xf64>
-      %19 = arith.mulf %13, %18 fastmath<contract> : f64
-      %20 = memref.load %11[%17] : memref<4xf64>
-      %21 = arith.addf %19, %20 fastmath<contract> : f64
-      memref.store %21, %12[%17] : memref<4xf64>
+    affine.for %arg9 = 0 to 4 {
+      %15 = affine.apply #map(%arg9)
+      %16 = arith.index_cast %15 : index to i32
+      %17 = arith.index_cast %16 : i32 to index
+      %18 = arith.subi %17, %c1 : index
+      %19 = memref.load %10[%18] : memref<4xf64>
+      %20 = arith.mulf %13, %19 fastmath<contract> : f64
+      %21 = memref.load %11[%18] : memref<4xf64>
+      %22 = arith.addf %20, %21 fastmath<contract> : f64
+      memref.store %22, %12[%18] : memref<4xf64>
     }
     %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
     memref.store %14, %8[] : memref<i32>
@@ -944,6 +991,74 @@ module {
   }
 }
 
+
+func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
+  %c4_i32 = arith.constant 4 : i32
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %0 = fir.declare %arg0 {uniq_name = "_QFFrun_benchmarkEi"} : (!fir.ref<i32>) -> !fir.ref<i32>
+  %1 = fir.declare %arg1 {uniq_name = "_QFFrun_benchmarkEn"} : (!fir.ref<i32>) -> !fir.ref<i32>
+  %2 = fir.shape %c4 : (index) -> !fir.shape<1>
+  %3 = fir.declare %arg2(%2) {uniq_name = "_QFFrun_benchmarkEz"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %4 = fir.declare %arg3(%2) {uniq_name = "_QFFrun_benchmarkEx"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %5 = fir.declare %arg4(%2) {uniq_name = "_QFFrun_benchmarkEy"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %6 = fir.declare %arg5 {uniq_name = "_QFFrun_benchmarkEa"} : (!fir.ref<f64>) -> !fir.ref<f64>
+  %7 = fir.convert %c1 : (index) -> i32
+  %8 = fir.convert %0 : (!fir.ref<i32>) -> memref<i32>
+  %9 = fir.convert %6 : (!fir.ref<f64>) -> memref<f64>
+  %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %13 = memref.load %9[] : memref<f64>
+  affine.for %arg9 = 0 to 4 {
+    %15 = affine.apply affine_map<(d0) -> (d0 + 1)>(%arg9)
+    %16 = arith.index_cast %15 : index to i32
+    %17 = arith.index_cast %16 : i32 to index
+    %18 = arith.subi %17, %c1 : index
+    %19 = memref.load %10[%18] : memref<4xf64>
+    %20 = arith.mulf %13, %19 fastmath<contract> : f64
+    %21 = memref.load %11[%18] : memref<4xf64>
+    %22 = arith.addf %20, %21 fastmath<contract> : f64
+    memref.store %22, %12[%18] : memref<4xf64>
+  }
+  %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
+  memref.store %14, %8[] : memref<i32>
+  omp.terminator
+}
+// -----// IR Dump After {anonymous}::LoopSinkingPass (jforce-loop-sink) //----- //
+func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
+  %c4_i32 = arith.constant 4 : i32
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %0 = fir.declare %arg0 {uniq_name = "_QFFrun_benchmarkEi"} : (!fir.ref<i32>) -> !fir.ref<i32>
+  %1 = fir.declare %arg1 {uniq_name = "_QFFrun_benchmarkEn"} : (!fir.ref<i32>) -> !fir.ref<i32>
+  %2 = fir.shape %c4 : (index) -> !fir.shape<1>
+  %3 = fir.declare %arg2(%2) {uniq_name = "_QFFrun_benchmarkEz"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %4 = fir.declare %arg3(%2) {uniq_name = "_QFFrun_benchmarkEx"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %5 = fir.declare %arg4(%2) {uniq_name = "_QFFrun_benchmarkEy"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+  %6 = fir.declare %arg5 {uniq_name = "_QFFrun_benchmarkEa"} : (!fir.ref<f64>) -> !fir.ref<f64>
+  %7 = fir.convert %c1 : (index) -> i32
+  %8 = fir.convert %0 : (!fir.ref<i32>) -> memref<i32>
+  %9 = fir.convert %6 : (!fir.ref<f64>) -> memref<f64>
+  %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+  %13 = memref.load %9[] : memref<f64>
+  affine.for %arg9 = 0 to 4 {
+    %15 = affine.apply affine_map<(d0) -> (d0 + 1)>(%arg9)
+    %16 = arith.index_cast %15 : index to i32
+    %17 = arith.index_cast %16 : i32 to index
+    %18 = arith.subi %17, %c1 : index
+    %19 = memref.load %10[%18] : memref<4xf64>
+    %20 = arith.mulf %13, %19 fastmath<contract> : f64
+    %21 = memref.load %11[%18] : memref<4xf64>
+    %22 = arith.addf %20, %21 fastmath<contract> : f64
+    memref.store %22, %12[%18] : memref<4xf64>
+  }
+  %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
+  memref.store %14, %8[] : memref<i32>
+  omp.terminator
+}
 
 // -----// IR Dump After {anonymous}::AffineCFGPass (enzyme-affinecfg) //----- //
 module {
@@ -965,12 +1080,12 @@ module {
     %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
     %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
     %13 = affine.load %9[] : memref<f64>
-    affine.parallel (%arg9) = (1) to (5) {
-      %15 = affine.load %10[%arg9 - 1] : memref<4xf64>
+    affine.parallel (%arg9) = (0) to (4) {
+      %15 = affine.load %10[%arg9] : memref<4xf64>
       %16 = arith.mulf %13, %15 fastmath<contract> : f64
-      %17 = affine.load %11[%arg9 - 1] : memref<4xf64>
+      %17 = affine.load %11[%arg9] : memref<4xf64>
       %18 = arith.addf %16, %17 fastmath<contract> : f64
-      affine.store %18, %12[%arg9 - 1] : memref<4xf64>
+      affine.store %18, %12[%arg9] : memref<4xf64>
     }
     %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
     affine.store %14, %8[] : memref<i32>
@@ -979,16 +1094,15 @@ module {
 }
 
 
-// -----// IR Dump After {anonymous}::OutlineAffinePass (jforce-outline-affine) //----- //
 module {
-  func.func @outlined_affinefor_107817027509632(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
+  func.func @outlined_affinefor_104018181802624(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
     %0 = affine.load %arg1[] : memref<f64>
-    affine.parallel (%arg4) = (1) to (5) {
-      %1 = affine.load %arg0[%arg4 - 1] : memref<4xf64>
+    affine.parallel (%arg4) = (0) to (4) {
+      %1 = affine.load %arg0[%arg4] : memref<4xf64>
       %2 = arith.mulf %0, %1 fastmath<contract> : f64
-      %3 = affine.load %arg2[%arg4 - 1] : memref<4xf64>
+      %3 = affine.load %arg2[%arg4] : memref<4xf64>
       %4 = arith.addf %2, %3 fastmath<contract> : f64
-      affine.store %4, %arg3[%arg4 - 1] : memref<4xf64>
+      affine.store %4, %arg3[%arg4] : memref<4xf64>
     }
     return
   }
@@ -1012,7 +1126,46 @@ module {
     %13 = affine.load %9[] : memref<f64>
     %alloca = memref.alloca() : memref<f64>
     memref.store %13, %alloca[] : memref<f64>
-    call @outlined_affinefor_107817027509632(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
+    call @outlined_affinefor_104018181802624(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
+    %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
+    affine.store %14, %8[] : memref<i32>
+    omp.terminator
+  }
+}
+// -----// IR Dump After {anonymous}::OutlineAffinePass (jforce-outline-affine) //----- //
+module {
+  func.func @outlined_affinefor_104018181802624(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
+    %0 = affine.load %arg1[] : memref<f64>
+    affine.parallel (%arg4) = (0) to (4) {
+      %1 = affine.load %arg0[%arg4] : memref<4xf64>
+      %2 = arith.mulf %0, %1 fastmath<contract> : f64
+      %3 = affine.load %arg2[%arg4] : memref<4xf64>
+      %4 = arith.addf %2, %3 fastmath<contract> : f64
+      affine.store %4, %arg3[%arg4] : memref<4xf64>
+    }
+    return
+  }
+  func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg2: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg3: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<4xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<f64> {jit.arg_type = 1 : ui32, jit.literal_val = 4619567317775286272 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 4 : i64}) {
+    %c4_i32 = arith.constant 4 : i32
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
+    %0 = fir.declare %arg0 {uniq_name = "_QFFrun_benchmarkEi"} : (!fir.ref<i32>) -> !fir.ref<i32>
+    %1 = fir.declare %arg1 {uniq_name = "_QFFrun_benchmarkEn"} : (!fir.ref<i32>) -> !fir.ref<i32>
+    %2 = fir.shape %c4 : (index) -> !fir.shape<1>
+    %3 = fir.declare %arg2(%2) {uniq_name = "_QFFrun_benchmarkEz"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+    %4 = fir.declare %arg3(%2) {uniq_name = "_QFFrun_benchmarkEx"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+    %5 = fir.declare %arg4(%2) {uniq_name = "_QFFrun_benchmarkEy"} : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> !fir.ref<!fir.array<4xf64>>
+    %6 = fir.declare %arg5 {uniq_name = "_QFFrun_benchmarkEa"} : (!fir.ref<f64>) -> !fir.ref<f64>
+    %7 = fir.convert %c1 : (index) -> i32
+    %8 = fir.convert %0 : (!fir.ref<i32>) -> memref<i32>
+    %9 = fir.convert %6 : (!fir.ref<f64>) -> memref<f64>
+    %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+    %11 = fir.convert %5 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+    %12 = fir.convert %3 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+    %13 = affine.load %9[] : memref<f64>
+    %alloca = memref.alloca() : memref<f64>
+    memref.store %13, %alloca[] : memref<f64>
+    call @outlined_affinefor_104018181802624(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
     %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
     affine.store %14, %8[] : memref<i32>
     omp.terminator
@@ -1041,35 +1194,35 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   %13 = affine.load %9[] : memref<f64>
   %alloca = memref.alloca() : memref<f64>
   memref.store %13, %alloca[] : memref<f64>
-  call @outlined_affinefor_107817027509632(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
+  call @outlined_affinefor_104018181802624(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
   %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
   affine.store %14, %8[] : memref<i32>
   omp.terminator
 }
 
 // -----// IR Dump After {anonymous}::AffineToStableHLORaisingPass (enzyme-affine-to-stablehlo) //----- //
-func.func @outlined_affinefor_107817027509632(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
+func.func @outlined_affinefor_104018181802624(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
   %0 = affine.load %arg1[] : memref<f64>
-  affine.parallel (%arg4) = (1) to (5) {
-    %1 = affine.load %arg0[%arg4 - 1] : memref<4xf64>
+  affine.parallel (%arg4) = (0) to (4) {
+    %1 = affine.load %arg0[%arg4] : memref<4xf64>
     %2 = arith.mulf %0, %1 fastmath<contract> : f64
-    %3 = affine.load %arg2[%arg4 - 1] : memref<4xf64>
+    %3 = affine.load %arg2[%arg4] : memref<4xf64>
     %4 = arith.addf %2, %3 fastmath<contract> : f64
-    affine.store %4, %arg3[%arg4 - 1] : memref<4xf64>
+    affine.store %4, %arg3[%arg4] : memref<4xf64>
   }
   return
 }
 
 // -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
 module {
-  func.func @outlined_affinefor_107817027509632(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
+  func.func @outlined_affinefor_104018181802624(%arg0: memref<4xf64>, %arg1: memref<f64>, %arg2: memref<4xf64>, %arg3: memref<4xf64>) {
     %0 = affine.load %arg1[] : memref<f64>
-    affine.parallel (%arg4) = (1) to (5) {
-      %1 = affine.load %arg0[%arg4 - 1] : memref<4xf64>
+    affine.parallel (%arg4) = (0) to (4) {
+      %1 = affine.load %arg0[%arg4] : memref<4xf64>
       %2 = arith.mulf %0, %1 fastmath<contract> : f64
-      %3 = affine.load %arg2[%arg4 - 1] : memref<4xf64>
+      %3 = affine.load %arg2[%arg4] : memref<4xf64>
       %4 = arith.addf %2, %3 fastmath<contract> : f64
-      affine.store %4, %arg3[%arg4 - 1] : memref<4xf64>
+      affine.store %4, %arg3[%arg4] : memref<4xf64>
     }
     return
   }
@@ -1093,12 +1246,12 @@ module {
     %13 = affine.load %9[] : memref<f64>
     %alloca = memref.alloca() : memref<f64>
     memref.store %13, %alloca[] : memref<f64>
-    call @outlined_affinefor_107817027509632(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
+    call @outlined_affinefor_104018181802624(%10, %alloca, %11, %12) : (memref<4xf64>, memref<f64>, memref<4xf64>, memref<4xf64>) -> ()
     %14 = arith.addi %7, %c4_i32 overflow<nsw> : i32
     affine.store %14, %8[] : memref<i32>
     omp.terminator
   }
-  func.func private @outlined_affinefor_107817027509632_raised(%arg0: tensor<4xf64>, %arg1: tensor<f64>, %arg2: tensor<4xf64>, %arg3: tensor<4xf64>) -> (tensor<4xf64>, tensor<f64>, tensor<4xf64>, tensor<4xf64>) {
+  func.func private @outlined_affinefor_104018181802624_raised(%arg0: tensor<4xf64>, %arg1: tensor<f64>, %arg2: tensor<4xf64>, %arg3: tensor<4xf64>) -> (tensor<4xf64>, tensor<f64>, tensor<4xf64>, tensor<4xf64>) {
     %c = stablehlo.constant dense<0> : tensor<i64>
     %0 = stablehlo.reshape %arg1 : (tensor<f64>) -> tensor<f64>
     %1 = stablehlo.reshape %arg0 : (tensor<4xf64>) -> tensor<4xf64>

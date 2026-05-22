@@ -41,6 +41,7 @@ static mlir::arith::CmpIPredicate swapPredicate(mlir::arith::CmpIPredicate pred)
 #define JIT_ARG_TYPE_NAME_ATTR "jit.arg_type"
 #define ALIASING_ATTRIBUTE "tf.aliasing_output"
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
+#define JIT_OUTLINE_AFFINE_FUNC_PREFIX "outlined_affinefor_"
 
 enum ArgType {
   SHAPE_OR_BOUND, 
