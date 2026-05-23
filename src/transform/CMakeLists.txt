@@ -53,7 +53,7 @@ target_link_libraries(JitTransforms
     MLIRMemRefDialect
     FIRTransforms
     HLFIRTransforms
-    BufferizationDialect
+    MLIRBufferizationDialect
 )
 
 # -DCMAKE_BUILD_TYPE=Debug
