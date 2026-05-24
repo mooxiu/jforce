@@ -19,6 +19,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -33,7 +34,7 @@ static bool isNotOutlineFunc(::mlir::StringRef funcName) {
 static std::string getCorrespondingStableHLOFuncName(::mlir::StringRef outlinedFuncName) {
   std::regex re(llvm::formatv("{0}[0-9]+$", JIT_OUTLINE_AFFINE_FUNC_PREFIX).str());
   if (!std::regex_match(outlinedFuncName.str(), re)) {
-    llvm::errs() << "The outlinedFuncName does not match the pattern!\n";
+    llvm::dbgs() << "The outlinedFuncName is: " << outlinedFuncName << ", which does not match the pattern. Skip this callee.\n";
     return "";
   }
   return llvm::formatv("{0}_raised", outlinedFuncName);
@@ -83,6 +84,7 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
     }
     
     rewritter.eraseOp(callOp);
+    rewritter.eraseOp(outlinedFunc);
     return;
   }
 
@@ -102,6 +104,7 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
 
       auto outlinedFuncName = callOp.getCallee();
       auto hloFuncName = getCorrespondingStableHLOFuncName(outlinedFuncName);
+      
       if (hloFuncName.empty()) {
         return WalkResult::skip();
       }
@@ -148,8 +151,6 @@ struct RemergePass: public mlir::PassWrapper<RemergePass, OperationPass<ModuleOp
     if (failed(applyOpPatternsGreedily(maternalFunctions, frozenSet, config))) {
       signalPassFailure();
     }
-
-    moduleOp.dump();
   }
 };
 };
