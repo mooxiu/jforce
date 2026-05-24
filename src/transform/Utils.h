@@ -71,6 +71,12 @@ static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.shape = memrefTy.getShape();
     return inspectTypeInfoInternal(memrefTy.getElementType(), typeInfo);
   }
+  if (auto tensorTy = llvm::dyn_cast<mlir::TensorType>(ty)) {
+    typeInfo.isDynamic = !tensorTy.hasStaticShape();
+    typeInfo.rank = tensorTy.getRank();
+    typeInfo.shape = tensorTy.getShape();
+    return inspectTypeInfoInternal(tensorTy.getElementType(), typeInfo);
+  }
   if (ty.isIntOrIndexOrFloat()) {
     if (typeInfo.rank == 0) {
       // meaning this is not a sequence type
@@ -80,7 +86,8 @@ static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.elementTy = ty;
     return typeInfo;
   };
-  llvm::errs() << "Unexpected Type!\n";
+  llvm::errs() << "Unexpected Type: ";
+  ty.print(llvm::errs());
   std::exit(EXIT_FAILURE); 
 }
 

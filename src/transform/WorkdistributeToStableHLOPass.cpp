@@ -442,7 +442,7 @@ static void handleConvertOp(TrackingInfo &tracking, OpBuilder &opBuilder, func::
   auto resTyInfo = inspectTypeInfo(resTy);
   auto convertFromTyInfo = inspectTypeInfo(convertFrom.getType());
   if (resTyInfo.elementTy == convertFromTyInfo.elementTy) {
-    tracking.valueMap.map(convertOp.getResult(), tracking.valueMap.lookup(convertFrom));
+    tracking.valueMap.map(convertOp.getResult(), tracking.valueMap.lookup(firOprand));
   } else {
     auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), convertFrom, resTy);
     tracking.valueMap.map(convertOp.getResult(), stableHLOConvertOp);
