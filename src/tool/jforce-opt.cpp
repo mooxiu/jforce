@@ -5,6 +5,7 @@
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
@@ -32,6 +33,7 @@ int main(int argc, char** argv) {
     mlir::scf::SCFDialect,
     mlir::affine::AffineDialect,
     mlir::memref::MemRefDialect,
+    mlir::bufferization::BufferizationDialect,
     mlir::stablehlo::StablehloDialect>();
 
   return mlir::asMainReturnCode(
