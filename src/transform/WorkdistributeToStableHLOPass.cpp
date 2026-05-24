@@ -6,18 +6,23 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <regex>
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "Utils.h"
@@ -161,10 +166,8 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
   Value operand2 = arithOp->getOperand(1);
   Value result = arithOp->getResult(0);
 
-  assert(tracking.valueMap.contains(operand1) &&
-         "ValueMap supposed to contain operand1!");
-  assert(tracking.valueMap.contains(operand2) &&
-         "ValueMap supposed to contain operand2!");
+  assert(tracking.valueMap.contains(operand1) && "ValueMap supposed to contain operand1!");
+  assert(tracking.valueMap.contains(operand2) && "ValueMap supposed to contain operand2!");
   Value operand1Src = tracking.valueMap.lookup(operand1);
   assert(operand1Src && "operand1Src not exist!");
   Value operand2Src = tracking.valueMap.lookup(operand2);
@@ -289,8 +292,7 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
   return;
 }
 
-static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
-                                   func::FuncOp &funcOp, Operation *op) {
+static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder, func::FuncOp &funcOp, Operation *op) {
   llvm::TypeSwitch<Operation *>(op)
       .Case<hlfir::DotProductOp>([&](hlfir::DotProductOp dpOp) {
         // example: %151 = hlfir.dot_product %148#0 %150#0
@@ -425,6 +427,26 @@ static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
         llvm::errs() << "Not Supported Builtin Operators!\n";
         std::exit(EXIT_FAILURE);
       });
+}
+
+// If input element type and output element type is the same, should not generate any stablehlo convert.
+// For example:
+// - %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+static void handleConvertOp(TrackingInfo &tracking, OpBuilder &opBuilder, func::FuncOp &funcOp, fir::ConvertOp convertOp) {
+  auto firOprand = convertOp.getOperand();
+  assert(tracking.valueMap.contains(firOprand) && "firOprand not exist!");
+  auto convertFrom = tracking.valueMap.lookup(firOprand);
+  assert(convertFrom && "Operand of convertOp should exist!\n");
+
+  auto resTy = convertOp.getResult().getType();
+  auto resTyInfo = inspectTypeInfo(resTy);
+  auto convertFromTyInfo = inspectTypeInfo(convertFrom.getType());
+  if (resTyInfo.elementTy == convertFromTyInfo.elementTy) {
+    tracking.valueMap.map(convertOp.getResult(), tracking.valueMap.lookup(convertFrom));
+  } else {
+    auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), convertFrom, resTy);
+    tracking.valueMap.map(convertOp.getResult(), stableHLOConvertOp);
+  }
 }
 
 /// DesignateOp can generate slice
@@ -803,14 +825,15 @@ static void scanOperationsAndInserts(
   DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
-        if (constOp.getResult().getType().isIndex()) {
-          // This is just shape info, just return
-          return;
+        stablehlo::ConstantOp stablehloConstOp;
+        if (constOp.getType().isIndex()) {
+          auto indexAttr = llvm::dyn_cast<IntegerAttr>(constOp.getValueAttr());
+          auto intAttr = IntegerAttr::get(IntegerType::get(opBuilder.getContext(), 64), indexAttr.getValue());
+          stablehloConstOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), intAttr);
+        } else {
+          stablehloConstOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), constOp.getValueAttr());
         }
-        auto stablehloConstOp = stablehlo::ConstantOp::create(
-            opBuilder, funcOp.getLoc(), constOp.getValueAttr());
-        tracking.valueMap.map(constOp.getResult(),
-                              stablehloConstOp.getResult());
+        tracking.valueMap.map(constOp.getResult(), stablehloConstOp.getResult());
       })
       .Case<hlfir::YieldElementOp>([&](hlfir::YieldElementOp yeOp) {
         // Should find the corresponding the elementalOp and establish the
@@ -849,6 +872,11 @@ static void scanOperationsAndInserts(
           tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand),
                                        declareOp->getOpResult(0));
         }
+      })
+      .Case<fir::DeclareOp>([&](fir::DeclareOp dop){
+        auto declaredOprand = dop.getOperand(0);
+        tracking.valueMap.map(dop.getResult(), tracking.valueMap.lookup(declaredOprand));
+        tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), dop.getResult());
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {
         handleDesignateOp(tracking, opBuilder, funcOp, designateOp,
@@ -923,23 +951,14 @@ static void scanOperationsAndInserts(
             trueSrc, falseSrc);
         tracking.valueMap.map(sop.getResult(), stableHLOSelectRes.getResult());
       })
-      .Case<math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp>(
-          [&](auto arithUnaryOp) {
+      .Case<math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp>([&](auto arithUnaryOp) {
             handleArithUnaryOp(tracking, opBuilder, funcOp, arithUnaryOp);
-          })
-      .Case<hlfir::MatmulOp, hlfir::DotProductOp, hlfir::TransposeOp,
-            hlfir::SumOp>([&](auto builtInOp) {
+      })
+      .Case<hlfir::MatmulOp, hlfir::DotProductOp, hlfir::TransposeOp, hlfir::SumOp>([&](auto builtInOp) {
         handleBuiltinOperators(tracking, opBuilder, funcOp, builtInOp);
       })
       .Case<fir::ConvertOp>([&](fir::ConvertOp convertOp) {
-        auto firOprand = convertOp.getOperand();
-        assert(tracking.valueMap.contains(firOprand) && "firOprand not exist!");
-        auto stablehloOperand = tracking.valueMap.lookup(firOprand);
-        assert(stablehloOperand && "Operand of convertOp should exist!\n");
-        auto resTy = convertOp.getResult().getType();
-        auto stableHLOConvertOp = stablehlo::ConvertOp::create(
-            opBuilder, funcOp.getLoc(), stablehloOperand, resTy);
-        tracking.valueMap.map(convertOp.getResult(), stableHLOConvertOp);
+        handleConvertOp(tracking, opBuilder, funcOp, convertOp);
       })
       .Case<hlfir::NoReassocOp>([&](hlfir::NoReassocOp nrop) {
         assert(tracking.valueMap.contains(nrop.getOperand()) &&
@@ -950,7 +969,10 @@ static void scanOperationsAndInserts(
                               tracking.valueMap.lookup(nrop.getOperand()));
       })
       // TODO: including other cases!
-      .Default([](auto) {});
+      .Default([](auto op) {
+        DEBUG_PRINT("Unhandled operation:");
+        DEBUG_PRINT_OP(op);
+      });
 }
 
 static void terminateFunction(const TrackingInfo &tracking,
@@ -971,6 +993,12 @@ static void terminateFunction(const TrackingInfo &tracking,
   auto loc = funcOp.getLoc();
   opBuilder.setInsertionPointToEnd(&funcOp.front());
   func::ReturnOp::create(opBuilder, loc, returnValues);
+}
+
+static bool isStableHLOFunction(::mlir::StringRef functionName) {
+  auto pattern = llvm::formatv("^{0}[0-9]+_raised$", JIT_OUTLINE_AFFINE_FUNC_PREFIX).str(); 
+  std::regex re(pattern);
+  return std::regex_match(functionName.str(), re);
 }
 
 struct WorkdistributeToStableHLOPass
@@ -1006,7 +1034,10 @@ struct WorkdistributeToStableHLOPass
 
     llvm::SmallVector<func::FuncOp>  funcsToReplace;
     moduleOp.walk([&](func::FuncOp fOp){
-      funcsToReplace.push_back(fOp);
+      // Should not translate already StableHLO function.
+      if (!isStableHLOFunction(fOp.getName())) {
+        funcsToReplace.push_back(fOp);
+      }
     });
 
     for (func::FuncOp oldFOp: funcsToReplace) {
@@ -1022,6 +1053,8 @@ struct WorkdistributeToStableHLOPass
       opBuilder.insert(stableHLOFuncOp);
       oldFOp.erase();
     }
+
+    moduleOp.dump(); 
   }
 };
 } // namespace
