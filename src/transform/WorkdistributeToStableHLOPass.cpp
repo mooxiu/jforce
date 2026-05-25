@@ -7,7 +7,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -24,6 +24,8 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <alloca.h>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -98,10 +100,12 @@ static void updateTracking(
     }
     break;
   case OperationType::GENESIS:
-    assert(oldOpFromVals.size() == 0 && newOpToVals.size() == 0);
+    assert(oldOpFromVals.size() == 0);
+    assert(oldOpToVals.size() == newOpToVals.size());
     for (int i = 0; i < oldOpToVals.size(); i++) {
-      Value creation = oldOpToVals[i];
-      tracking.valueMap.map(creation, creation);
+      Value oldOpToVal = oldOpToVals[i];
+      Value newOpToVal = newOpToVals[i];
+      tracking.valueMap.map(oldOpToVal, newOpToVal);
     }
     break;
   case OperationType::CONFLUENCE:
@@ -141,6 +145,11 @@ static RankedTensorType toCorrespondingTensorTy(mlir::Type srcTy) {
         auto shape = llvm::to_vector(seqTy.getShape());
         std::reverse(shape.begin(), shape.end());
         return RankedTensorType::get(shape, seqTy.getEleTy());
+      })
+      .Case<mlir::MemRefType>([](MemRefType memTy){
+        auto shape = llvm::to_vector(memTy.getShape());
+        std::reverse(shape.begin(), shape.end());
+        return RankedTensorType::get(shape, memTy.getElementType());
       })
       .Default([&](auto scTy) {
         // Suppose this is a scalar type
@@ -965,7 +974,12 @@ static void handleGenesisOp(
 ) {
   TypeSwitch<Operation*>(op).
     Case<memref::AllocaOp>([&](memref::AllocaOp allocaOp){
-      updateTracking<OperationType::GENESIS>(tracking, {}, {allocaOp.getResult()}, {});
+      auto tensorType = toCorrespondingTensorTy(allocaOp.getResult().getType());
+      mlir::Attribute scalarZero = opBuilder.getZeroAttr(allocaOp.getResult().getType().getElementType());
+      mlir::DenseElementsAttr zeroElementsAttr = mlir::DenseElementsAttr::get(tensorType, scalarZero);
+      auto constOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), zeroElementsAttr);
+      DEBUG_PRINT_OP(constOp);
+      updateTracking<OperationType::GENESIS>(tracking, {}, {allocaOp.getResult()}, {constOp.getResult()});
     });
 };
 
@@ -973,9 +987,11 @@ static void handleGenesisOp(
 static void scanOperationsAndInserts(
     TrackingInfo &tracking, 
     OpBuilder &opBuilder,
-    func::FuncOp hloFuncOp, // TODO: do not need &
+    func::FuncOp hloFuncOp,
     Operation *op,
-    const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap) {
+    const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap
+) {
+  DEBUG_PRINT_OP(op);
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         stablehlo::ConstantOp stablehloConstOp;
@@ -1182,16 +1198,16 @@ struct WorkdistributeToStableHLOPass
     auto context = moduleOp.getContext();
     OpBuilder opBuilder(context);
 
-
+    // Should not translate already StableHLO function.
     llvm::SmallVector<func::FuncOp>  funcsToReplace;
     moduleOp.walk([&](func::FuncOp fOp){
-      // Should not translate already StableHLO function.
       if (!isStableHLOFunction(fOp.getName())) {
         funcsToReplace.push_back(fOp);
       }
     });
 
-    for (func::FuncOp& oldFOp: funcsToReplace) {
+    DEBUG_PRINT("I have " << funcsToReplace.size() << " funcs to replace");
+    for (auto oldFOp: funcsToReplace) {
       TrackingInfo trackingInfo;
       auto sliceShiftMap = extractSliceShifts(oldFOp);
       auto stableHLOFuncOp = createFunction(context, trackingInfo, oldFOp);
