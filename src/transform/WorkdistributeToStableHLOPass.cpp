@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -179,7 +180,7 @@ static func::FuncOp createFunction(mlir::MLIRContext *context,
       funcOp.setArgAttr(i, JIT_LITERAL_VAL_ATTR_NAME, argAttr);
     }
     tracking.valueMap.map(firFuncArg, stablehloFuncArg);
-    tracking.argsTrackingMap.map(stablehloFuncArg, firFuncArg);
+    tracking.argsTrackingMap.map(stablehloFuncArg, stablehloFuncArg);
   }
   return funcOp;
 }
@@ -975,7 +976,6 @@ static void scanOperationsAndInserts(
     func::FuncOp hloFuncOp, // TODO: do not need &
     Operation *op,
     const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap) {
-  DEBUG_PRINT("Handling Op: " + getMLIROperationAsString(op));
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         stablehlo::ConstantOp stablehloConstOp;
@@ -1133,7 +1133,8 @@ static void terminateFunction(const TrackingInfo &tracking,
   for (unsigned int i = 0; i < funcOp.getNumArguments(); i++) {
     auto currArg = funcOp.getArgument(i);
     assert(tracking.argsTrackingMap.contains(currArg) && "currArg not exist!");
-    auto trackedVal = tracking.valueMap.lookup(tracking.argsTrackingMap.lookup(currArg));
+    auto trackedVal = tracking.argsTrackingMap.lookup(currArg);
+    // auto trackedVal = tracking.valueMap.lookup(tracking.argsTrackingMap.lookup(currArg));
     assert(trackedVal && "trackedVal not exist!");
     returnValues.push_back(trackedVal);
   }
@@ -1198,14 +1199,11 @@ struct WorkdistributeToStableHLOPass
       oldFOp->walk([&](Operation *op) {
         scanOperationsAndInserts(trackingInfo, opBuilder, stableHLOFuncOp, op, sliceShiftMap);
       });
-      stableHLOFuncOp.dump();
       terminateFunction(trackingInfo, opBuilder, stableHLOFuncOp);
       opBuilder.setInsertionPointAfter(oldFOp);
       opBuilder.insert(stableHLOFuncOp);
       oldFOp.erase();
     }
-
-    moduleOp.dump(); 
   }
 };
 } // namespace
