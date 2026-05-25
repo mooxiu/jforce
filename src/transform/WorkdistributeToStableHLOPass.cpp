@@ -7,12 +7,12 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
@@ -20,8 +20,10 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -44,6 +46,18 @@ namespace {
 /// - argsTrackingMap: tracking the current value of arguments of stablehlo
 /// pointing to, practically a reverse map of `valueMap`.
 struct TrackingInfo {
+private:
+  void printMap(IRMapping map, ::mlir::StringRef str) {
+    llvm::dbgs() << "[DEBUG] " << str << ":\n";
+    for (const auto& entry: valueMap.getValueMap()) {
+      llvm::dbgs() << "    > ";
+      entry.getFirst().printAsOperand(llvm::dbgs(), {});
+      llvm::dbgs() << ": ";
+      entry.getSecond().printAsOperand(llvm::dbgs(), {});
+      llvm::dbgs() << "\n";
+    }
+    llvm::dbgs() << "\n";
+  }
 public:
   // Key: value in FIR function
   // Value: value in StableHLO function
@@ -51,6 +65,14 @@ public:
   // Key: value of one of StableHLO function's arguments
   // Value: value in FIR function
   IRMapping argsTrackingMap;
+
+  void debugPrintValueMap() {
+    printMap(valueMap, "Value Map");
+  }
+
+  void debugPrintArgsTrackingMap() {
+    printMap(argsTrackingMap, "Arg Tracking Map");
+  }
 };
 
 
@@ -64,6 +86,8 @@ enum OperationType {
   // 0 -> 1
   // alloca
   GENESIS,
+  // store
+  REWIRE,
   // n -> 1
   CONFLUENCE,
   // 1 -> n
@@ -96,7 +120,6 @@ static void updateTracking(
       Value oldOpFromVal = oldOpFromVals[i];
       assert(tracking.valueMap.contains(oldOpFromVal));
       tracking.valueMap.map(oldOpToVals[i], tracking.valueMap.lookup(oldOpFromVal));
-      // tracking.argsTrackingMap.map(tracking.valueMap.lookup(oldOpFromVal), oldOpToVals[i]);
     }
     break;
   case OperationType::GENESIS:
@@ -108,6 +131,19 @@ static void updateTracking(
       tracking.valueMap.map(oldOpToVal, newOpToVal);
     }
     break;
+  case OperationType::REWIRE:
+    assert(newOpToVals.size() == 0);
+    assert(oldOpFromVals.size() == oldOpToVals.size());
+    for (int i = 0; i < oldOpFromVals.size(); i++) {
+      Value oldOpFromVal = oldOpFromVals[i];
+      Value oldOpToVal = oldOpToVals[i];
+      assert(tracking.valueMap.contains(oldOpToVal));
+      assert(tracking.valueMap.contains(oldOpFromVal));
+      tracking.argsTrackingMap.map(
+          tracking.valueMap.lookup(oldOpToVal),
+          tracking.valueMap.lookup(oldOpFromVal)
+        );
+    }
   case OperationType::CONFLUENCE:
     break;
   case OperationType::DIVERGE:
@@ -520,10 +556,10 @@ static void handleConvertOp(TrackingInfo &tracking, OpBuilder &opBuilder, func::
   auto resTyInfo = inspectTypeInfo(resTy);
   auto convertFromTyInfo = inspectTypeInfo(convertFrom.getType());
   if (resTyInfo.elementTy == convertFromTyInfo.elementTy) {
-    tracking.valueMap.map(convertOp.getResult(), tracking.valueMap.lookup(firOprand));
+    updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {firOprand}, {convertOp.getResult()}, {});
   } else {
     auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), convertFrom, resTy);
-    tracking.valueMap.map(convertOp.getResult(), stableHLOConvertOp);
+    updateTracking<OperationType::EXPLICIT_RELAY>(tracking, {firOprand}, {convertOp.getResult()}, {stableHLOConvertOp.getResult()});
   }
 }
 
@@ -931,8 +967,6 @@ static void handleGeneralRelayOp(
     })
     .Case<fir::DeclareOp>([&](fir::DeclareOp dop){
       auto declaredOprand = dop.getOperand(0);
-      // tracking.valueMap.map(dop.getResult(), tracking.valueMap.lookup(declaredOprand));
-      // tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand), dop.getResult());
       updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {declaredOprand}, {dop.getResult()}, {});
     })
     .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
@@ -945,9 +979,6 @@ static void handleGeneralRelayOp(
       assert(loadOp.getIndices().empty());
       updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {loadOp.getMemRef()}, {loadOp.getResult()}, {});
     })
-    .Case<affine::AffineStoreOp>([&](affine::AffineStoreOp storeOp){
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {storeOp.getMemRef()}, {storeOp.getValue()}, {});
-    })
     .Case<fir::ConvertOp>([&](fir::ConvertOp convertOp) {
       handleConvertOp(tracking, opBuilder, funcOp, convertOp);
     })
@@ -956,12 +987,6 @@ static void handleGeneralRelayOp(
     })
     .Case<bufferization::ToBufferOp>([&](bufferization::ToBufferOp toBufferOp){
       updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {toBufferOp.getOperand()}, {toBufferOp.getResult()}, {});
-    })
-    .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
-      assert(storeOp.getIndices().empty());
-      auto storeFrom = storeOp.getValue(); 
-      auto storeTo = storeOp.getMemRef();
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {storeFrom}, {storeTo}, {});
     })
   ;
 }
@@ -978,10 +1003,31 @@ static void handleGenesisOp(
       mlir::Attribute scalarZero = opBuilder.getZeroAttr(allocaOp.getResult().getType().getElementType());
       mlir::DenseElementsAttr zeroElementsAttr = mlir::DenseElementsAttr::get(tensorType, scalarZero);
       auto constOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), zeroElementsAttr);
-      DEBUG_PRINT_OP(constOp);
       updateTracking<OperationType::GENESIS>(tracking, {}, {allocaOp.getResult()}, {constOp.getResult()});
     });
 };
+
+static void handleRewireOp(
+  TrackingInfo &tracking, 
+  OpBuilder &opBuilder,
+  func::FuncOp funcOp,
+  Operation* op
+) {
+  TypeSwitch<Operation*>(op)
+    .Case<affine::AffineStoreOp>([&](affine::AffineStoreOp storeOp){
+      assert(storeOp.getIndices().empty());
+      auto storeFrom = storeOp.getValueToStore(); 
+      auto storeTo = storeOp.getMemRef();
+      updateTracking<OperationType::REWIRE>(tracking, {storeFrom}, {storeTo}, {});
+    })
+    .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
+      assert(storeOp.getIndices().empty());
+      auto storeFrom = storeOp.getValueToStore(); 
+      auto storeTo = storeOp.getMemRef();
+      updateTracking<OperationType::REWIRE>(tracking, {storeFrom}, {storeTo}, {});
+    })
+  ;
+}
 
 
 static void scanOperationsAndInserts(
@@ -991,7 +1037,6 @@ static void scanOperationsAndInserts(
     Operation *op,
     const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap
 ) {
-  DEBUG_PRINT_OP(op);
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         stablehlo::ConstantOp stablehloConstOp;
@@ -1125,9 +1170,13 @@ static void scanOperationsAndInserts(
         tracking.valueMap.map(nrop.getResult(),
                               tracking.valueMap.lookup(nrop.getOperand()));
       })
-      .Case<func::CallOp, fir::DeclareOp, fir::LoadOp, affine::AffineLoadOp, affine::AffineStoreOp, fir::ConvertOp, 
-        bufferization::ToTensorOp, bufferization::ToBufferOp, memref::StoreOp>([&](Operation* op){
+      .Case<
+        func::CallOp, fir::DeclareOp, fir::LoadOp, affine::AffineLoadOp, fir::ConvertOp, 
+        bufferization::ToTensorOp, bufferization::ToBufferOp>([&](Operation* op){
         handleGeneralRelayOp(tracking, opBuilder, hloFuncOp, op);
+      })
+      .Case<affine::AffineStoreOp, memref::StoreOp>([&](Operation* op){
+        handleRewireOp(tracking, opBuilder, hloFuncOp, op);
       })
       .Case<memref::AllocaOp>([&](Operation* op){
         handleGenesisOp(tracking, opBuilder, hloFuncOp, op);
@@ -1141,24 +1190,22 @@ static void scanOperationsAndInserts(
       });
 }
 
-static void terminateFunction(const TrackingInfo &tracking,
-                              OpBuilder &opBuilder, func::FuncOp &funcOp) {
-  auto argNum = funcOp.getNumArguments();
-  mlir::SmallVector<Value> returnValues;
-  returnValues.reserve(argNum);
-  for (unsigned int i = 0; i < funcOp.getNumArguments(); i++) {
-    auto currArg = funcOp.getArgument(i);
+static void terminateFunction(
+  const TrackingInfo &tracking,
+  OpBuilder &opBuilder, 
+  func::FuncOp translatedFunc
+) {
+  auto argNum = translatedFunc.getNumArguments();
+  mlir::SmallVector<Value> returnValues(argNum);
+  for (unsigned int i = 0; i < argNum; i++) {
+    auto currArg = translatedFunc.getArgument(i);
     assert(tracking.argsTrackingMap.contains(currArg) && "currArg not exist!");
-    auto trackedVal = tracking.argsTrackingMap.lookup(currArg);
-    // auto trackedVal = tracking.valueMap.lookup(tracking.argsTrackingMap.lookup(currArg));
-    assert(trackedVal && "trackedVal not exist!");
-    returnValues.push_back(trackedVal);
+    returnValues[i] = tracking.argsTrackingMap.lookup(currArg);
   }
 
   // Find the end of the last block.
-  auto loc = funcOp.getLoc();
-  opBuilder.setInsertionPointToEnd(&funcOp.front());
-  func::ReturnOp::create(opBuilder, loc, returnValues);
+  opBuilder.setInsertionPointToEnd(&translatedFunc.front());
+  func::ReturnOp::create(opBuilder, translatedFunc.getLoc(), returnValues);
 }
 
 static bool isStableHLOFunction(::mlir::StringRef functionName) {
@@ -1206,7 +1253,6 @@ struct WorkdistributeToStableHLOPass
       }
     });
 
-    DEBUG_PRINT("I have " << funcsToReplace.size() << " funcs to replace");
     for (auto oldFOp: funcsToReplace) {
       TrackingInfo trackingInfo;
       auto sliceShiftMap = extractSliceShifts(oldFOp);
