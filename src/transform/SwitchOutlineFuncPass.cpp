@@ -123,13 +123,13 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
 };
 
 
-struct RemergePass: public mlir::PassWrapper<RemergePass, OperationPass<ModuleOp>> {
+struct SwitchOutlineFuncPass: public mlir::PassWrapper<SwitchOutlineFuncPass, OperationPass<ModuleOp>> {
   void getDependentDialects(mlir::DialectRegistry & registry) const override {
     registry.insert<bufferization::BufferizationDialect>();
   }
 
   StringRef getArgument() const override { 
-    return "jforce-remerge";
+    return "jforce-switch-outline-function";
   }
 
   void runOnOperation() override {
@@ -157,7 +157,7 @@ struct RemergePass: public mlir::PassWrapper<RemergePass, OperationPass<ModuleOp
 
 namespace xla_jit {
 std::unique_ptr<mlir::Pass> createRemergePass() {
-  return std::make_unique<RemergePass>();
+  return std::make_unique<SwitchOutlineFuncPass>();
 }
 
 void registerRemergePass() {

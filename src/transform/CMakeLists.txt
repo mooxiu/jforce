@@ -25,7 +25,7 @@ add_library(JitTransforms STATIC
   OutlineAffinePass.cpp
   PropagateConstantsPass.cpp
   LoopSinkingPass.cpp
-  RemergePass.cpp
+  SwitchOutlineFuncPass.cpp
 )
 
 target_include_directories(JitTransforms
