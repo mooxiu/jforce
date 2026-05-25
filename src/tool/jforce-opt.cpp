@@ -15,12 +15,18 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/InitAllPasses.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/transforms/Passes.h"
+#include "stablehlo/transforms/optimization/Passes.h"
+#include "mlir/InitAllExtensions.h"
 
 int main(int argc, char** argv) {
   mlir::registerAllPasses();
   hlfir::registerHLFIRPasses();
   fir::registerOptTransformPasses();
   xla_jit::registerAllJitPasses();
+  mlir::stablehlo::registerPasses();
+  mlir::stablehlo::registerOptimizationPasses();
+
 
   mlir::DialectRegistry registry;
   registry.insert<
@@ -35,6 +41,8 @@ int main(int argc, char** argv) {
     mlir::memref::MemRefDialect,
     mlir::bufferization::BufferizationDialect,
     mlir::stablehlo::StablehloDialect>();
+
+  mlir::registerAllExtensions(registry);
 
   return mlir::asMainReturnCode(
     mlir::MlirOptMain(argc, argv, "XLA JIT Executing\n", registry));
