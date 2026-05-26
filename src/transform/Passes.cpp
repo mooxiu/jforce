@@ -17,4 +17,5 @@ void xla_jit::registerAllJitPasses() {
   registerOptimizeMemOpsPass();
   registerCleanFIROpsPass();
   registerLoopSinkingPass();
+  registerRemergePass();
 }

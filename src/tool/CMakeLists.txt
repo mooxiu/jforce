@@ -8,4 +8,5 @@ target_link_libraries(jforce-opt
     MLIROptLib
     MLIRTransforms
     MLIRRegisterAllPasses
+    -Wl,--start-group ${stablehlo_all_libs}  -Wl,--end-group
 )
