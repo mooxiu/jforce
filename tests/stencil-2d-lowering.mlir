@@ -9,10 +9,14 @@
 //    --jforce-optimize-mem-ops --canonicalize \
 //    --jforce-loop-sink \
 //    --enzyme-affinecfg --jforce-outline-affine \
-//    --enzyme-affine-to-stablehlo --canonicalize --mlir-print-ir-after-all 2> ./tests/stencil-2d-lowering.mlir
+//    --enzyme-affine-to-stablehlo --canonicalize \
+//    --jforce-switch-outline-function \
+//    --jforce-translate --inline \
+//    --stablehlo-aggressive-simplification --jforce-trim-args \
+//    --mlir-print-ir-after-all 2> ./tests/stencil-2d-lowering.mlir
 
 
-// -----// IR Dump After {anonymous}::AnnotatePass (jforce-annotate) //----- //
+// -----// IR Dump After (anonymous namespace)::AnnotatePass (jforce-annotate) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<?x?xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<?x?xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %0 = fir.load %arg8 : !fir.ref<i32>
   %1 = fir.load %arg7 : !fir.ref<i32>
@@ -121,7 +125,7 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   omp.terminator
 }
 
-// -----// IR Dump After {anonymous}::PropagateConstantsPass (jforce-propagate-constants) //----- //
+// -----// IR Dump After (anonymous namespace)::PropagateConstantsPass (jforce-propagate-constants) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<?x?xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<?x?xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1024_i32 = arith.constant 1024 : i32
   %c1024_i32_0 = arith.constant 1024 : i32
@@ -502,7 +506,7 @@ module {
 }
 
 
-// -----// IR Dump After {anonymous}::ShapeInferPass (jforce-shape-infer) //----- //
+// -----// IR Dump After (anonymous namespace)::ShapeInferPass (jforce-shape-infer) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1024 = arith.constant 1024 : index
   %c1_i32 = arith.constant 1 : i32
@@ -1128,7 +1132,7 @@ module {
 }
 
 
-// -----// IR Dump After {anonymous}::CleanFIRLoopPass (jforce-clean-fir-loop) //----- //
+// -----// IR Dump After (anonymous namespace)::CleanFIRLoopPass (jforce-clean-fir-loop) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1024 = arith.constant 1024 : index
   %c1_i32 = arith.constant 1 : i32
@@ -1274,7 +1278,7 @@ module {
 }
 
 
-// -----// IR Dump After {anonymous}::CleanFIROpsPass (jforce-clean-fir-op) //----- //
+// -----// IR Dump After (anonymous namespace)::CleanFIROpsPass (jforce-clean-fir-op) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1024 = arith.constant 1024 : index
   %c1_i32 = arith.constant 1 : i32
@@ -1637,7 +1641,7 @@ module {
 [DEBUG]Unexpected readOp: 
 [DEBUG] %39 = arith.addf %34, %38 fastmath<contract> : f64 
 [DEBUG]Dependency chain relies on LoadOp!
-// -----// IR Dump After {anonymous}::OptimizeMemOpsPass (jforce-optimize-mem-ops) //----- //
+// -----// IR Dump After (anonymous namespace)::OptimizeMemOpsPass (jforce-optimize-mem-ops) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1023_i32 = arith.constant 1023 : i32
   %c1024 = arith.constant 1024 : index
@@ -1807,7 +1811,7 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   memref.store %12, %6[] : memref<i32>
   omp.terminator
 }
-// -----// IR Dump After {anonymous}::LoopSinkingPass (jforce-loop-sink) //----- //
+// -----// IR Dump After (anonymous namespace)::LoopSinkingPass (jforce-loop-sink) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1023_i32 = arith.constant 1023 : i32
   %c1024 = arith.constant 1024 : index
@@ -1863,7 +1867,7 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   omp.terminator
 }
 
-// -----// IR Dump After {anonymous}::AffineCFGPass (enzyme-affinecfg) //----- //
+// -----// IR Dump After (anonymous namespace)::AffineCFGPass (enzyme-affinecfg) //----- //
 module {
   func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
     %c1023_i32 = arith.constant 1023 : i32
@@ -1900,7 +1904,7 @@ module {
 
 
 module {
-  func.func @outlined_affinefor_102169923486784(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
+  func.func @outlined_affinefor_94436890829344(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
     affine.parallel (%arg2, %arg3) = (0, 0) to (1022, 1022) {
       %0 = affine.load %arg0[%arg2 + 1, %arg3] : memref<1024x1024xf64>
       %1 = affine.load %arg0[%arg2 + 1, %arg3 + 2] : memref<1024x1024xf64>
@@ -1928,7 +1932,7 @@ module {
     %8 = fir.convert %5 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
     %9 = fir.convert %4 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
     %10 = fir.convert %c1 : (index) -> i32
-    call @outlined_affinefor_102169923486784(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
+    call @outlined_affinefor_94436890829344(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
     %11 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
     affine.store %11, %7[] : memref<i32>
     %12 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
@@ -1936,9 +1940,9 @@ module {
     omp.terminator
   }
 }
-// -----// IR Dump After {anonymous}::OutlineAffinePass (jforce-outline-affine) //----- //
+// -----// IR Dump After (anonymous namespace)::OutlineAffinePass (jforce-outline-affine) //----- //
 module {
-  func.func @outlined_affinefor_102169923486784(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
+  func.func @outlined_affinefor_94436890829344(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
     affine.parallel (%arg2, %arg3) = (0, 0) to (1022, 1022) {
       %0 = affine.load %arg0[%arg2 + 1, %arg3] : memref<1024x1024xf64>
       %1 = affine.load %arg0[%arg2 + 1, %arg3 + 2] : memref<1024x1024xf64>
@@ -1966,7 +1970,7 @@ module {
     %8 = fir.convert %5 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
     %9 = fir.convert %4 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
     %10 = fir.convert %c1 : (index) -> i32
-    call @outlined_affinefor_102169923486784(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
+    call @outlined_affinefor_94436890829344(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
     %11 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
     affine.store %11, %7[] : memref<i32>
     %12 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
@@ -1976,7 +1980,7 @@ module {
 }
 
 
-// -----// IR Dump After {anonymous}::AffineToStableHLORaisingPass (enzyme-affine-to-stablehlo) //----- //
+// -----// IR Dump After (anonymous namespace)::AffineToStableHLORaisingPass (enzyme-affine-to-stablehlo) //----- //
 func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
   %c1023_i32 = arith.constant 1023 : i32
   %c1024 = arith.constant 1024 : index
@@ -1992,7 +1996,7 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   %8 = fir.convert %5 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
   %9 = fir.convert %4 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
   %10 = fir.convert %c1 : (index) -> i32
-  call @outlined_affinefor_102169923486784(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
+  call @outlined_affinefor_94436890829344(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
   %11 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
   affine.store %11, %7[] : memref<i32>
   %12 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
@@ -2000,8 +2004,8 @@ func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val
   omp.terminator
 }
 
-// -----// IR Dump After {anonymous}::AffineToStableHLORaisingPass (enzyme-affine-to-stablehlo) //----- //
-func.func @outlined_affinefor_102169923486784(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
+// -----// IR Dump After (anonymous namespace)::AffineToStableHLORaisingPass (enzyme-affine-to-stablehlo) //----- //
+func.func @outlined_affinefor_94436890829344(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
   affine.parallel (%arg2, %arg3) = (0, 0) to (1022, 1022) {
     %0 = affine.load %arg0[%arg2 + 1, %arg3] : memref<1024x1024xf64>
     %1 = affine.load %arg0[%arg2 + 1, %arg3 + 2] : memref<1024x1024xf64>
@@ -2017,7 +2021,7 @@ func.func @outlined_affinefor_102169923486784(%arg0: memref<1024x1024xf64>, %arg
 
 // -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
 module {
-  func.func @outlined_affinefor_102169923486784(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
+  func.func @outlined_affinefor_94436890829344(%arg0: memref<1024x1024xf64>, %arg1: memref<1024x1024xf64>) {
     affine.parallel (%arg2, %arg3) = (0, 0) to (1022, 1022) {
       %0 = affine.load %arg0[%arg2 + 1, %arg3] : memref<1024x1024xf64>
       %1 = affine.load %arg0[%arg2 + 1, %arg3 + 2] : memref<1024x1024xf64>
@@ -2045,14 +2049,14 @@ module {
     %8 = fir.convert %5 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
     %9 = fir.convert %4 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
     %10 = fir.convert %c1 : (index) -> i32
-    call @outlined_affinefor_102169923486784(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
+    call @outlined_affinefor_94436890829344(%8, %9) : (memref<1024x1024xf64>, memref<1024x1024xf64>) -> ()
     %11 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
     affine.store %11, %7[] : memref<i32>
     %12 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
     affine.store %12, %6[] : memref<i32>
     omp.terminator
   }
-  func.func private @outlined_affinefor_102169923486784_raised(%arg0: tensor<1024x1024xf64>, %arg1: tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>) {
+  func.func private @outlined_affinefor_94436890829344_raised(%arg0: tensor<1024x1024xf64>, %arg1: tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>) {
     %c = stablehlo.constant dense<1> : tensor<i64>
     %0 = stablehlo.slice %arg0 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
     %1 = stablehlo.reshape %0 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
@@ -2071,4 +2075,181 @@ module {
   }
 }
 
+
+The outlinedFuncName is: outlined_affinefor_94436890829344_raised, which does not match the pattern. Skip this callee.
+// -----// IR Dump After (anonymous namespace)::SwitchOutlineFuncPass (jforce-switch-outline-function) //----- //
+module {
+  func.func @kernel(%arg0: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg1: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg2: !fir.ref<i32> {jit.arg_type = 1 : ui32, jit.literal_val = 0 : i64}, %arg3: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg4: !fir.ref<!fir.array<1024x1024xf64>> {jit.arg_type = 1 : ui32}, %arg5: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg6: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg7: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}, %arg8: !fir.ref<i32> {jit.arg_type = 0 : ui32, jit.literal_val = 1024 : i64}) {
+    %c1023_i32 = arith.constant 1023 : i32
+    %c1024 = arith.constant 1024 : index
+    %c1 = arith.constant 1 : index
+    %0 = fir.declare %arg0 {uniq_name = "_QFFrun_benchmarkEj"} : (!fir.ref<i32>) -> !fir.ref<i32>
+    %1 = fir.declare %arg1 {uniq_name = "_QFFrun_benchmarkEn"} : (!fir.ref<i32>) -> !fir.ref<i32>
+    %2 = fir.declare %arg2 {uniq_name = "_QFFrun_benchmarkEi"} : (!fir.ref<i32>) -> !fir.ref<i32>
+    %3 = fir.shape %c1024, %c1024 : (index, index) -> !fir.shape<2>
+    %4 = fir.declare %arg3(%3) {uniq_name = "_QFFrun_benchmarkEy"} : (!fir.ref<!fir.array<1024x1024xf64>>, !fir.shape<2>) -> !fir.ref<!fir.array<1024x1024xf64>>
+    %5 = fir.declare %arg4(%3) {uniq_name = "_QFFrun_benchmarkEx"} : (!fir.ref<!fir.array<1024x1024xf64>>, !fir.shape<2>) -> !fir.ref<!fir.array<1024x1024xf64>>
+    %6 = fir.convert %0 : (!fir.ref<i32>) -> memref<i32>
+    %7 = fir.convert %2 : (!fir.ref<i32>) -> memref<i32>
+    %8 = fir.convert %5 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
+    %9 = fir.convert %4 : (!fir.ref<!fir.array<1024x1024xf64>>) -> memref<1024x1024xf64>
+    %10 = fir.convert %c1 : (index) -> i32
+    %11 = bufferization.to_tensor %8 : memref<1024x1024xf64> to tensor<1024x1024xf64>
+    %12 = bufferization.to_tensor %9 : memref<1024x1024xf64> to tensor<1024x1024xf64>
+    %13:2 = call @outlined_affinefor_94436890829344_raised(%11, %12) : (tensor<1024x1024xf64>, tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>)
+    %14 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
+    affine.store %14, %7[] : memref<i32>
+    %15 = arith.addi %10, %c1023_i32 overflow<nsw> : i32
+    affine.store %15, %6[] : memref<i32>
+    omp.terminator
+  }
+  func.func private @outlined_affinefor_94436890829344_raised(%arg0: tensor<1024x1024xf64>, %arg1: tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>) {
+    %c = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.slice %arg0 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %1 = stablehlo.reshape %0 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %2 = stablehlo.slice %arg0 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %3 = stablehlo.reshape %2 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %4 = arith.addf %1, %3 fastmath<contract> : tensor<1022x1022xf64>
+    %5 = stablehlo.slice %arg0 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %6 = stablehlo.reshape %5 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %7 = arith.addf %4, %6 fastmath<contract> : tensor<1022x1022xf64>
+    %8 = stablehlo.slice %arg0 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %9 = stablehlo.reshape %8 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %10 = arith.addf %7, %9 fastmath<contract> : tensor<1022x1022xf64>
+    %11 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %12 = stablehlo.dynamic_update_slice %arg1, %11, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+    return %arg0, %12 : tensor<1024x1024xf64>, tensor<1024x1024xf64>
+  }
+}
+
+
+[DEBUG]Unhandled operation:
+[DEBUG] %3 = fir.shape %c1024, %c1024 : (index, index) -> !fir.shape<2> 
+[DEBUG]Unhandled operation:
+[DEBUG] omp.terminator 
+// -----// IR Dump After (anonymous namespace)::WorkdistributeToStableHLOPass (jforce-translate) //----- //
+module {
+  func.func @main(%arg0: tensor<i32> {jit.literal_val = 0 : i64}, %arg1: tensor<i32> {jit.literal_val = 1024 : i64}, %arg2: tensor<i32> {jit.literal_val = 0 : i64}, %arg3: tensor<1024x1024xf64>, %arg4: tensor<1024x1024xf64>, %arg5: tensor<i32> {jit.literal_val = 1024 : i64}, %arg6: tensor<i32> {jit.literal_val = 1024 : i64}, %arg7: tensor<i32> {jit.literal_val = 1024 : i64}, %arg8: tensor<i32> {jit.literal_val = 1024 : i64}) -> (tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) {
+    %c = stablehlo.constant dense<1023> : tensor<i32>
+    %c_0 = stablehlo.constant dense<1024> : tensor<i64>
+    %c_1 = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.convert %c_1 : (tensor<i64>) -> tensor<i32>
+    %1:2 = call @outlined_affinefor_94436890829344_raised(%arg4, %arg3) : (tensor<1024x1024xf64>, tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>)
+    %2 = stablehlo.add %0, %c : tensor<i32>
+    %3 = stablehlo.add %0, %c : tensor<i32>
+    return %arg0, %arg1, %arg2, %1#1, %1#0, %arg5, %arg6, %arg7, %arg8 : tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>
+  }
+  func.func private @outlined_affinefor_94436890829344_raised(%arg0: tensor<1024x1024xf64>, %arg1: tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>) {
+    %c = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.slice %arg0 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %1 = stablehlo.reshape %0 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %2 = stablehlo.slice %arg0 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %3 = stablehlo.reshape %2 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %4 = arith.addf %1, %3 fastmath<contract> : tensor<1022x1022xf64>
+    %5 = stablehlo.slice %arg0 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %6 = stablehlo.reshape %5 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %7 = arith.addf %4, %6 fastmath<contract> : tensor<1022x1022xf64>
+    %8 = stablehlo.slice %arg0 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %9 = stablehlo.reshape %8 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %10 = arith.addf %7, %9 fastmath<contract> : tensor<1022x1022xf64>
+    %11 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %12 = stablehlo.dynamic_update_slice %arg1, %11, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+    return %arg0, %12 : tensor<1024x1024xf64>, tensor<1024x1024xf64>
+  }
+}
+
+
+// -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
+func.func private @outlined_affinefor_94436890829344_raised(%arg0: tensor<1024x1024xf64>, %arg1: tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>) {
+  %c = stablehlo.constant dense<1> : tensor<i64>
+  %0 = stablehlo.slice %arg0 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %1 = stablehlo.reshape %0 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %2 = stablehlo.slice %arg0 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %3 = stablehlo.reshape %2 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %4 = arith.addf %1, %3 fastmath<contract> : tensor<1022x1022xf64>
+  %5 = stablehlo.slice %arg0 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %6 = stablehlo.reshape %5 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %7 = arith.addf %4, %6 fastmath<contract> : tensor<1022x1022xf64>
+  %8 = stablehlo.slice %arg0 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %9 = stablehlo.reshape %8 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %10 = arith.addf %7, %9 fastmath<contract> : tensor<1022x1022xf64>
+  %11 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %12 = stablehlo.dynamic_update_slice %arg1, %11, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+  return %arg0, %12 : tensor<1024x1024xf64>, tensor<1024x1024xf64>
+}
+
+// -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
+func.func @main(%arg0: tensor<i32> {jit.literal_val = 0 : i64}, %arg1: tensor<i32> {jit.literal_val = 1024 : i64}, %arg2: tensor<i32> {jit.literal_val = 0 : i64}, %arg3: tensor<1024x1024xf64>, %arg4: tensor<1024x1024xf64>, %arg5: tensor<i32> {jit.literal_val = 1024 : i64}, %arg6: tensor<i32> {jit.literal_val = 1024 : i64}, %arg7: tensor<i32> {jit.literal_val = 1024 : i64}, %arg8: tensor<i32> {jit.literal_val = 1024 : i64}) -> (tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) {
+  %0:2 = call @outlined_affinefor_94436890829344_raised(%arg4, %arg3) : (tensor<1024x1024xf64>, tensor<1024x1024xf64>) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>)
+  return %arg0, %arg1, %arg2, %0#1, %0#0, %arg5, %arg6, %arg7, %arg8 : tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>
+}
+
+// -----// IR Dump After CanonicalizerPass (canonicalize) //----- //
+func.func @main(%arg0: tensor<i32> {jit.literal_val = 0 : i64}, %arg1: tensor<i32> {jit.literal_val = 1024 : i64}, %arg2: tensor<i32> {jit.literal_val = 0 : i64}, %arg3: tensor<1024x1024xf64>, %arg4: tensor<1024x1024xf64>, %arg5: tensor<i32> {jit.literal_val = 1024 : i64}, %arg6: tensor<i32> {jit.literal_val = 1024 : i64}, %arg7: tensor<i32> {jit.literal_val = 1024 : i64}, %arg8: tensor<i32> {jit.literal_val = 1024 : i64}) -> (tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) {
+  %c = stablehlo.constant dense<1> : tensor<i64>
+  %0 = stablehlo.slice %arg4 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %1 = stablehlo.reshape %0 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %2 = stablehlo.slice %arg4 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %3 = stablehlo.reshape %2 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %4 = arith.addf %1, %3 fastmath<contract> : tensor<1022x1022xf64>
+  %5 = stablehlo.slice %arg4 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %6 = stablehlo.reshape %5 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %7 = arith.addf %4, %6 fastmath<contract> : tensor<1022x1022xf64>
+  %8 = stablehlo.slice %arg4 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %9 = stablehlo.reshape %8 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %10 = arith.addf %7, %9 fastmath<contract> : tensor<1022x1022xf64>
+  %11 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+  %12 = stablehlo.dynamic_update_slice %arg3, %11, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+  return %arg0, %arg1, %arg2, %12, %arg4, %arg5, %arg6, %arg7, %arg8 : tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>
+}
+
+// -----// IR Dump After InlinerPass (inline) //----- //
+module {
+  func.func @main(%arg0: tensor<i32> {jit.literal_val = 0 : i64}, %arg1: tensor<i32> {jit.literal_val = 1024 : i64}, %arg2: tensor<i32> {jit.literal_val = 0 : i64}, %arg3: tensor<1024x1024xf64>, %arg4: tensor<1024x1024xf64>, %arg5: tensor<i32> {jit.literal_val = 1024 : i64}, %arg6: tensor<i32> {jit.literal_val = 1024 : i64}, %arg7: tensor<i32> {jit.literal_val = 1024 : i64}, %arg8: tensor<i32> {jit.literal_val = 1024 : i64}) -> (tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) {
+    %c = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.slice %arg4 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %1 = stablehlo.reshape %0 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %2 = stablehlo.slice %arg4 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %3 = stablehlo.reshape %2 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %4 = arith.addf %1, %3 fastmath<contract> : tensor<1022x1022xf64>
+    %5 = stablehlo.slice %arg4 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %6 = stablehlo.reshape %5 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %7 = arith.addf %4, %6 fastmath<contract> : tensor<1022x1022xf64>
+    %8 = stablehlo.slice %arg4 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+    %9 = stablehlo.reshape %8 : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %10 = arith.addf %7, %9 fastmath<contract> : tensor<1022x1022xf64>
+    %11 = stablehlo.broadcast_in_dim %10, dims = [0, 1] : (tensor<1022x1022xf64>) -> tensor<1022x1022xf64>
+    %12 = stablehlo.dynamic_update_slice %arg3, %11, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+    return %arg0, %arg1, %arg2, %12, %arg4, %arg5, %arg6, %arg7, %arg8 : tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>
+  }
+}
+
+
+// -----// IR Dump After StablehloAggressiveSimplificationPass (stablehlo-aggressive-simplification) //----- //
+func.func @main(%arg0: tensor<i32> {jit.literal_val = 0 : i64}, %arg1: tensor<i32> {jit.literal_val = 1024 : i64}, %arg2: tensor<i32> {jit.literal_val = 0 : i64}, %arg3: tensor<1024x1024xf64>, %arg4: tensor<1024x1024xf64>, %arg5: tensor<i32> {jit.literal_val = 1024 : i64}, %arg6: tensor<i32> {jit.literal_val = 1024 : i64}, %arg7: tensor<i32> {jit.literal_val = 1024 : i64}, %arg8: tensor<i32> {jit.literal_val = 1024 : i64}) -> (tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) {
+  %c = stablehlo.constant dense<1> : tensor<i64>
+  %0 = stablehlo.slice %arg4 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %1 = stablehlo.slice %arg4 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %2 = arith.addf %0, %1 fastmath<contract> : tensor<1022x1022xf64>
+  %3 = stablehlo.slice %arg4 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %4 = arith.addf %2, %3 fastmath<contract> : tensor<1022x1022xf64>
+  %5 = stablehlo.slice %arg4 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %6 = arith.addf %4, %5 fastmath<contract> : tensor<1022x1022xf64>
+  %7 = stablehlo.dynamic_update_slice %arg3, %6, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+  return %arg0, %arg1, %arg2, %7, %arg4, %arg5, %arg6, %arg7, %arg8 : tensor<i32>, tensor<i32>, tensor<i32>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>
+}
+
+// -----// IR Dump After (anonymous namespace)::TrimArgsPass (jforce-trim-args) //----- //
+func.func @main(%arg0: tensor<1024x1024xf64> {jit.literal_val = 0 : i64}, %arg1: tensor<1024x1024xf64> {jit.literal_val = 1024 : i64}) -> (tensor<1024x1024xf64>, tensor<1024x1024xf64>) attributes {jit.args_mapping = [4 : ui32, 1 : ui32, 3 : ui32, 0 : ui32]} {
+  %c = stablehlo.constant dense<1> : tensor<i64>
+  %0 = stablehlo.slice %arg1 [1:1023, 0:1022] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %1 = stablehlo.slice %arg1 [1:1023, 2:1024] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %2 = arith.addf %0, %1 fastmath<contract> : tensor<1022x1022xf64>
+  %3 = stablehlo.slice %arg1 [0:1022, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %4 = arith.addf %2, %3 fastmath<contract> : tensor<1022x1022xf64>
+  %5 = stablehlo.slice %arg1 [2:1024, 1:1023] : (tensor<1024x1024xf64>) -> tensor<1022x1022xf64>
+  %6 = arith.addf %4, %5 fastmath<contract> : tensor<1022x1022xf64>
+  %7 = stablehlo.dynamic_update_slice %arg0, %6, %c, %c : (tensor<1024x1024xf64>, tensor<1022x1022xf64>, tensor<i64>, tensor<i64>) -> tensor<1024x1024xf64>
+  return %7, %arg1 : tensor<1024x1024xf64>, tensor<1024x1024xf64>
+}
 
