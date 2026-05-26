@@ -173,6 +173,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   #undef h
 
   assert(NumArgs == NumHostArgs);
+  // there is an extra pointer added...
+  // TODO: Temporary only
+  NumArgs -= 1;
+  NumHostArgs -= 1;
+  *ArgSizes -= 1;
+  
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCodePtrUint);
@@ -247,15 +253,16 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase2.addPass(xla_jit::createLoopSinkingPass());
   pm.addPass(xla_jit::createAffineCFGPass());
   pm.addPass(xla_jit::createOutlineAffinePass());
-  pm.addPass(xla_jit::createAffineToStableHLORaisingPass());
+  auto& nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase3.addPass(xla_jit::createAffineToStableHLORaisingPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(xla_jit::createRemergePass());
   pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
   pm.addPass(createInlinerPass());
-  pm.addPass(stablehlo::createStablehloAggressiveSimplificationPass());
-  auto& nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
-  nestedPMPhase3.addPass(xla_jit::createAliasingPass());
-  nestedPMPhase3.addPass(xla_jit::createTrimArgsPass());
+  auto& nestedPMPhase4 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase4.addPass(stablehlo::createStablehloAggressiveSimplificationPass());
+  nestedPMPhase4.addPass(xla_jit::createAliasingPass());
+  nestedPMPhase4.addPass(xla_jit::createTrimArgsPass());
   if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);
