@@ -41,6 +41,7 @@ static mlir::arith::CmpIPredicate swapPredicate(mlir::arith::CmpIPredicate pred)
 #define JIT_ARG_TYPE_NAME_ATTR "jit.arg_type"
 #define ALIASING_ATTRIBUTE "tf.aliasing_output"
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
+#define JIT_OUTLINE_AFFINE_FUNC_PREFIX "outlined_affinefor_"
 
 enum ArgType {
   SHAPE_OR_BOUND, 
@@ -70,6 +71,12 @@ static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.shape = memrefTy.getShape();
     return inspectTypeInfoInternal(memrefTy.getElementType(), typeInfo);
   }
+  if (auto tensorTy = llvm::dyn_cast<mlir::TensorType>(ty)) {
+    typeInfo.isDynamic = !tensorTy.hasStaticShape();
+    typeInfo.rank = tensorTy.getRank();
+    typeInfo.shape = tensorTy.getShape();
+    return inspectTypeInfoInternal(tensorTy.getElementType(), typeInfo);
+  }
   if (ty.isIntOrIndexOrFloat()) {
     if (typeInfo.rank == 0) {
       // meaning this is not a sequence type
@@ -79,7 +86,8 @@ static TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.elementTy = ty;
     return typeInfo;
   };
-  llvm::errs() << "Unexpected Type!\n";
+  llvm::errs() << "Unexpected Type: ";
+  ty.print(llvm::errs());
   std::exit(EXIT_FAILURE); 
 }
 

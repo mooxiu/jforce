@@ -5,6 +5,7 @@
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
@@ -14,12 +15,18 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/InitAllPasses.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/transforms/Passes.h"
+#include "stablehlo/transforms/optimization/Passes.h"
+#include "mlir/InitAllExtensions.h"
 
 int main(int argc, char** argv) {
   mlir::registerAllPasses();
   hlfir::registerHLFIRPasses();
   fir::registerOptTransformPasses();
   xla_jit::registerAllJitPasses();
+  mlir::stablehlo::registerPasses();
+  mlir::stablehlo::registerOptimizationPasses();
+
 
   mlir::DialectRegistry registry;
   registry.insert<
@@ -32,7 +39,10 @@ int main(int argc, char** argv) {
     mlir::scf::SCFDialect,
     mlir::affine::AffineDialect,
     mlir::memref::MemRefDialect,
+    mlir::bufferization::BufferizationDialect,
     mlir::stablehlo::StablehloDialect>();
+
+  mlir::registerAllExtensions(registry);
 
   return mlir::asMainReturnCode(
     mlir::MlirOptMain(argc, argv, "XLA JIT Executing\n", registry));
