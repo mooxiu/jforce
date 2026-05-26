@@ -2,7 +2,6 @@
 #define JITMANAGER_H
 
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/Support/Debug.h"
 #include <shared_mutex>
 #include "../../third_party/headers/pjrt_c_api.h"
 #include "../support/utilities.h"
