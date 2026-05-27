@@ -135,7 +135,6 @@ target_link_libraries(jit-code-executor PRIVATE
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
   JitSupport
   JitTransforms
-  -Wl,--start-group ${stablehlo_all_libs}  -Wl,--end-group
 )
 
 # Pass flags

@@ -133,38 +133,31 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
       auto blockArg = entryBlock->getArgument(outlinedFuncIdx);
       outlinedFuncIdx += 1;
 
-      mlir::IntegerAttr attr;
-      if (matchPattern(outVal, m_Constant(&attr))) {
+      // mlir::IntegerAttr attr;
+      if (matchPattern(outVal, m_Constant())) {
         outlinedFuncIdx -= 1;
-        if (outVal.getType().isIndex()) {
-          auto constIndexOp = arith::ConstantIndexOp::create(
-              rewritter, loopOp.getLoc(), attr.getInt());
-          mapping.map(outVal, constIndexOp.getResult());
-        } else if (outVal.getType().isInteger()) {
-          auto constIntOp = arith::ConstantIntOp::create(
-              rewritter, loopOp.getLoc(), attr.getInt(),
-              outVal.getType().getIntOrFloatBitWidth());
-          mapping.map(outVal, constIntOp.getResult());
-        } else {
-          llvm::errs() << "Unexpected value type!\n";
-          std::exit(EXIT_FAILURE);
-        }
+        auto clonedConst = rewritter.clone(*outVal.getDefiningOp());
+        mapping.map(outVal, clonedConst->getResult(0));
+        // if (outVal.getType().isIndex()) {
+        //   auto constIndexOp = arith::ConstantIndexOp::create(rewritter, loopOp.getLoc(), attr.getInt());
+        //   mapping.map(outVal, constIndexOp.getResult());
+        // } else if (outVal.getType().isInteger()) {
+        //   auto constIntOp = arith::ConstantIntOp::create(rewritter, loopOp.getLoc(), attr.getInt(), outVal.getType().getIntOrFloatBitWidth());
+        //   mapping.map(outVal, constIntOp.getResult());
+        // } else {
+        //   llvm::errs() << "Unexpected value type!\n";
+        //   std::exit(EXIT_FAILURE);
+        // }
       } else if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
         mapping.map(outVal, blockArg);
       } else if (outVal.getType().isIndex()) {
-        // auto loadOp = memref::LoadOp::create(rewritter, forOp.getLoc(),
-        // blockArg, {});
-        auto loadOp = affine::AffineLoadOp::create(
-            rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
-        auto castBackOp =
-            arith::IndexCastOp::create(rewritter, loopOp.getLoc(),
-                                       IndexType::get(ctx), loadOp.getResult());
+        // auto loadOp = memref::LoadOp::create(rewritter, forOp.getLoc(), blockArg, {});
+        auto loadOp = affine::AffineLoadOp::create(rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
+        auto castBackOp = arith::IndexCastOp::create(rewritter, loopOp.getLoc(), IndexType::get(ctx), loadOp.getResult());
         mapping.map(outVal, castBackOp.getResult());
       } else if (outVal.getType().isIntOrFloat()) {
-        // auto loadOp = memref::LoadOp::create(rewritter, forOp.getLoc(),
-        // blockArg, {});
-        auto loadOp = affine::AffineLoadOp::create(
-            rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
+        // auto loadOp = memref::LoadOp::create(rewritter, forOp.getLoc(), blockArg, {});
+        auto loadOp = affine::AffineLoadOp::create(rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
         mapping.map(outVal, loadOp.getResult());
       } else {
         llvm::errs() << "Should not go here.\n";
@@ -292,7 +285,7 @@ struct OutlineAffinePass
         return;
       }
     });
-    moduleOp.dump();
+    // moduleOp.dump();
     return;
   }
 };

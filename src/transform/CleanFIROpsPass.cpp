@@ -16,6 +16,18 @@ using namespace mlir;
 
 namespace {
 
+struct ReplaceFIRNoReassoc: OpRewritePattern<fir::NoReassocOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(fir::NoReassocOp noReassocOp,
+                                PatternRewriter &rewriter) const final {
+    rewriter.replaceAllUsesWith(noReassocOp.getRes(), noReassocOp.getVal());
+    rewriter.eraseOp(noReassocOp);
+    return success();
+  }
+};
+
+
 // Before:
 //  1. fir.convert index -> i32/64 
 //  2. fir.i32 -> i64
@@ -77,6 +89,7 @@ struct ReplaceFIRConvertOps : OpRewritePattern<fir::ConvertOp> {
   }
 };
 
+
 struct CleanFIROpsPass
     : public mlir::PassWrapper<CleanFIROpsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
@@ -101,6 +114,7 @@ struct CleanFIROpsPass
 
     RewritePatternSet patterns(ctx);
     patterns.add<ReplaceFIRConvertOps>(ctx);
+    patterns.add<ReplaceFIRNoReassoc>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));

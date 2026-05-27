@@ -1,10 +1,15 @@
 #include "jit-manager.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -126,10 +131,21 @@ PJRT_Device *JitManager::getPJRTDevice(TargetDevice td) {
 
 JitManager::JitManager() {
   // Initialize context
-  this->context.loadDialect<
-      mlir::func::FuncDialect, mlir::omp::OpenMPDialect, fir::FIROpsDialect,
-      hlfir::hlfirDialect, mlir::arith::ArithDialect,
-      mlir::stablehlo::StablehloDialect, mlir::math::MathDialect>();
+  mlir::DialectRegistry registry;
+  registry.insert<
+    mlir::func::FuncDialect, 
+    mlir::arith::ArithDialect,
+    mlir::math::MathDialect,
+    fir::FIROpsDialect,
+    hlfir::hlfirDialect,
+    mlir::omp::OpenMPDialect,
+    mlir::scf::SCFDialect,
+    mlir::affine::AffineDialect,
+    mlir::memref::MemRefDialect,
+    mlir::bufferization::BufferizationDialect,
+    mlir::stablehlo::StablehloDialect>();
+  mlir::registerAllExtensions(registry);
+  this->context.appendDialectRegistry(registry);
 
   // Iniialize PJRT_API
   SET_XLA_FLAG();
