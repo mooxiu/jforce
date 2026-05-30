@@ -177,7 +177,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // TODO: Temporary only
   NumArgs -= 1;
   NumHostArgs -= 1;
-  *ArgSizes -= 1;
+  ArgSizes -= 1;
   
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
