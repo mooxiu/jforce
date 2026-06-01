@@ -63,7 +63,7 @@ static std::optional<Value> __getAncient(Value val) {
   }
 
   auto defOp = val.getDefiningOp();
-  if (llvm::isa<fir::DeclareOp, hlfir::DeclareOp>(defOp)) {
+  if (llvm::isa<fir::DeclareOp, hlfir::DeclareOp, fir::AllocaOp, memref::AllocaOp>(defOp)) {
     return val;
   } else if (auto convertOp = llvm::dyn_cast<fir::ConvertOp>(defOp)) {
     return __getAncient(convertOp.getOperand());
@@ -78,14 +78,19 @@ static std::optional<bool> isTargetOrPointer(Value val) {
     return std::nullopt;
   }
   auto defOp = ancientVal->getDefiningOp();
-  assert(llvm::isa<fir::DeclareOp>(defOp) ||
-         llvm::isa<hlfir::DeclareOp>(defOp));
+  assert(
+    llvm::isa<fir::DeclareOp>(defOp) ||
+    llvm::isa<hlfir::DeclareOp>(defOp) ||
+    llvm::isa<fir::AllocaOp>(defOp) ||
+    llvm::isa<memref::AllocaOp>(defOp));
 
   ::std::optional<::fir::FortranVariableFlagsEnum> fortranAttrs;
   if (auto firDeclareOp = llvm::dyn_cast<fir::DeclareOp>(defOp)) {
     fortranAttrs = firDeclareOp.getFortranAttrs();
   } else if (auto hlfirDeclareOp = llvm::dyn_cast<hlfir::DeclareOp>(defOp)) {
     fortranAttrs = hlfirDeclareOp.getFortranAttrs();
+  } else if (llvm::isa<fir::AllocaOp, memref::AllocaOp>(defOp)) {
+    return false;
   } else {
     llvm_unreachable("Should be one of the above declareOps!\n");
   }
@@ -226,6 +231,7 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
   
   LogicalResult matchAndRewrite(StoreTy storeOp,
                                 PatternRewriter &rewriter) const final {
+    DEBUG_PRINT_OP(storeOp);
     Value addr = storeOp.getMemref();
     if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
       return failure();
@@ -233,9 +239,6 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
 
     Value val = storeOp.getValue();
     Operation* readOp = val.getDefiningOp();
-    DEBUG_PRINT("compare reading and storeOp");
-    DEBUG_PRINT_OP(storeOp);
-    DEBUG_PRINT_OP(readOp);
     if (readOp->getBlock() != storeOp->getBlock()) {
       // We do not consider cross block situation, it will makes the analysis much more difficult.
       return failure();
@@ -251,8 +254,6 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
         return failure();
       }
     } else {
-      DEBUG_PRINT("Unexpected readOp: ");
-      DEBUG_PRINT_OP(readOp);
       return failure();
     }
 
@@ -315,9 +316,10 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
       }
     };
 
-    doLoopOp.walk([&](Operation *op) {
-      llvm::TypeSwitch<Operation *>(op)
-          .template Case<fir::StoreOp, memref::StoreOp>([&](auto storeOp) {
+    for (auto &op: doLoopOp.getRegion().front().getOperations()) {
+      llvm::TypeSwitch<Operation&>(op)
+        .template Case<fir::StoreOp, memref::StoreOp>(
+          [&](auto storeOp) {
             auto addr = storeOp.getMemref();
             auto opList = repeatedStoreOps.find(addr);
             if (opList != repeatedStoreOps.end()) {
@@ -327,21 +329,33 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
               repeatedStoreOps[addr] = emptyList;
             }
             return;
-          })
-          .template Case<fir::LoadOp, hlfir::DesignateOp, memref::LoadOp>(
-              [&](auto loadOp) {
-                auto addr = loadOp.getMemref();
-                popLast(addr);
-                return;
-              })
-          .template Case<func::CallOp>([&](func::CallOp callOp) {
-            llvm::for_each(callOp.getOperands(),
-                           [&](auto param) { popLast(param); });
+          }
+        )
+        .template Case<fir::LoadOp, hlfir::DesignateOp, memref::LoadOp>(
+          [&](auto loadOp) {
+            auto addr = loadOp.getMemref();
+            popLast(addr);
             return;
-          })
-          .Default([](auto) { return; });
-      return;
-    });
+          }
+        )
+        .template Case<func::CallOp>(
+          [&](func::CallOp callOp) {
+            llvm::for_each(callOp.getOperands(), [&](auto param) { popLast(param); });
+            return;
+          }
+        )
+        .Default(
+          [&](auto& op) { 
+            if (!op.getRegions().empty()) {
+              // conservative move: suppose there is read of all operations here.
+              for (auto& entry: repeatedStoreOps) {
+                popLast(entry.getFirst());
+              }
+            }
+            return; 
+          }
+        );
+    }
 
     llvm::DenseSet<Operation *> toDeleteOps;
     for (auto &entry : repeatedStoreOps) {
@@ -404,7 +418,6 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       return affineForOp.getInductionVar();
     } else {
       llvm::errs() << "Unexpected loopOp type, cannot get IV!\n";
-      DEBUG_PRINT_OP(loopOp);
       return nullptr;
     }
   }
