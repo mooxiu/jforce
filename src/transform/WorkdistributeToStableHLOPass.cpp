@@ -1,4 +1,4 @@
-/// If I have time, I want to rewrite this.
+/// TODO: If I have time, I want to rewrite this.
 
 
 #include "flang/Optimizer/Dialect/FIROps.h"
@@ -80,80 +80,95 @@ public:
 
 
 enum OperationType {
-  // Update the mapping, and generate a similar operation with same size arguments and results
-  // fir.convert (depending on type, can be both), func.callOp
-  EXPLICIT_RELAY,
-  // Update the mapping, but not generate any operation
-  // fir.declare, fir.convert
-  IMPLICIT_RELAY,
-  // 0 -> 1
-  // alloca
-  GENESIS,
-  // store
-  REWIRE,
-  // n -> 1
-  CONFLUENCE,
-  // 1 -> n
-  DIVERGE
+  CREATE_VAL,
+  CREATE_MEM,
+  READ_VAL_FROM_MEM,
+  WRITE_VAL_TO_MEM,
+  VAL_TO_VAL,
+  MEM_TO_MEM,
 };
 
 template<OperationType Ty>
 static void updateTracking(
   TrackingInfo& tracking, 
-   mlir::ValueRange oldOpFromVals,
-   mlir::ValueRange oldOpToVals,
-   mlir::ValueRange newOpToVals
+   mlir::ValueRange oldOpFromVars,
+   mlir::ValueRange oldOpToVars,
+   mlir::ValueRange newOpToVars
 ) {
   switch (Ty) {
-  case OperationType::EXPLICIT_RELAY: 
-    assert(oldOpFromVals.size() == oldOpToVals.size());
-    assert(oldOpToVals.size() == newOpToVals.size());
-    for (int i = 0; i < oldOpFromVals.size(); i++) {
-      Value oldOpFromVal = oldOpFromVals[i];
-      assert(tracking.valueMap.contains(oldOpFromVal));
-      auto newOpFromVal = tracking.valueMap.lookup(oldOpFromVal);
-      tracking.argsTrackingMap.map(newOpFromVal, newOpToVals[i]);
-      tracking.valueMap.map(oldOpToVals[i], newOpToVals[i]);
-    }
-    break;
-  case OperationType::IMPLICIT_RELAY:
-    assert(oldOpFromVals.size() == oldOpToVals.size());
-    assert(newOpToVals.size() == 0);
-    for (int i = 0; i < oldOpToVals.size(); i++) {
-      Value oldOpFromVal = oldOpFromVals[i];
-      assert(tracking.valueMap.contains(oldOpFromVal));
-      tracking.valueMap.map(oldOpToVals[i], tracking.valueMap.lookup(oldOpFromVal));
-    }
-    break;
-  case OperationType::GENESIS:
-    assert(oldOpFromVals.size() == 0);
-    assert(oldOpToVals.size() == newOpToVals.size());
-    for (int i = 0; i < oldOpToVals.size(); i++) {
-      Value oldOpToVal = oldOpToVals[i];
-      Value newOpToVal = newOpToVals[i];
-      tracking.valueMap.map(oldOpToVal, newOpToVal);
-    }
-    break;
-  case OperationType::REWIRE:
-    assert(newOpToVals.size() == 0);
-    assert(oldOpFromVals.size() == oldOpToVals.size());
-    for (int i = 0; i < oldOpFromVals.size(); i++) {
-      Value oldOpFromVal = oldOpFromVals[i];
-      Value oldOpToVal = oldOpToVals[i];
-      assert(tracking.valueMap.contains(oldOpToVal));
-      assert(tracking.valueMap.contains(oldOpFromVal));
-      tracking.argsTrackingMap.map(
-          tracking.valueMap.lookup(oldOpToVal),
-          tracking.valueMap.lookup(oldOpFromVal)
-        );
-    }
-  case OperationType::CONFLUENCE:
-    break;
-  case OperationType::DIVERGE:
-    break;
-  default:
-    llvm::errs() << "Unexepected Enum Value!\n";
-    std::exit(EXIT_FAILURE);
+    case CREATE_VAL:
+      // example: constantOp
+      // should creating corresponding values on stablehlo function
+      assert(oldOpFromVars.empty());
+      assert(oldOpToVars.size() > 0);
+      assert(oldOpToVars.size() == newOpToVars.size());
+      for (int i = 0 ; i < oldOpToVars.size(); i++) {
+        tracking.valueMap.map(
+            oldOpToVars[i], newOpToVars[i]
+          );
+      }
+      break;
+    case CREATE_MEM:
+      // example: allocaOp
+      // usually do not need to do anything, just ignore.
+      break;
+    case READ_VAL_FROM_MEM:
+      // example: loadOp
+      // pointing current value to the value that this memory is pointed to, no need to create corresponding statements in stableHLO.
+      assert(oldOpFromVars.size() == oldOpToVars.size());
+      for (int i = 0; i < oldOpToVars.size(); i++) {
+        auto mem = oldOpFromVars[i];
+        auto val = oldOpToVars[i];
+        if (tracking.valueMap.contains(mem)) {
+          tracking.valueMap.map(
+              val,
+              tracking.valueMap.lookup(mem)
+            );
+        } else {
+          // Possibly reading from a dummy
+          // DO NOTHING
+        } 
+      }
+      break;
+    case WRITE_VAL_TO_MEM:
+      // example: storeOp
+      assert(oldOpFromVars.size() == oldOpToVars.size());
+      for (int i = 0; i < oldOpFromVars.size(); i++) {
+        auto val = oldOpFromVars[i];
+        auto mem = oldOpToVars[i];
+        assert(tracking.valueMap.contains(val));
+        auto valHLO = tracking.valueMap.lookup(val);
+
+        if (tracking.valueMap.contains(mem)) {
+          auto memHLO = tracking.valueMap.lookup(mem); 
+          tracking.argsTrackingMap.map(memHLO, valHLO);
+        }
+        // this is a mem has not written to anything
+        tracking.valueMap.map(mem, valHLO);
+      }
+      break;
+    case VAL_TO_VAL:
+      assert(oldOpToVars.size() == newOpToVars.size());
+      for (int i = 0; i < oldOpToVars.size(); i++) {
+        tracking.valueMap.map(oldOpToVars[i], newOpToVars[i]);
+      }
+      break;
+    case MEM_TO_MEM:
+      assert(oldOpFromVars.size() == oldOpToVars.size());
+      for (int i = 0; i < oldOpToVars.size(); i++) {
+        auto memFrom = oldOpFromVars[i];
+        auto memTo = oldOpToVars[i];
+        if (tracking.valueMap.contains(memFrom)) {
+          tracking.valueMap.map(
+            memTo,
+            tracking.valueMap.lookup(memFrom)
+          );
+        }
+      }
+      break;
+    default:
+      llvm::errs() << "Unexepected Enum Value!\n";
+      std::exit(EXIT_FAILURE);
   }
 }
 
@@ -559,10 +574,12 @@ static void handleConvertOp(TrackingInfo &tracking, OpBuilder &opBuilder, func::
   auto resTyInfo = inspectTypeInfo(resTy);
   auto convertFromTyInfo = inspectTypeInfo(convertFrom.getType());
   if (resTyInfo.elementTy == convertFromTyInfo.elementTy) {
-    updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {firOprand}, {convertOp.getResult()}, {});
+    // mem conversion, only update mapping
+    updateTracking<OperationType::MEM_TO_MEM>(tracking, {firOprand}, {convertOp.getResult()}, {});
   } else {
+    // value conversion, need to create new
     auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), convertFrom, resTy);
-    updateTracking<OperationType::EXPLICIT_RELAY>(tracking, {firOprand}, {convertOp.getResult()}, {stableHLOConvertOp.getResult()});
+    updateTracking<OperationType::VAL_TO_VAL>(tracking, {firOprand}, {convertOp.getResult()}, {stableHLOConvertOp.getResult()});
   }
 }
 
@@ -945,8 +962,15 @@ static void handleFuncCallOp(
   llvm::SmallVector<Value> translatedArgs(paramsCount);
   for (int i = 0; i < paramsCount; i++) {
     Value originalArg = originalArgs[i];
-    assert(tracking.valueMap.contains(originalArg));
-    translatedArgs[i] = tracking.valueMap.lookup(originalArg); 
+    if (tracking.valueMap.contains(originalArg)) {
+      translatedArgs[i] = tracking.valueMap.lookup(originalArg); 
+    } else {
+      auto argTypeInfo = inspectTypeInfo(originalArg.getType());
+      auto zeroAttr = opBuilder.getZeroAttr(argTypeInfo.elementTy);
+      auto dummyOp = stablehlo::ConstantOp::create(
+        opBuilder, callOp.getLoc(), DenseElementsAttr::get(RankedTensorType::get(argTypeInfo.shape, argTypeInfo.elementTy), zeroAttr));
+      translatedArgs[i] = dummyOp.getResult(); 
+    }
   }
   auto moduleOp = callOp->getParentOfType<ModuleOp>();
   assert(moduleOp);
@@ -954,8 +978,7 @@ static void handleFuncCallOp(
   assert(calleeFunc);
   auto translatedCallOp = func::CallOp::create(opBuilder, callOp.getLoc(), calleeFunc, translatedArgs);
   assert(callOp.getNumResults() == translatedCallOp.getNumResults());
-
-  updateTracking<OperationType::EXPLICIT_RELAY>(tracking, callOp.getOperands(), callOp.getResults(), translatedCallOp.getResults());
+  updateTracking<OperationType::VAL_TO_VAL>(tracking, callOp.getOperands(), callOp.getResults(), translatedCallOp.getResults());
 };
 
 static void handleGeneralRelayOp(
@@ -965,36 +988,31 @@ static void handleGeneralRelayOp(
   Operation* op
 ) {
   TypeSwitch<Operation*>(op)
-    .Case<func::CallOp>([&](func::CallOp callOp){
-      handleFuncCallOp(tracking, opBuilder, funcOp, callOp);
-    })
     .Case<fir::DeclareOp>([&](fir::DeclareOp dop){
       auto declaredOprand = dop.getOperand(0);
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {declaredOprand}, {dop.getResult()}, {});
+      updateTracking<OperationType::MEM_TO_MEM>(tracking, {declaredOprand}, {dop.getResult()}, {});
     })
     .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {loadOp.getOperand()}, {loadOp.getResult()}, {});
+      updateTracking<OperationType::READ_VAL_FROM_MEM>(tracking, {loadOp.getOperand()}, {loadOp.getResult()}, {});
       // assert(tracking.valueMap.contains(loadOp->getOperand(0)) && "First Operand not exist!");
       // tracking.valueMap.map(loadOp->getResult(0), tracking.valueMap.lookup(loadOp->getOperand(0)));
     })
     .Case<affine::AffineLoadOp>([&](affine::AffineLoadOp loadOp) {
       assert(loadOp.getNumOperands() == 1);
       assert(loadOp.getIndices().empty());
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {loadOp.getMemRef()}, {loadOp.getResult()}, {});
-    })
-    .Case<fir::ConvertOp>([&](fir::ConvertOp convertOp) {
-      handleConvertOp(tracking, opBuilder, funcOp, convertOp);
+      updateTracking<OperationType::READ_VAL_FROM_MEM>(tracking, {loadOp.getMemRef()}, {loadOp.getResult()}, {});
     })
     .Case<bufferization::ToTensorOp>([&](bufferization::ToTensorOp toTensorOp){
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {toTensorOp.getOperand()}, {toTensorOp.getResult()}, {});
+      updateTracking<OperationType::READ_VAL_FROM_MEM>(tracking, {toTensorOp.getOperand()}, {toTensorOp.getResult()}, {});
     })
     .Case<bufferization::ToBufferOp>([&](bufferization::ToBufferOp toBufferOp){
-      updateTracking<OperationType::IMPLICIT_RELAY>(tracking, {toBufferOp.getOperand()}, {toBufferOp.getResult()}, {});
+      updateTracking<OperationType::CREATE_MEM>(tracking, {}, {toBufferOp.getResult()}, {});
+      updateTracking<OperationType::WRITE_VAL_TO_MEM>(tracking, {toBufferOp.getOperand()}, {toBufferOp.getResult()}, {});
     })
   ;
 }
 
-static void handleGenesisOp(
+static void handleCreateValOps(
   TrackingInfo &tracking, 
   OpBuilder &opBuilder,
   func::FuncOp funcOp,
@@ -1002,15 +1020,11 @@ static void handleGenesisOp(
 ) {
   TypeSwitch<Operation*>(op).
     Case<memref::AllocaOp>([&](memref::AllocaOp allocaOp){
-      auto tensorType = toCorrespondingTensorTy(allocaOp.getResult().getType());
-      mlir::Attribute scalarZero = opBuilder.getZeroAttr(allocaOp.getResult().getType().getElementType());
-      mlir::DenseElementsAttr zeroElementsAttr = mlir::DenseElementsAttr::get(tensorType, scalarZero);
-      auto constOp = stablehlo::ConstantOp::create(opBuilder, funcOp.getLoc(), zeroElementsAttr);
-      updateTracking<OperationType::GENESIS>(tracking, {}, {allocaOp.getResult()}, {constOp.getResult()});
+      updateTracking<OperationType::CREATE_MEM>(tracking, {}, {allocaOp.getResult()}, {});
     });
 };
 
-static void handleRewireOp(
+static void handleStoreOps(
   TrackingInfo &tracking, 
   OpBuilder &opBuilder,
   func::FuncOp funcOp,
@@ -1021,13 +1035,13 @@ static void handleRewireOp(
       assert(storeOp.getIndices().empty());
       auto storeFrom = storeOp.getValueToStore(); 
       auto storeTo = storeOp.getMemRef();
-      updateTracking<OperationType::REWIRE>(tracking, {storeFrom}, {storeTo}, {});
+      updateTracking<OperationType::WRITE_VAL_TO_MEM>(tracking, {storeFrom}, {storeTo}, {});
     })
     .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
       assert(storeOp.getIndices().empty());
       auto storeFrom = storeOp.getValueToStore(); 
       auto storeTo = storeOp.getMemRef();
-      updateTracking<OperationType::REWIRE>(tracking, {storeFrom}, {storeTo}, {});
+      updateTracking<OperationType::WRITE_VAL_TO_MEM>(tracking, {storeFrom}, {storeTo}, {});
     })
   ;
 }
@@ -1050,8 +1064,24 @@ static void scanOperationsAndInserts(
         } else {
           stablehloConstOp = stablehlo::ConstantOp::create(opBuilder, hloFuncOp.getLoc(), constOp.getValueAttr());
         }
-        tracking.valueMap.map(constOp.getResult(), stablehloConstOp.getResult());
+        updateTracking<CREATE_VAL>(tracking, {}, {constOp.getResult()}, {stablehloConstOp.getResult()});
       })
+      .Case<fir::AllocaOp>([&](fir::AllocaOp allocaOp) {
+        updateTracking<CREATE_MEM>(tracking, {}, {allocaOp.getResult()}, {});
+      })
+      .Case<fir::ConvertOp>([&] (fir::ConvertOp convertOp) {
+        handleConvertOp(tracking, opBuilder, hloFuncOp, convertOp); 
+      })
+      .Case<func::CallOp>([&](func::CallOp callOp){
+        handleFuncCallOp(tracking, opBuilder, hloFuncOp, callOp); 
+      })
+      // TODO: rewrite this case.
+      .Case<
+        fir::DeclareOp, fir::LoadOp, affine::AffineLoadOp,
+        bufferization::ToTensorOp, bufferization::ToBufferOp>([&](Operation* op){
+        handleGeneralRelayOp(tracking, opBuilder, hloFuncOp, op);
+      })
+
       .Case<hlfir::YieldElementOp>([&](hlfir::YieldElementOp yeOp) {
         // Should find the corresponding the elementalOp and establish the
         // mapping between the yield value and the result of elementalOp
@@ -1071,14 +1101,6 @@ static void scanOperationsAndInserts(
       })
       .Case<hlfir::AssignOp>([&](hlfir::AssignOp assignOp) {
         handleAssignOp(tracking, opBuilder, hloFuncOp, assignOp);
-      })
-      .Case<fir::AllocaOp>([&](fir::AllocaOp allocaOp) {
-        auto resTy = toCorrespondingTensorTy(allocaOp.getResult().getType());
-        auto typedAttr =
-            llvm::cast<DenseElementsAttr>(opBuilder.getZeroAttr(resTy));
-        auto constOp = stablehlo::ConstantOp::create(opBuilder, hloFuncOp.getLoc(),
-                                                     typedAttr);
-        tracking.valueMap.map(allocaOp.getResult(), constOp.getResult());
       })
       .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp declareOp) {
         auto declaredOprand = declareOp.getOperand(0);
@@ -1101,7 +1123,6 @@ static void scanOperationsAndInserts(
         assert(tracking.valueMap.contains(refArr) && "refArr not exist!");
         tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(refArr));
       })
-      
       .Case<arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
             arith::MulFOp, arith::AddIOp, arith::DivFOp, arith::DivSIOp,
             arith::CmpFOp, arith::CmpIOp>([&](auto arithBinaryOp) {
@@ -1173,16 +1194,12 @@ static void scanOperationsAndInserts(
         tracking.valueMap.map(nrop.getResult(),
                               tracking.valueMap.lookup(nrop.getOperand()));
       })
-      .Case<
-        func::CallOp, fir::DeclareOp, fir::LoadOp, affine::AffineLoadOp, fir::ConvertOp, 
-        bufferization::ToTensorOp, bufferization::ToBufferOp>([&](Operation* op){
-        handleGeneralRelayOp(tracking, opBuilder, hloFuncOp, op);
-      })
+      
       .Case<affine::AffineStoreOp, memref::StoreOp>([&](Operation* op){
-        handleRewireOp(tracking, opBuilder, hloFuncOp, op);
+        handleStoreOps(tracking, opBuilder, hloFuncOp, op);
       })
       .Case<memref::AllocaOp>([&](Operation* op){
-        handleGenesisOp(tracking, opBuilder, hloFuncOp, op);
+        handleCreateValOps(tracking, opBuilder, hloFuncOp, op);
       })
       // TODO: including other cases!
       .Default([](auto op) {
