@@ -1009,6 +1009,9 @@ static void handleGeneralRelayOp(
       updateTracking<OperationType::CREATE_MEM>(tracking, {}, {toBufferOp.getResult()}, {});
       updateTracking<OperationType::WRITE_VAL_TO_MEM>(tracking, {toBufferOp.getOperand()}, {toBufferOp.getResult()}, {});
     })
+    .Case<bufferization::MaterializeInDestinationOp>([&](bufferization::MaterializeInDestinationOp mop){
+      updateTracking<OperationType::WRITE_VAL_TO_MEM>(tracking, {mop.getSource()}, {mop.getDest()}, {});
+    })
   ;
 }
 
@@ -1078,7 +1081,9 @@ static void scanOperationsAndInserts(
       // TODO: rewrite this case.
       .Case<
         fir::DeclareOp, fir::LoadOp, affine::AffineLoadOp,
-        bufferization::ToTensorOp, bufferization::ToBufferOp>([&](Operation* op){
+        bufferization::ToTensorOp, bufferization::ToBufferOp,
+        bufferization::MaterializeInDestinationOp
+          >([&](Operation* op){
         handleGeneralRelayOp(tracking, opBuilder, hloFuncOp, op);
       })
 
