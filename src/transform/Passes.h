@@ -24,6 +24,7 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createOptimizeMemOpsPass();
   std::unique_ptr<mlir::Pass> createLoopSinkingPass();
   std::unique_ptr<mlir::Pass> createRemergePass();
+  std::unique_ptr<mlir::Pass> createIfConversionPass();
 
   void registerAnnotatePass();
   void registerAliasingPass();
@@ -44,6 +45,7 @@ namespace xla_jit {
   void registerAllJitPasses();
   void registerLoopSinkingPass();
   void registerRemergePass();
+  void registerIfConversionPass();
 }
 
 #endif

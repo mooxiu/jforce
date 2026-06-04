@@ -26,6 +26,7 @@ add_library(JitTransforms STATIC
   PropagateConstantsPass.cpp
   LoopSinkingPass.cpp
   SwitchOutlineFuncPass.cpp
+  IfConversionPass.cpp
 )
 
 target_include_directories(JitTransforms
