@@ -1,11 +1,12 @@
 #include "MemUtils.h"
-#include "../support/utilities.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Block.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
@@ -15,8 +16,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <optional>
 #include <utility>
@@ -110,7 +109,10 @@ struct SinkStoreOps: OpRewritePattern<fir::IfOp> {
       Operation* opPtr = &op;
       if (auto assignOp = llvm::dyn_cast<hlfir::AssignOp>(&op)) {
         auto mem = assignOp.getLhs();
-        sinkableStoreOps[mem] = assignOp;
+        auto val = assignOp.getRhs();
+        if (val.getDefiningOp()->getBlock() != &block) {
+          sinkableStoreOps[mem] = assignOp;
+        }
         continue;
       }
       
@@ -215,6 +217,54 @@ struct SinkStoreOps: OpRewritePattern<fir::IfOp> {
   }
 };
 
+struct HoistIfInvariantArithOps: OpRewritePattern<fir::IfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  static llvm::SmallVector<Operation*> getHoistableOpsInBlock(Block& block) {
+    llvm::SmallVector<Operation*> opsToHoist;
+    for (Operation& op: block.getOperations()) {
+      Operation* opPtr = &op;
+      mlir::Dialect* dialect = op.getDialect();
+      if (!llvm::isa<mlir::arith::ArithDialect, mlir::math::MathDialect>(dialect)) return {};
+
+      bool allDefinedOut = true;
+      for (const auto& operand: op.getOperands()) {
+        if (&block == operand.getDefiningOp()->getBlock()) {
+          allDefinedOut = false;
+          break;
+        }
+      }
+      if (allDefinedOut) {
+        opsToHoist.push_back(opPtr);
+      }
+    }
+    return opsToHoist;
+  }
+
+  LogicalResult matchAndRewrite(fir::IfOp ifOp,
+                                PatternRewriter &rewriter) const final {
+
+    auto hoistOp = [&](Block& block) -> bool {
+      auto ops = getHoistableOpsInBlock(block);
+      if (!ops.empty()) {
+        llvm::for_each(ops, [&](Operation* op){rewriter.moveOpBefore(op, ifOp);});   
+        return true;
+      }
+      return false;
+    };
+
+    auto moved = false;
+    auto& thenBlock = ifOp.getThenRegion().front();
+    moved = hoistOp(thenBlock) || moved;
+    
+    if (!ifOp.getElseRegion().empty()) {
+      auto& elseBlock = ifOp.getElseRegion().front();
+      moved = hoistOp(elseBlock) || moved;
+    }
+    
+    return moved? success(): failure();
+  }
+};
 
 
 struct IfConversionPass
@@ -232,8 +282,10 @@ struct IfConversionPass
     auto ctx = getOperation()->getContext();
     RewritePatternSet patterns(ctx);
     patterns.add<HoistLoadOps>(ctx);
-    // patterns.add<SinkStoreOps>(ctx);
+    patterns.add<SinkStoreOps>(ctx);
+    patterns.add<HoistIfInvariantArithOps>(ctx);
     GreedyRewriteConfig config;
+
     config.enableFolding();
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
       funcOp.dump();
