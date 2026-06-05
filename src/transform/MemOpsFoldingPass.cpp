@@ -1,7 +1,7 @@
 /// INFO: the objective of this is to conclude the common part of `OptimizingMemOps` and `IfConversion`. 
 
 
-#include "../support/utilities.h"
+#include "Utils.h"
 #include "MemUtils.h"
 #include "flang/Optimizer/Dialect/FIRAttr.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
@@ -32,6 +32,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <optional>
+#include <type_traits>
 
 using namespace mlir;
 
@@ -116,9 +117,11 @@ static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
   return addrs;
 }
 
-// FIXME: fix check the shape and element type
-static bool sameSizeVal(Value v1, Value v2) {
-  return true;
+static bool switchableVals(Value v1, Value v2) {
+  auto v1TyInfo = inspectTypeInfo(v1.getType());
+  auto v2TyInfo = inspectTypeInfo(v2.getType());
+  return v1TyInfo.shape.equals(v2TyInfo.shape) 
+    && v1TyInfo.elementTy==v2TyInfo.elementTy;
 }
 
 
@@ -143,42 +146,76 @@ static bool sameSizeVal(Value v1, Value v2) {
 //
 // Notice that we do not erase the store operation as it can be DCE-ed if it is
 // not been used.
+// TODO: rename to `FoldReadFromWriteMem`
 template <typename LoadTy, typename StoreTy>
 struct ReduceWriteAndReadSameAddr : public OpRewritePattern<LoadTy> {
   using OpRewritePattern<LoadTy>::OpRewritePattern;
 
+  
+
+  // FIXME: do alias analysis
+  static bool checkFoldingSafety(Value addr) {
+    // Target or pointer can be aliased, here we conservatively stop doing this optimization.
+    if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
+      return false;
+    }
+    return true;
+  }
+
+
   LogicalResult matchAndRewrite(LoadTy loadOp,
                                 PatternRewriter &rewriter) const final {
     auto addr = loadOp.getMemref();
-    // Target or pointer can be aliased, here we conservatively stop doing this
-    // optimization.
-    if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
+    if (!checkFoldingSafety(addr)) {
       return failure();
     }
+ 
     Operation *currOp = loadOp;
     while ((currOp = currOp->getPrevNode())) {
       auto isReplaced = false;
-      auto isBreaked = false;
+      auto shouldBreak = false;
       llvm::TypeSwitch<Operation *>(currOp)
-          .Case<StoreTy>([&](auto storeOp) {
-            if (storeOp.getMemref() == addr && sameSizeVal(storeOp.getValue(), loadOp.getResult())) {
+        .Case<StoreTy>([&](auto storeOp) {
+          if (storeOp.getMemref() == addr) {
+            if (switchableVals(storeOp.getValue(), loadOp.getResult())) {
               rewriter.replaceOp(loadOp, storeOp.getValue());
               isReplaced = true;
+              return;
+            } else {
+              // Something has been written to the same mem, but we cannot replace.
+              shouldBreak = true;
+              return;
             }
-          })
-          .template Case<func::ReturnOp>(
-              [&](func::ReturnOp retOp) { isBreaked = true; })
-          .Default([](auto) {});
-      if (isReplaced) {
-        return success();
-      }
-      if (isBreaked) {
-        return failure();
-      }
+          }
+        })
+        .template Case<func::ReturnOp>([&](auto) { 
+          shouldBreak = true;
+          return;
+        })
+        .Default([&](Operation* op) {
+          if (isOperationPossiblelyWriteToAddr(op, addr)) {
+            shouldBreak = true;
+          }
+          // INFO: cover cases like loop, if ... but over conservative which is fine.
+          if (op->getNumRegions() > 0) {
+            shouldBreak = true;
+          }
+          return;
+        });
+      if (isReplaced) return success();
+      if (shouldBreak) return failure();
     }
     return failure();
   };
 };
+
+
+
+template<typename T, typename = void>
+struct has_get_indices: std::false_type {};
+
+template<typename T>
+struct has_get_indices<T, std::void_t<decltype(std::declval<T>().getIndices())>>: std::true_type {};
 
 // Before:
 //   %13 = memref.load %8[] : memref<i32>
@@ -190,39 +227,59 @@ struct ReduceWriteAndReadSameAddr : public OpRewritePattern<LoadTy> {
 // Precondition:
 //   - address should be non aliasing
 //   - between the load and store, there should not be any other store to the addr!
-template<typename StoreTy>
+// TODO: rename to `FoldStoreToReadMem`
+template<typename StoreTy, typename LoadTy>
 struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
   using OpRewritePattern<StoreTy>::OpRewritePattern;
+
+  // FIXME: do alias analysis
+  static bool checkFoldingSafety(Value addr) {
+    // Target or pointer can be aliased, here we conservatively stop doing this optimization.
+    if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
+      return false;
+    }
+    return true;
+  }
+
   
   LogicalResult matchAndRewrite(StoreTy storeOp,
                                 PatternRewriter &rewriter) const final {
-    DEBUG_PRINT_OP(storeOp);
     Value addr = storeOp.getMemref();
-    if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
-      return failure();
-    }
+    if (!checkFoldingSafety(addr)) return failure();
 
     Value val = storeOp.getValue();
-    Operation* readOp = val.getDefiningOp();
-    if (readOp->getBlock() != storeOp->getBlock()) {
+    Operation* valDefineOp = val.getDefiningOp();
+    if (!valDefineOp || valDefineOp->getBlock() != storeOp->getBlock()) {
       // We do not consider cross block situation, it will makes the analysis much more difficult.
       return failure();
     }
 
     // Require the load address and the store address, load value and read value be the same.
-    if (auto memLoad = llvm::dyn_cast<memref::LoadOp>(readOp)) {
-      if (memLoad.getMemref() != addr || memLoad.getResult() != val) {
-        return failure();
-      }
-    } else if (auto firLoad = llvm::dyn_cast<fir::LoadOp>(readOp)) {
-      if (firLoad.getMemref() != addr || firLoad.getResult() != val) {
-        return failure();
-      }
-    } else {
+    bool isReadFromSameMem = false;
+    llvm::TypeSwitch<Operation*>(valDefineOp)
+      .Case<LoadTy>([&](LoadTy loadOp){
+        if (loadOp.getMemref() != addr) return;
+        if constexpr (has_get_indices<LoadTy>::value) {
+          if constexpr (has_get_indices<StoreTy>::value) {
+            if (loadOp.getIndices() != storeOp.getIndices()) return;
+          } else {
+            if (!loadOp.getIndices().empty()) return;
+          }
+        } else {
+          if constexpr (has_get_indices<StoreTy>::value) {
+            if (!storeOp.getIndices().empty()) return;
+          }
+        }
+        if (loadOp.getResult() != val) return;
+        isReadFromSameMem = true;
+        return;
+      })
+      .Default([](auto){return;});
+    if (!isReadFromSameMem) {
       return failure();
     }
 
-    for (Operation* op = readOp->getNextNode(); op != storeOp; op = op->getNextNode()) {
+    for (Operation* op = valDefineOp->getNextNode(); op != storeOp; op = op->getNextNode()) {
       if (isOperationPossiblelyWriteToAddr(op, addr)) {
         return failure();
       }
@@ -359,8 +416,8 @@ struct MemOpsFoldingPass
     RewritePatternSet patterns(ctx);
     patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp, fir::StoreOp>>(ctx);
     patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp, memref::StoreOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp>>(ctx);
+    patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp, fir::LoadOp>>(ctx);
+    patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp, memref::LoadOp>>(ctx);
     patterns.add<ReduceRepeatWriteAddr<fir::DoLoopOp>>(ctx);
     patterns.add<ReduceRepeatWriteAddr<scf::ForOp>>(ctx);
     patterns.add<ReduceRepeatWriteAddr<affine::AffineForOp>>(ctx);
