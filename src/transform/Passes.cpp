@@ -18,4 +18,6 @@ void xla_jit::registerAllJitPasses() {
   registerLoopSinkingPass();
   registerRemergePass();
   registerIfConversionPass();
+  registerPolygeistMem2RegPass();
+  registerFoldSCFIfPass();
 }

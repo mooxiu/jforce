@@ -20,13 +20,17 @@ add_library(JitTransforms STATIC
   OptimizingMemOpsPass.cpp
   CleanFIROpsPass.cpp
   SimplifyDoLoopPass.cpp
-  AffineToStableHLO.cpp
-  ArithRaising.cpp
   OutlineAffinePass.cpp
   PropagateConstantsPass.cpp
   LoopSinkingPass.cpp
   SwitchOutlineFuncPass.cpp
   IfConversionPass.cpp
+
+  # INFO: some passes copied and adapted from Enzyme-JAX project
+  PolygeistMem2RegPass.cpp
+  AffineToStableHLO.cpp
+  ArithRaising.cpp
+  FoldSCFIfPass.cpp
 )
 
 target_include_directories(JitTransforms

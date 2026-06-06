@@ -5,12 +5,15 @@
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "support/utilities.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -18,14 +21,16 @@
 #include "llvm/Support/Casting.h"
 #include <cassert>
 #include <optional>
+#include <string>
 #include <utility>
 
 using namespace mlir;
 namespace {
 
 // TODO: need to do alias analysis to make this more strict
-struct HoistLoadOps: OpRewritePattern<fir::IfOp> {
-  using OpRewritePattern::OpRewritePattern;
+template<typename IfTy, typename LoadTy>
+struct HoistLoadOps: OpRewritePattern<IfTy> {
+  using OpRewritePattern<IfTy>::OpRewritePattern;
 
   // FIXME: finish this
   static std::optional<Value> getWrittenMemory(const Operation& op) {
@@ -49,7 +54,7 @@ struct HoistLoadOps: OpRewritePattern<fir::IfOp> {
     }
   }
 
-  LogicalResult matchAndRewrite(fir::IfOp ifOp,
+  LogicalResult matchAndRewrite(IfTy ifOp,
                                 PatternRewriter &rewriter) const final {
     
     // if hoist something, return true; else return false.
@@ -57,13 +62,13 @@ struct HoistLoadOps: OpRewritePattern<fir::IfOp> {
       llvm::SmallVector<Operation*> hoistableLoadOps;
       llvm::DenseSet<Value> possiblyWrittenMems;
       llvm::for_each(block.getOperations(), [&](Operation& op){
-        if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(&op)) {
+        if (auto loadOp = llvm::dyn_cast<LoadTy>(&op)) {
           if (!possiblyWrittenMems.contains(loadOp.getMemref())) {
             hoistableLoadOps.push_back(&op);
           }
           return;
         }
-        if (auto nestedIfOp = llvm::dyn_cast<fir::IfOp>(&op)) {
+        if (auto nestedIfOp = llvm::dyn_cast<IfTy>(&op)) {
           getWrittenMemories(nestedIfOp.getThenRegion().front(), possiblyWrittenMems);
           if (!nestedIfOp.getElseRegion().empty()) {
             getWrittenMemories(nestedIfOp.getElseRegion().front(), possiblyWrittenMems);
@@ -217,35 +222,37 @@ struct SinkStoreOps: OpRewritePattern<fir::IfOp> {
   }
 };
 
-struct HoistIfInvariantArithOps: OpRewritePattern<fir::IfOp> {
-  using OpRewritePattern::OpRewritePattern;
+template<typename IfTy>
+struct HoistIfInvariantArithOps: OpRewritePattern<IfTy> {
+  using OpRewritePattern<IfTy>::OpRewritePattern;
 
-  static llvm::SmallVector<Operation*> getHoistableOpsInBlock(Block& block) {
+  static llvm::SmallVector<Operation*> getHoistableOpsInBlock(Block& block, IfTy ifOp) {
     llvm::SmallVector<Operation*> opsToHoist;
     for (Operation& op: block.getOperations()) {
-      Operation* opPtr = &op;
       mlir::Dialect* dialect = op.getDialect();
       if (!llvm::isa<mlir::arith::ArithDialect, mlir::math::MathDialect>(dialect)) return {};
 
       bool allDefinedOut = true;
       for (const auto& operand: op.getOperands()) {
-        if (&block == operand.getDefiningOp()->getBlock()) {
+        if (ifOp->isAncestor(operand.getDefiningOp())) {
           allDefinedOut = false;
           break;
         }
       }
       if (allDefinedOut) {
+        Operation* opPtr = &op;
         opsToHoist.push_back(opPtr);
       }
     }
     return opsToHoist;
   }
 
-  LogicalResult matchAndRewrite(fir::IfOp ifOp,
+  LogicalResult matchAndRewrite(IfTy ifOp,
                                 PatternRewriter &rewriter) const final {
 
     auto hoistOp = [&](Block& block) -> bool {
-      auto ops = getHoistableOpsInBlock(block);
+      auto ops = getHoistableOpsInBlock(block, ifOp);
+      DEBUG_PRINT("The size of ops is: " + std::to_string(ops.size()));
       if (!ops.empty()) {
         llvm::for_each(ops, [&](Operation* op){rewriter.moveOpBefore(op, ifOp);});   
         return true;
@@ -281,9 +288,11 @@ struct IfConversionPass
     auto funcOp = getOperation();
     auto ctx = getOperation()->getContext();
     RewritePatternSet patterns(ctx);
-    patterns.add<HoistLoadOps>(ctx);
+    patterns.add<HoistLoadOps<fir::IfOp, fir::LoadOp>>(ctx);
+    patterns.add<HoistLoadOps<scf::IfOp, memref::LoadOp>>(ctx);
     patterns.add<SinkStoreOps>(ctx);
-    patterns.add<HoistIfInvariantArithOps>(ctx);
+    patterns.add<HoistIfInvariantArithOps<fir::IfOp>>(ctx);
+    patterns.add<HoistIfInvariantArithOps<scf::IfOp>>(ctx);
     GreedyRewriteConfig config;
 
     config.enableFolding();
