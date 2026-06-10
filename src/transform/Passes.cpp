@@ -1,6 +1,7 @@
 #include "Passes.h"
 
 void xla_jit::registerAllJitPasses() {
+  registerCleanTempsPass();
   registerAnnotatePass();
   registerAliasingPass();
   registerShapeInferPass();

@@ -224,6 +224,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
 
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
+  nestedPMPhase1.addPass(xla_jit::createMemOpsFoldingPass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
+  nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
   nestedPMPhase1.addPass(xla_jit::createPropagateConstantsPass());
   nestedPMPhase1.addPass(createCanonicalizerPass());
@@ -246,8 +252,14 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase2.addPass(fir::createPromoteToAffinePass());
   nestedPMPhase2.addPass(affine::createAffineLoopNormalizePass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(fir::createFIRToSCFPass()); // for fir.if -> scf.if
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(xla_jit::createFoldSCFIfPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
 
 
+  nestedPMPhase2.addPass(xla_jit::createPolygeistMem2RegPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(xla_jit::createOptimizeMemOpsPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(xla_jit::createLoopSinkingPass());

@@ -9,6 +9,8 @@ else()
 endif()
 
 add_library(JitTransforms STATIC 
+  MemOpsFoldingPass.cpp
+  CleanTempsPass.cpp
   AnnotatePass.cpp
   AliasingPass.cpp
   ShapeInferPass.cpp

@@ -55,17 +55,25 @@ struct MemoryLocation {
 };
 
 static std::optional<Value> __getAncient(Value val) {
-  if (!llvm::isa<fir::ReferenceType, MemRefType>(val.getType())) {
+  if (!llvm::isa<fir::ReferenceType, MemRefType, fir::BoxType>(val.getType())) {
     llvm::errs() << "This is not a address\n";
     return std::nullopt;
   }
 
   auto defOp = val.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
   if (llvm::isa<fir::DeclareOp, hlfir::DeclareOp, fir::AllocaOp, memref::AllocaOp>(defOp)) {
     return val;
+  } else if (auto designateOp = llvm::dyn_cast<hlfir::DesignateOp>(defOp)) {
+    return __getAncient(designateOp.getMemref());
   } else if (auto convertOp = llvm::dyn_cast<fir::ConvertOp>(defOp)) {
     return __getAncient(convertOp.getOperand());
   }
+  llvm::errs() << "\n defOp: ";
+  defOp->print(llvm::errs());
+  llvm::errs() << "\n";
   llvm_unreachable("Should have returned before.\n");
   return std::nullopt;
 }
@@ -102,26 +110,44 @@ static std::optional<bool> isTargetOrPointer(Value val) {
     return false;
   }
 };
-
-static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
-  llvm::SmallVector<Value> addrs;
-  if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(op)) {
-    addrs.push_back(loadOp.getMemref());
-  } else if (auto desigOp = llvm::dyn_cast<hlfir::DesignateOp>(op)) {
-    addrs.push_back(desigOp.getMemref());
-  } else if (auto callOp = llvm::dyn_cast<func::CallOp>(op)) {
-    for (auto param : callOp.getOperands()) {
-      addrs.push_back(param);
-    }
-  }
-  return addrs;
-}
+//
+// static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
+//   llvm::SmallVector<Value> addrs;
+//   if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(op)) {
+//     addrs.push_back(loadOp.getMemref());
+//   } else if (auto desigOp = llvm::dyn_cast<hlfir::DesignateOp>(op)) {
+//     addrs.push_back(desigOp.getMemref());
+//   } else if (auto callOp = llvm::dyn_cast<func::CallOp>(op)) {
+//     for (auto param : callOp.getOperands()) {
+//       addrs.push_back(param);
+//     }
+//   }
+//   return addrs;
+// }
 
 static bool switchableVals(Value v1, Value v2) {
   auto v1TyInfo = inspectTypeInfo(v1.getType());
   auto v2TyInfo = inspectTypeInfo(v2.getType());
   return v1TyInfo.shape.equals(v2TyInfo.shape) 
     && v1TyInfo.elementTy==v2TyInfo.elementTy;
+}
+
+// The mem we're going to assign to
+static mlir::Value getLHS(mlir::Operation *op) {
+  if (auto store = llvm::dyn_cast<fir::StoreOp>(op))
+    return store.getMemref();
+  if (auto assign = llvm::dyn_cast<hlfir::AssignOp>(op))
+    return assign.getLhs();
+  return nullptr;
+}
+
+// The value we're going to assign
+static mlir::Value getRHS(mlir::Operation *op) {
+  if (auto store = llvm::dyn_cast<fir::StoreOp>(op))
+    return store.getValue();
+  if (auto assign = llvm::dyn_cast<hlfir::AssignOp>(op))
+    return assign.getRhs();
+  return nullptr;
 }
 
 
@@ -151,8 +177,6 @@ template <typename LoadTy, typename StoreTy>
 struct ReduceWriteAndReadSameAddr : public OpRewritePattern<LoadTy> {
   using OpRewritePattern<LoadTy>::OpRewritePattern;
 
-  
-
   // FIXME: do alias analysis
   static bool checkFoldingSafety(Value addr) {
     // Target or pointer can be aliased, here we conservatively stop doing this optimization.
@@ -176,9 +200,9 @@ struct ReduceWriteAndReadSameAddr : public OpRewritePattern<LoadTy> {
       auto shouldBreak = false;
       llvm::TypeSwitch<Operation *>(currOp)
         .Case<StoreTy>([&](auto storeOp) {
-          if (storeOp.getMemref() == addr) {
-            if (switchableVals(storeOp.getValue(), loadOp.getResult())) {
-              rewriter.replaceOp(loadOp, storeOp.getValue());
+          if (getLHS(storeOp) == addr) {
+            if (switchableVals(getRHS(storeOp), loadOp.getResult())) {
+              rewriter.replaceOp(loadOp, getRHS(storeOp));
               isReplaced = true;
               return;
             } else {
@@ -414,6 +438,7 @@ struct MemOpsFoldingPass
     MLIRContext *ctx = getOperation()->getContext();
 
     RewritePatternSet patterns(ctx);
+    patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp, hlfir::AssignOp>>(ctx);
     patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp, fir::StoreOp>>(ctx);
     patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp, memref::StoreOp>>(ctx);
     patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp, fir::LoadOp>>(ctx);
