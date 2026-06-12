@@ -21,4 +21,5 @@ void xla_jit::registerAllJitPasses() {
   registerIfConversionPass();
   registerPolygeistMem2RegPass();
   registerFoldSCFIfPass();
+  registerFoldRepeatConversionsPass();
 }

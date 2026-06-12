@@ -19,7 +19,7 @@
 #include "mlir/Pass/Pass.h"
 #include "Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "Passes.h"
+#include "../Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 

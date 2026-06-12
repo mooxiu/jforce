@@ -38,7 +38,7 @@
 #include "mlir/IR/IntegerSet.h"
 
 // #include "Interfaces/AutoDiffTypeInterface.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+// #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 
 // #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"

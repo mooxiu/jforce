@@ -29,6 +29,7 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createIfConversionPass();
   std::unique_ptr<mlir::Pass> createPolygeistMem2RegPass();
   std::unique_ptr<mlir::Pass> createFoldSCFIfPass();
+  std::unique_ptr<mlir::Pass> createFoldRepeatConversionsPass();
 
 
   void registerMemOpsFoldingPass();
@@ -55,6 +56,7 @@ namespace xla_jit {
   void registerIfConversionPass();
   void registerPolygeistMem2RegPass();
   void registerFoldSCFIfPass();
+  void registerFoldRepeatConversionsPass();
 }
 
 #endif

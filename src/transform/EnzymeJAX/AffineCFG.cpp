@@ -26,7 +26,6 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
-#include "Passes.h"
 
 #include "Utils.h"
 #include "llvm/ADT/MapVector.h"
@@ -1839,7 +1838,7 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     auto tmp = lhs;
     lhs = rhs;
     rhs = tmp;
-    pred = swapPredicate(pred);
+    pred = mlir::enzyme::swapPredicate(pred);
   }
 
   if (rhs.size() == 1 && !rhs[0].isValue && rhs[0] == 1) {

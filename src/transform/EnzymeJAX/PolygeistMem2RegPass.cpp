@@ -369,14 +369,14 @@ public:
     }
     if (ifOp) {
       if (auto sifOp = dyn_cast<scf::IfOp>(ifOp)) {
-        auto thenFind = metaMap.valueAtEndOfBlock.find(getThenBlock(sifOp));
+        auto thenFind = metaMap.valueAtEndOfBlock.find(mlir::enzyme::getThenBlock(sifOp));
         assert(thenFind != metaMap.valueAtEndOfBlock.end());
         assert(thenFind->second);
         if (!thenFind->second->definedWithArg(block))
           return false;
 
-        if (hasElse(sifOp)) {
-          auto elseFind = metaMap.valueAtEndOfBlock.find(getElseBlock(sifOp));
+        if (mlir::enzyme::hasElse(sifOp)) {
+          auto elseFind = metaMap.valueAtEndOfBlock.find(mlir::enzyme::getElseBlock(sifOp));
           assert(elseFind != metaMap.valueAtEndOfBlock.end());
           assert(elseFind->second);
           if (!elseFind->second->definedWithArg(block))
@@ -391,14 +391,14 @@ public:
         return true;
       } else {
         auto aifOp = cast<affine::AffineIfOp>(ifOp);
-        auto thenFind = metaMap.valueAtEndOfBlock.find(getThenBlock(aifOp));
+        auto thenFind = metaMap.valueAtEndOfBlock.find(mlir::enzyme::getThenBlock(aifOp));
         assert(thenFind != metaMap.valueAtEndOfBlock.end());
         assert(thenFind->second);
         if (!thenFind->second->definedWithArg(block))
           return false;
 
-        if (hasElse(aifOp)) {
-          auto elseFind = metaMap.valueAtEndOfBlock.find(getElseBlock(aifOp));
+        if (mlir::enzyme::hasElse(aifOp)) {
+          auto elseFind = metaMap.valueAtEndOfBlock.find(mlir::enzyme::getElseBlock(aifOp));
           assert(elseFind != metaMap.valueAtEndOfBlock.end());
           assert(elseFind->second);
           if (!elseFind->second->definedWithArg(block))
@@ -571,7 +571,7 @@ public:
 
   template <typename IfType, typename YieldType>
   Value materializeIf(IfType ifOp, bool full = true) {
-    auto thenFind = metaMap.valueAtEndOfBlock.find(getThenBlock(ifOp));
+    auto thenFind = metaMap.valueAtEndOfBlock.find(mlir::enzyme::getThenBlock(ifOp));
     assert(thenFind != metaMap.valueAtEndOfBlock.end());
     assert(thenFind->second);
     Value thenVal = thenFind->second->materialize(full);
@@ -591,8 +591,8 @@ public:
     }
     Value elseVal;
 
-    if (hasElse(ifOp)) {
-      auto elseFind = metaMap.valueAtEndOfBlock.find(getElseBlock(ifOp));
+    if (mlir::enzyme::hasElse(ifOp)) {
+      auto elseFind = metaMap.valueAtEndOfBlock.find(mlir::enzyme::getElseBlock(ifOp));
       assert(elseFind != metaMap.valueAtEndOfBlock.end());
       assert(elseFind->second);
       elseVal = elseFind->second->materialize(full);
@@ -632,10 +632,10 @@ public:
       return thenVal;
     }
 
-    if (hasElse(ifOp)) {
+    if (mlir::enzyme::hasElse(ifOp)) {
       for (auto tup : llvm::reverse(
-               llvm::zip(ifOp.getResults(), getThenYield(ifOp).getOperands(),
-                         getElseYield(ifOp).getOperands()))) {
+               llvm::zip(ifOp.getResults(), mlir::enzyme::getThenYield(ifOp).getOperands(),
+                         mlir::enzyme::getElseYield(ifOp).getOperands()))) {
         if (std::get<1>(tup) == thenVal && std::get<2>(tup) == elseVal) {
           return std::get<0>(tup);
         }
@@ -647,22 +647,22 @@ public:
     SmallVector<mlir::Type, 4> tys(ifOp.getResultTypes().begin(),
                                    ifOp.getResultTypes().end());
     tys.push_back(thenVal.getType());
-    auto nextIf = cloneWithoutResults(ifOp, B, {}, tys);
+    auto nextIf = mlir::enzyme::cloneWithoutResults(ifOp, B, {}, tys);
 
-    SmallVector<mlir::Value, 4> thenVals = getThenYield(ifOp).getOperands();
+    SmallVector<mlir::Value, 4> thenVals = mlir::enzyme::getThenYield(ifOp).getOperands();
     thenVals.push_back(thenVal);
-    getThenRegion(nextIf).takeBody(getThenRegion(ifOp));
-    getThenYield(nextIf)->setOperands(thenVals);
+    mlir::enzyme::getThenRegion(nextIf).takeBody(mlir::enzyme::getThenRegion(ifOp));
+    mlir::enzyme::getThenYield(nextIf)->setOperands(thenVals);
 
-    if (hasElse(ifOp)) {
-      getElseRegion(nextIf).getBlocks().clear();
-      SmallVector<mlir::Value, 4> elseVals = getElseYield(ifOp).getOperands();
+    if (mlir::enzyme::hasElse(ifOp)) {
+      mlir::enzyme::getElseRegion(nextIf).getBlocks().clear();
+      SmallVector<mlir::Value, 4> elseVals = mlir::enzyme::getElseYield(ifOp).getOperands();
       elseVals.push_back(elseVal);
-      getElseRegion(nextIf).takeBody(getElseRegion(ifOp));
-      getElseYield(nextIf)->setOperands(elseVals);
+      mlir::enzyme::getElseRegion(nextIf).takeBody(mlir::enzyme::getElseRegion(ifOp));
+      mlir::enzyme::getElseYield(nextIf)->setOperands(elseVals);
     } else {
-      B.setInsertionPoint(&getElseRegion(nextIf).back(),
-                          getElseRegion(nextIf).back().begin());
+      B.setInsertionPoint(&mlir::enzyme::getElseRegion(nextIf).back(),
+                          mlir::enzyme::getElseRegion(nextIf).back().begin());
       SmallVector<mlir::Value, 4> elseVals = {elseVal};
       YieldType::create(B, ifOp.getLoc(), elseVals);
     }
@@ -1289,7 +1289,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         if (callOp.getCallee() != "free") {
           LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
           AliasingStoreOperations.insert(callOp);
-          if (!getNonCapturingFunctions().count(callOp.getCallee().str()))
+          if (!mlir::enzyme::oputils::getNonCapturingFunctions().count(callOp.getCallee().str()))
             captured = true;
         }
         continue;
@@ -1299,7 +1299,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
           AliasingStoreOperations.insert(callOp);
           if (!callOp.getCallee() ||
-              !getNonCapturingFunctions().count(callOp.getCallee()->str()))
+              !mlir::enzyme::oputils::getNonCapturingFunctions().count(callOp.getCallee()->str()))
             captured = true;
         }
         continue;
@@ -1353,13 +1353,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           }
         }
         SmallVector<MemoryEffects::EffectInstance, 1> effects;
-        collectEffects(op, effects, /*considerBarrier*/ false);
+        mlir::enzyme::collectEffects(op, effects, /*considerBarrier*/ false);
 
         for (auto effect : effects) {
           // If op causes EffectType on a potentially aliasing location for
           // memOp, mark as having the effect.
           if (isa<MemoryEffects::Write>(effect.getEffect())) {
-            if (!mayAlias(effect.getEffect(), AI)) {
+            if (!mlir::enzyme::oputils::mayAlias(effect.getEffect(), AI)) {
               continue;
             }
             opMayHaveEffect = true;
@@ -1880,11 +1880,11 @@ bool isPromotable(mlir::Value AI) {
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
       } else if (auto callOp = dyn_cast<func::CallOp>(U)) {
-        if (getNonCapturingFunctions().count(callOp.getCallee().str()))
+        if (mlir::enzyme::oputils::getNonCapturingFunctions().count(callOp.getCallee().str()))
           continue;
       } else if (auto callOp = dyn_cast<LLVM::CallOp>(U)) {
         if (auto callee = callOp.getCallee())
-          if (getNonCapturingFunctions().count(callee->str()))
+          if (mlir::enzyme::oputils::getNonCapturingFunctions().count(callee->str()))
             continue;
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);

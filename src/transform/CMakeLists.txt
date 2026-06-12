@@ -17,7 +17,6 @@ add_library(JitTransforms STATIC
   TrimArgsPass.cpp
   WorkdistributeToStableHLOPass.cpp
   Passes.cpp
-  AffineCFG.cpp
   CleanFIRLoopPass.cpp
   OptimizingMemOpsPass.cpp
   CleanFIROpsPass.cpp
@@ -27,12 +26,16 @@ add_library(JitTransforms STATIC
   LoopSinkingPass.cpp
   SwitchOutlineFuncPass.cpp
   IfConversionPass.cpp
+  FoldRepeatConversionPass.cpp
 
   # INFO: some passes copied and adapted from Enzyme-JAX project
-  PolygeistMem2RegPass.cpp
-  AffineToStableHLO.cpp
-  ArithRaising.cpp
-  FoldSCFIfPass.cpp
+  EnzymeJAX/PolygeistMem2RegPass.cpp
+  EnzymeJAX/AffineCFG.cpp
+  EnzymeJAX/AffineToStableHLO.cpp
+  EnzymeJAX/ArithRaising.cpp
+  EnzymeJAX/FoldSCFIfPass.cpp
+  EnzymeJAX/EnzymeUtils.cpp
+  EnzymeJAX/Utils.cpp
 )
 
 target_include_directories(JitTransforms
