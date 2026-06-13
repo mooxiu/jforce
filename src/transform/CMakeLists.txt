@@ -9,23 +9,33 @@ else()
 endif()
 
 add_library(JitTransforms STATIC 
+  MemOpsFoldingPass.cpp
+  CleanTempsPass.cpp
   AnnotatePass.cpp
   AliasingPass.cpp
   ShapeInferPass.cpp
   TrimArgsPass.cpp
   WorkdistributeToStableHLOPass.cpp
   Passes.cpp
-  AffineCFG.cpp
   CleanFIRLoopPass.cpp
   OptimizingMemOpsPass.cpp
   CleanFIROpsPass.cpp
   SimplifyDoLoopPass.cpp
-  AffineToStableHLO.cpp
-  ArithRaising.cpp
   OutlineAffinePass.cpp
   PropagateConstantsPass.cpp
   LoopSinkingPass.cpp
   SwitchOutlineFuncPass.cpp
+  IfConversionPass.cpp
+  FoldRepeatConversionPass.cpp
+
+  # INFO: some passes copied and adapted from Enzyme-JAX project
+  EnzymeJAX/PolygeistMem2RegPass.cpp
+  EnzymeJAX/AffineCFG.cpp
+  EnzymeJAX/AffineToStableHLO.cpp
+  EnzymeJAX/ArithRaising.cpp
+  EnzymeJAX/FoldSCFIfPass.cpp
+  EnzymeJAX/EnzymeUtils.cpp
+  EnzymeJAX/Utils.cpp
 )
 
 target_include_directories(JitTransforms

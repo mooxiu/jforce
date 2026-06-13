@@ -5,6 +5,8 @@
 #include <memory>
 
 namespace xla_jit {
+  std::unique_ptr<mlir::Pass> createMemOpsFoldingPass();
+  std::unique_ptr<mlir::Pass> createCleanTempsPass();
   std::unique_ptr<mlir::Pass> createAnnotatePass();
   std::unique_ptr<mlir::Pass> createAliasingPass(); 
   std::unique_ptr<mlir::Pass> createShapeInferPass(); 
@@ -24,7 +26,14 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createOptimizeMemOpsPass();
   std::unique_ptr<mlir::Pass> createLoopSinkingPass();
   std::unique_ptr<mlir::Pass> createRemergePass();
+  std::unique_ptr<mlir::Pass> createIfConversionPass();
+  std::unique_ptr<mlir::Pass> createPolygeistMem2RegPass();
+  std::unique_ptr<mlir::Pass> createFoldSCFIfPass();
+  std::unique_ptr<mlir::Pass> createFoldRepeatConversionsPass();
 
+
+  void registerMemOpsFoldingPass();
+  void registerCleanTempsPass();
   void registerAnnotatePass();
   void registerAliasingPass();
   void registerShapeInferPass();
@@ -44,6 +53,10 @@ namespace xla_jit {
   void registerAllJitPasses();
   void registerLoopSinkingPass();
   void registerRemergePass();
+  void registerIfConversionPass();
+  void registerPolygeistMem2RegPass();
+  void registerFoldSCFIfPass();
+  void registerFoldRepeatConversionsPass();
 }
 
 #endif

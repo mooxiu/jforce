@@ -28,10 +28,26 @@ struct ReplaceFIRNoReassoc: OpRewritePattern<fir::NoReassocOp> {
 };
 
 
+// cases like %182 = fir.convert %29 : (!fir.ref<f64>) -> memref<f64>, might be in a if-else condition or in a loop
+struct HositFIRConvertOps: OpRewritePattern<fir::ConvertOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(fir::ConvertOp convertOp,
+                                PatternRewriter &rewriter) const final {
+    auto definedOp = convertOp.getOperand().getDefiningOp();
+    if (definedOp->getParentOp() != convertOp->getParentOp()) {
+      rewriter.moveOpBefore(convertOp, convertOp->getParentOp());
+      return success();
+    }
+    return failure();
+  }
+};
+
 // Before:
 //  1. fir.convert index -> i32/64 
 //  2. fir.i32 -> i64
 //  3. fir.i64 -> i32
+
 //
 // After:
 //  1. arith.index_case index -> i32/i64
@@ -115,6 +131,7 @@ struct CleanFIROpsPass
     RewritePatternSet patterns(ctx);
     patterns.add<ReplaceFIRConvertOps>(ctx);
     patterns.add<ReplaceFIRNoReassoc>(ctx);
+    patterns.add<HositFIRConvertOps>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));

@@ -1,6 +1,7 @@
 #include "Passes.h"
 
 void xla_jit::registerAllJitPasses() {
+  registerCleanTempsPass();
   registerAnnotatePass();
   registerAliasingPass();
   registerShapeInferPass();
@@ -17,4 +18,8 @@ void xla_jit::registerAllJitPasses() {
   registerCleanFIROpsPass();
   registerLoopSinkingPass();
   registerRemergePass();
+  registerIfConversionPass();
+  registerPolygeistMem2RegPass();
+  registerFoldSCFIfPass();
+  registerFoldRepeatConversionsPass();
 }

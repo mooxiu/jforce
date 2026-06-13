@@ -1,4 +1,9 @@
+/// TODO: Some operations should be done by MemOpsFoldingPass.
+/// This pass should only do hositing.
+
+
 #include "../support/utilities.h"
+#include "MemUtils.h"
 #include "flang/Optimizer/Dialect/FIRAttr.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -16,7 +21,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/WalkResult.h"
@@ -119,43 +123,6 @@ static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
   return addrs;
 }
 
-static bool isOperationPossiblelyWriteToAddr(Operation* op, Value addr) {
-  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!memInterface) {
-    return llvm::is_contained(op->getOperands(), addr);
-  }
-  
-  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-  memInterface.getEffects(effects);
-  for (const auto &effect : effects) {
-    if (isa<MemoryEffects::Write>(effect.getEffect())) {
-      Value effectValue = effect.getValue();
-      if (effectValue == addr || effectValue == nullptr) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-static bool isOperationPossiblelyReadFromAddr(Operation* op, Value addr) {
-  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!memInterface) {
-    return llvm::is_contained(op->getOperands(), addr);
-  }
-  
-  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-  memInterface.getEffects(effects);
-  for (const auto &effect : effects) {
-    if (isa<MemoryEffects::Read>(effect.getEffect())) {
-      Value effectValue = effect.getValue();
-      if (effectValue == addr || effectValue == nullptr) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 // Mem2reg is supposed to cover alloca, but we need aliasing analysis here.
 //
