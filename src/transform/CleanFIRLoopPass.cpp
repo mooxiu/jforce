@@ -9,14 +9,10 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/Casting.h"
 #include <cassert>
 #include <cstdlib>
 #include <optional>
-#include "../support/utilities.h"
 
 using namespace mlir;
 
@@ -71,6 +67,13 @@ static void replaceIterArgs(mlir::OpBuilder& opBuilder, fir::DoLoopOp doLoop) {
 
   for (auto* toDeleteOp: toDeleteOps){
     toDeleteOp->erase();
+  }
+
+  if (!iterArg.use_empty()) {
+    opBuilder.setInsertionPointToStart(doLoop.getBody());
+    auto convertOp = fir::ConvertOp::create(
+        opBuilder, doLoop.getLoc(), iterArg.getType(), loopIV, {});
+    iterArg.replaceAllUsesWith(convertOp.getResult());
   }
 }
 
@@ -129,46 +132,6 @@ static void replaceLoopSignature(OpBuilder& opBuilder, fir::DoLoopOp doLoop){
   doLoop.erase();
 }
 
-// Before:
-//  fir::store %val to %mem
-//  %val2 fir::load %mem
-//  ...use %val2
-//
-// After:
-//  ...use %val
-//
-// Precondition:
-//  - after fir::store, the there's no other store to mem
-//
-[[deprecated("This should be done by mem2reg!")]]
-static void cleanRedundantStore(func::FuncOp funcOp) {
-  auto isStoreToLoadedMem = [](Value valueToStore, Value memStoredTo) -> bool {
-    if (fir::LoadOp loadOp = llvm::dyn_cast<fir::LoadOp>(valueToStore.getDefiningOp())) {
-      return loadOp.getMemref() == memStoredTo;
-    } else if (memref::LoadOp loadOp = llvm::dyn_cast<memref::LoadOp>(valueToStore.getDefiningOp())) {
-      return loadOp.getMemRef() == memStoredTo;
-    } else {
-      return false;
-    }
-  };
-
-  llvm::SmallVector<Operation*> toDeleteOps;
-  funcOp.walk([&](Operation* operation){
-    llvm::TypeSwitch<Operation*>(operation)
-      .Case<fir::StoreOp>([&](fir::StoreOp storeOp){
-        isStoreToLoadedMem(storeOp.getValue(), storeOp.getMemref()) ?
-          toDeleteOps.push_back(operation) : void(); 
-      })
-      .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
-        isStoreToLoadedMem(storeOp.getValueToStore(), storeOp.getMemRef())?
-          toDeleteOps.push_back(operation) : void(); 
-      });
-    return;
-  });
-
-  llvm::for_each(toDeleteOps, [](Operation* op){op->erase();});
-}
-
 struct CleanFIRLoopPass
     : public PassWrapper<CleanFIRLoopPass, OperationPass<func::FuncOp>> {
 
@@ -192,6 +155,7 @@ struct CleanFIRLoopPass
         replaceLoopSignature(opBuilder, doLoop);
       }
     } 
+    funcOp.dump();
   };
 };
 } // namespace
