@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -36,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <regex>
+#include <utility>
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "Utils.h"
@@ -132,6 +134,11 @@ static void updateTracking(
       break;
     case WRITE_VAL_TO_MEM:
       // example: storeOp
+      //
+      // example: bufferization.materialize_in_destination %9#1 in writable %alloca : (tensor<f64>, memref<f64>) -> ()
+      // - val: %9#1, should have corresponding stablehlo value: valHLO
+      // - mem: %alloca
+      //
       assert(oldOpFromVars.size() == oldOpToVars.size());
       for (int i = 0; i < oldOpFromVars.size(); i++) {
         auto val = oldOpFromVars[i];
@@ -148,12 +155,14 @@ static void updateTracking(
       }
       break;
     case VAL_TO_VAL:
+      // example: some fir::convert, stablehlo function's inputs and outputs
       assert(oldOpToVars.size() == newOpToVars.size());
       for (int i = 0; i < oldOpToVars.size(); i++) {
         tracking.valueMap.map(oldOpToVars[i], newOpToVars[i]);
       }
       break;
     case MEM_TO_MEM:
+      // exmaple: some fir::convert, hlfir.declare, fir.declare
       assert(oldOpFromVars.size() == oldOpToVars.size());
       for (int i = 0; i < oldOpToVars.size(); i++) {
         auto memFrom = oldOpFromVars[i];
@@ -283,96 +292,78 @@ static void handleArithUnaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
       });
 }
 
-/// Only support increase one dimension right now, for example:
+/// Only support automatic dimension broadcasting right now, for example:
 /// - tensor<f32> -> tensor<10xf32>
 /// - tensor<10xf32> -> tensor<10x10xf32>
 ///
 /// Ref: https://openxla.org/stablehlo/spec#broadcast_in_dim
-static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
-                                func::FuncOp &funcOp, Operation *arithOp) {
-  // llvm::dbgs() << "\n Handling Arith Binary OP: " <<
-  // getMLIROperationAsString(arithOp) << "\n";
-
-  assert(arithOp->getNumOperands() == 2 && arithOp->getNumResults() == 1);
-  Value operand1 = arithOp->getOperand(0);
-  Value operand2 = arithOp->getOperand(1);
-  Value result = arithOp->getResult(0);
-
-  assert(tracking.valueMap.contains(operand1) && "ValueMap supposed to contain operand1!");
-  assert(tracking.valueMap.contains(operand2) && "ValueMap supposed to contain operand2!");
-  Value operand1Src = tracking.valueMap.lookup(operand1);
-  assert(operand1Src && "operand1Src not exist!");
-  Value operand2Src = tracking.valueMap.lookup(operand2);
-  assert(operand2Src && "operand2Src not exist!");
-
-  RankedTensorType o1Type = toCorrespondingTensorTy(operand1Src.getType());
-  RankedTensorType o2Type = toCorrespondingTensorTy(operand2Src.getType());
-  assert(o1Type.hasRank() && o2Type.hasRank());
-
-  Value largerOperand, smallerOperand;
-  if (o1Type.getRank() >= o2Type.getRank()) {
-    largerOperand = operand1Src;
-    smallerOperand = operand2Src;
-  } else {
-    largerOperand = operand2Src;
-    smallerOperand = operand1Src;
-  }
-  RankedTensorType targetType =
-      toCorrespondingTensorTy(largerOperand.getType());
-
-  // insert the broadcast
-  if (o1Type.getRank() != o2Type.getRank()) {
-    DenseI64ArrayAttr diaa = opBuilder.getDenseI64ArrayAttr({});
-    auto broadcastInDimOp = stablehlo::BroadcastInDimOp::create(
-        opBuilder, funcOp.getLoc(), targetType, smallerOperand, diaa);
-    smallerOperand = broadcastInDimOp.getResult();
-  }
-
-  // insert the arith operation
-  Value stablehloRes;
-  llvm::TypeSwitch<Operation *>(arithOp)
-      .Case<arith::AddFOp, arith::AddIOp>([&](Operation* addOp) {
-        auto stablehloAddOp =
-            stablehlo::AddOp::create(opBuilder, funcOp.getLoc(), targetType,
-                                     largerOperand, smallerOperand);
-        stablehloRes = stablehloAddOp.getResult();
-      })
-      .Case<arith::MulFOp, arith::MulIOp>([&](Operation* mulOp) {
-        auto stablehloMulOp =
-            stablehlo::MulOp::create(opBuilder, funcOp.getLoc(), targetType,
-                                     largerOperand, smallerOperand);
-        stablehloRes = stablehloMulOp.getResult();
-      })
-      // Can not exchange
-      .Case<arith::SubFOp>([&](arith::SubFOp subOp) {
-        if (o1Type.getRank() >= o2Type.getRank()) {
-          stablehloRes = stablehlo::SubtractOp::create(
-                             opBuilder, funcOp.getLoc(), targetType,
-                             largerOperand, smallerOperand)
-                             .getResult();
-        } else {
-          stablehloRes = stablehlo::SubtractOp::create(
-                             opBuilder, funcOp.getLoc(), targetType,
-                             smallerOperand, largerOperand)
-                             .getResult();
-        }
-      })
-      .Case<arith::DivFOp>([&](arith::DivFOp) {
-        if (o1Type.getRank() >= o2Type.getRank()) {
-          stablehloRes =
-              stablehlo::DivOp::create(opBuilder, funcOp.getLoc(), targetType,
-                                       largerOperand, smallerOperand)
-                  .getResult();
-        } else {
-          stablehloRes =
-              stablehlo::DivOp::create(opBuilder, funcOp.getLoc(), targetType,
-                                       smallerOperand, largerOperand)
-                  .getResult();
-        }
-      })
-      .Case<arith::CmpFOp>([&](arith::CmpFOp cmpfOp) {
-        stablehlo::ComparisonDirection direction;
-        switch (cmpfOp.getPredicate()) {
+static void handleArithBinaryOp(
+  TrackingInfo &tracking,
+  OpBuilder& opBuilder,
+  func::FuncOp funcOp,
+  Operation* op
+) {
+  assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
+  auto srcOperand0 = op->getOperand(0);
+  auto srcOperand1 = op->getOperand(1);
+  assert(tracking.valueMap.contains(srcOperand0));
+  assert(tracking.valueMap.contains(srcOperand1));
+  auto alignShape = [&](Value hloO0, Value hloO1) -> std::pair<Value, Value> {
+    assert(llvm::isa<RankedTensorType>(hloO1.getType()));
+    assert(llvm::isa<RankedTensorType>(hloO1.getType()));
+    auto typeInfo0 = inspectTypeInfo(hloO0.getType());
+    auto typeInfo1 = inspectTypeInfo(hloO1.getType());
+    if (typeInfo0.rank == typeInfo1.rank) {
+      assert(typeInfo0.shape == typeInfo1.shape);
+      return std::pair<Value, Value>(hloO0, hloO1);
+    }
+    if (typeInfo0.rank < typeInfo1.rank) {
+      auto broadcastOp = stablehlo::BroadcastInDimOp::create(
+          opBuilder, 
+          funcOp.getLoc(),
+          hloO1.getType(),
+          hloO0,
+          opBuilder.getDenseI64ArrayAttr({})
+        );
+      return std::make_pair(broadcastOp.getResult(), hloO1);
+    } else {
+      // hlo0 has larger rank
+      auto broadcastOp = stablehlo::BroadcastInDimOp::create(
+          opBuilder, 
+          funcOp.getLoc(),
+          hloO0.getType(),
+          hloO1,
+          opBuilder.getDenseI64ArrayAttr({})
+        );
+      return std::make_pair(hloO0, broadcastOp.getResult());
+    }
+  };
+  auto opPair = alignShape(tracking.valueMap.lookup(srcOperand0), tracking.valueMap.lookup(srcOperand1));
+  auto hloO0 = opPair.first;
+  auto hloO1 = opPair.second;
+       // .Case<arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
+       //      arith::MulFOp, arith::AddIOp, arith::DivFOp, arith::DivSIOp,
+       //      arith::CmpFOp, arith::CmpIOp>([&](auto arithBinaryOp) {
+  Operation* createdHLOOp = llvm::TypeSwitch<Operation*, Operation*>(op)
+    .Case<arith::AddFOp, arith::AddIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::AddOp::create(opBuilder, funcOp.getLoc(), resTy, hloO0, hloO1);
+    })
+    .Case<arith::SubFOp, arith::SubIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::SubtractOp::create(opBuilder, funcOp.getLoc(), resTy, hloO0, hloO1);
+    })
+    .Case<arith::MulFOp, arith::MulIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::MulOp::create(opBuilder, funcOp.getLoc(), resTy, hloO0, hloO1);
+    })
+    .Case<arith::DivFOp, arith::DivSIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::DivOp::create(opBuilder, funcOp.getLoc(), resTy, hloO0, hloO1);
+    })
+    .Case<arith::CmpFOp>([&](arith::CmpFOp cmpOp){
+      stablehlo::ComparisonDirection direction;
+      switch (cmpOp.getPredicate()) {
         case arith::CmpFPredicate::OEQ:
         case arith::CmpFPredicate::UEQ:
           direction = stablehlo::ComparisonDirection::EQ;
@@ -398,31 +389,181 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
           direction = stablehlo::ComparisonDirection::LE;
           break;
         default:
-          llvm_unreachable(
-              "Unsupported arith::CmpFPredicate for StableHLO conversion!");
-        }
-        if (o1Type.getRank() > o2Type.getRank()) {
-          stablehloRes =
-              stablehlo::CompareOp::create(
-                  opBuilder, funcOp.getLoc(), largerOperand, smallerOperand,
-                  direction, mlir::stablehlo::ComparisonType::FLOAT)
-                  .getResult();
-        } else {
-          stablehloRes =
-              stablehlo::CompareOp::create(
-                  opBuilder, funcOp.getLoc(), smallerOperand, largerOperand,
-                  direction, mlir::stablehlo::ComparisonType::FLOAT)
-                  .getResult();
-        }
-      })
-      .Default([](auto) {
-        llvm::errs() << "Unknown arith operation! \n";
-        return;
-      });
-
-  tracking.valueMap.map(result, stablehloRes);
+          llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      return stablehlo::CompareOp::create(opBuilder, funcOp.getLoc(), hloO0, hloO1, direction, stablehlo::ComparisonType::FLOAT);
+    })
+    .Case<arith::CmpIOp>([&](arith::CmpIOp cmpOp){
+      stablehlo::ComparisonDirection direction;
+      switch (cmpOp.getPredicate()) {
+        case arith::CmpIPredicate::eq:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpIPredicate::ne:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        case arith::CmpIPredicate::sgt:
+        case arith::CmpIPredicate::ugt:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpIPredicate::sge:
+        case arith::CmpIPredicate::uge:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpIPredicate::slt:
+        case arith::CmpIPredicate::ult:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpIPredicate::sle:
+        case arith::CmpIPredicate::ule:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        default:
+          llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      return stablehlo::CompareOp::create(opBuilder, funcOp.getLoc(), hloO0, hloO1, direction, stablehlo::ComparisonType::SIGNED);
+    })
+  ;
+  // updateTracking<OperationType Ty>(TrackingInfo &tracking, mlir::ValueRange oldOpFromVars, mlir::ValueRange oldOpToVars, mlir::ValueRange newOpToVars)
+  updateTracking<VAL_TO_VAL>(tracking, op->getOperands(), op->getResults(), createdHLOOp->getResults());                        
   return;
 }
+
+// static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
+//                                 func::FuncOp &funcOp, Operation *arithOp) {
+//   // llvm::dbgs() << "\n Handling Arith Binary OP: " <<
+//   // getMLIROperationAsString(arithOp) << "\n";
+//
+//   assert(arithOp->getNumOperands() == 2 && arithOp->getNumResults() == 1);
+//   Value operand1 = arithOp->getOperand(0);
+//   Value operand2 = arithOp->getOperand(1);
+//   Value result = arithOp->getResult(0);
+//
+//   assert(tracking.valueMap.contains(operand1) && "ValueMap supposed to contain operand1!");
+//   assert(tracking.valueMap.contains(operand2) && "ValueMap supposed to contain operand2!");
+//   Value operand1Src = tracking.valueMap.lookup(operand1);
+//   assert(operand1Src && "operand1Src not exist!");
+//   Value operand2Src = tracking.valueMap.lookup(operand2);
+//   assert(operand2Src && "operand2Src not exist!");
+//
+//   RankedTensorType o1Type = toCorrespondingTensorTy(operand1Src.getType());
+//   RankedTensorType o2Type = toCorrespondingTensorTy(operand2Src.getType());
+//   assert(o1Type.hasRank() && o2Type.hasRank());
+//
+//   Value largerOperand, smallerOperand;
+//   if (o1Type.getRank() >= o2Type.getRank()) {
+//     largerOperand = operand1Src;
+//     smallerOperand = operand2Src;
+//   } else {
+//     largerOperand = operand2Src;
+//     smallerOperand = operand1Src;
+//   }
+//   RankedTensorType targetType =
+//       toCorrespondingTensorTy(largerOperand.getType());
+//
+//   // insert the broadcast
+//   if (o1Type.getRank() != o2Type.getRank()) {
+//     DenseI64ArrayAttr diaa = opBuilder.getDenseI64ArrayAttr({});
+//     auto broadcastInDimOp = stablehlo::BroadcastInDimOp::create(
+//         opBuilder, funcOp.getLoc(), targetType, smallerOperand, diaa);
+//     smallerOperand = broadcastInDimOp.getResult();
+//   }
+//
+//   // insert the arith operation
+//   Value stablehloRes;
+//   llvm::TypeSwitch<Operation *>(arithOp)
+//       .Case<arith::AddFOp, arith::AddIOp>([&](Operation* addOp) {
+//         auto stablehloAddOp =
+//             stablehlo::AddOp::create(opBuilder, funcOp.getLoc(), targetType,
+//                                      largerOperand, smallerOperand);
+//         stablehloRes = stablehloAddOp.getResult();
+//       })
+//       .Case<arith::MulFOp, arith::MulIOp>([&](Operation* mulOp) {
+//         auto stablehloMulOp =
+//             stablehlo::MulOp::create(opBuilder, funcOp.getLoc(), targetType,
+//                                      largerOperand, smallerOperand);
+//         stablehloRes = stablehloMulOp.getResult();
+//       })
+//       // Can not exchange
+//       .Case<arith::SubFOp>([&](arith::SubFOp subOp) {
+//         if (o1Type.getRank() >= o2Type.getRank()) {
+//           stablehloRes = stablehlo::SubtractOp::create(
+//                              opBuilder, funcOp.getLoc(), targetType,
+//                              largerOperand, smallerOperand)
+//                              .getResult();
+//         } else {
+//           stablehloRes = stablehlo::SubtractOp::create(
+//                              opBuilder, funcOp.getLoc(), targetType,
+//                              smallerOperand, largerOperand)
+//                              .getResult();
+//         }
+//       })
+//       .Case<arith::DivFOp>([&](arith::DivFOp) {
+//         if (o1Type.getRank() >= o2Type.getRank()) {
+//           stablehloRes =
+//               stablehlo::DivOp::create(opBuilder, funcOp.getLoc(), targetType,
+//                                        largerOperand, smallerOperand)
+//                   .getResult();
+//         } else {
+//           stablehloRes =
+//               stablehlo::DivOp::create(opBuilder, funcOp.getLoc(), targetType,
+//                                        smallerOperand, largerOperand)
+//                   .getResult();
+//         }
+//       })
+//       .Case<arith::CmpFOp>([&](arith::CmpFOp cmpfOp) {
+//         stablehlo::ComparisonDirection direction;
+//         switch (cmpfOp.getPredicate()) {
+//         case arith::CmpFPredicate::OEQ:
+//         case arith::CmpFPredicate::UEQ:
+//           direction = stablehlo::ComparisonDirection::EQ;
+//           break;
+//         case arith::CmpFPredicate::ONE:
+//         case arith::CmpFPredicate::UNE:
+//           direction = stablehlo::ComparisonDirection::NE;
+//           break;
+//         case arith::CmpFPredicate::OGT:
+//         case arith::CmpFPredicate::UGT:
+//           direction = stablehlo::ComparisonDirection::GT;
+//           break;
+//         case arith::CmpFPredicate::OGE:
+//         case arith::CmpFPredicate::UGE:
+//           direction = stablehlo::ComparisonDirection::GE;
+//           break;
+//         case arith::CmpFPredicate::OLT:
+//         case arith::CmpFPredicate::ULT:
+//           direction = stablehlo::ComparisonDirection::LT;
+//           break;
+//         case arith::CmpFPredicate::OLE:
+//         case arith::CmpFPredicate::ULE:
+//           direction = stablehlo::ComparisonDirection::LE;
+//           break;
+//         default:
+//           llvm_unreachable(
+//               "Unsupported arith::CmpFPredicate for StableHLO conversion!");
+//         }
+//         if (o1Type.getRank() > o2Type.getRank()) {
+//           stablehloRes =
+//               stablehlo::CompareOp::create(
+//                   opBuilder, funcOp.getLoc(), largerOperand, smallerOperand,
+//                   direction, mlir::stablehlo::ComparisonType::FLOAT)
+//                   .getResult();
+//         } else {
+//           stablehloRes =
+//               stablehlo::CompareOp::create(
+//                   opBuilder, funcOp.getLoc(), smallerOperand, largerOperand,
+//                   direction, mlir::stablehlo::ComparisonType::FLOAT)
+//                   .getResult();
+//         }
+//       })
+//       .Default([](auto) {
+//         llvm::errs() << "Unknown arith operation! \n";
+//         return;
+//       });
+//
+//   tracking.valueMap.map(result, stablehloRes);
+//   return;
+// }
 
 static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder, func::FuncOp &funcOp, Operation *op) {
   llvm::TypeSwitch<Operation *>(op)
@@ -981,6 +1122,7 @@ static void handleFuncCallOp(
   updateTracking<OperationType::VAL_TO_VAL>(tracking, callOp.getOperands(), callOp.getResults(), translatedCallOp.getResults());
 };
 
+// FIXME: this category is not correct, should rewrite
 static void handleGeneralRelayOp(
   TrackingInfo &tracking, 
   OpBuilder &opBuilder,
@@ -993,11 +1135,10 @@ static void handleGeneralRelayOp(
       updateTracking<OperationType::MEM_TO_MEM>(tracking, {declaredOprand}, {dop.getResult()}, {});
     })
     .Case<fir::LoadOp>([&](fir::LoadOp loadOp) {
-      updateTracking<OperationType::READ_VAL_FROM_MEM>(tracking, {loadOp.getOperand()}, {loadOp.getResult()}, {});
-      // assert(tracking.valueMap.contains(loadOp->getOperand(0)) && "First Operand not exist!");
-      // tracking.valueMap.map(loadOp->getResult(0), tracking.valueMap.lookup(loadOp->getOperand(0)));
+      updateTracking<OperationType::READ_VAL_FROM_MEM>(tracking, {loadOp.getMemref()}, {loadOp.getResult()}, {});
     })
     .Case<affine::AffineLoadOp>([&](affine::AffineLoadOp loadOp) {
+      // TODO: handle more cases!
       assert(loadOp.getNumOperands() == 1);
       assert(loadOp.getIndices().empty());
       updateTracking<OperationType::READ_VAL_FROM_MEM>(tracking, {loadOp.getMemRef()}, {loadOp.getResult()}, {});
@@ -1057,6 +1198,7 @@ static void scanOperationsAndInserts(
     Operation *op,
     const llvm::DenseMap<Value, llvm::SmallVector<int64_t>> &sliceShiftMap
 ) {
+  DEBUG_PRINT_OP(op);
   llvm::TypeSwitch<Operation *>(op)
       .Case<arith::ConstantOp>([&](arith::ConstantOp constOp) {
         stablehlo::ConstantOp stablehloConstOp;
@@ -1129,7 +1271,7 @@ static void scanOperationsAndInserts(
         tracking.valueMap.map(resultOperand, tracking.valueMap.lookup(refArr));
       })
       .Case<arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
-            arith::MulFOp, arith::AddIOp, arith::DivFOp, arith::DivSIOp,
+            arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
             arith::CmpFOp, arith::CmpIOp>([&](auto arithBinaryOp) {
         handleArithBinaryOp(tracking, opBuilder, hloFuncOp, arithBinaryOp);
       })

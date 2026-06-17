@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
@@ -145,6 +146,7 @@ JitManager::JitManager() {
     mlir::bufferization::BufferizationDialect,
     mlir::stablehlo::StablehloDialect>();
   mlir::registerAllExtensions(registry);
+  mlir::LLVM::registerInlinerInterface(registry);
   this->context.appendDialectRegistry(registry);
 
   // Iniialize PJRT_API
@@ -211,6 +213,11 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr,
 }
 
 // Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs
+//
+// JitCodePtr is the pointer to this JIT string captured.
+//
+// ArgSizes[i]:
+// TgtArgs[i]:
 llvm::SmallVector<uint64_t, 128>
 JitManager::getL2JitMetasKey(int64_t NumArgs, int64_t *ArgTypes, void **TgtArgs,
                              int64_t *ArgSizes, uintptr_t JitCodePtr,
