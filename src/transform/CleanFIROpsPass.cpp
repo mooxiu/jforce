@@ -120,14 +120,6 @@ struct CleanFIROpsPass
     auto funcOp = getOperation();
     MLIRContext* ctx = getOperation()->getContext();
 
-    llvm::SmallVector<Operation *> loopOps;
-    funcOp.walk([&](Operation* op){
-      llvm::TypeSwitch<Operation*>(op).
-        Case<fir::DoLoopOp, scf::ForOp, affine::AffineForOp>(
-          [&](auto loopOp){loopOps.push_back(loopOp);}
-        );
-    });
-
     RewritePatternSet patterns(ctx);
     patterns.add<ReplaceFIRConvertOps>(ctx);
     patterns.add<ReplaceFIRNoReassoc>(ctx);
@@ -136,12 +128,11 @@ struct CleanFIROpsPass
     config.enableFolding();
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));
     
-    for (auto loopOp: loopOps) {
-      if (failed(applyPatternsGreedily(loopOp, frozenPatterns, config))) {
-        signalPassFailure();
-        return;
-      }
+    if (failed(applyPatternsGreedily(funcOp, frozenPatterns, config))) {
+      signalPassFailure();
+      return;
     }
+    return;
   }
 };
 } // namespace
