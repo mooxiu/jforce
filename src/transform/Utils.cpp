@@ -1,5 +1,50 @@
 #include "Utils.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+
+
+
+llvm::SmallVector<mlir::MemoryEffects::EffectInstance> getMemoryEffects(Operation* op) {
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
+  auto memEffectInterface = llvm::dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memEffectInterface) return effects;
+
+  memEffectInterface.getEffects(effects);
+  return effects;
+}
+
+bool mayAccessMemory(Value val, Operation* op, fir::AliasAnalysis& aa) {
+  auto effects = getMemoryEffects(op);
+  for (const auto& effect: effects) {
+    if (effect.getValue()) {
+      if (aa.alias(effect.getValue(), val).isMay()) return true;
+    }
+  }
+  return false;
+}
+
+bool mayWriteToMemory(Value val, Operation* op, fir::AliasAnalysis& aa) {
+  auto effects = getMemoryEffects(op);
+  for (const auto& effect: effects) {
+    if (isa<MemoryEffects::Write>(effect.getEffect()) && effect.getValue()) {
+      if (aa.alias(effect.getValue(), val).isMay()) return true;
+    }
+  }
+  return false;
+}
+
+bool mayReadFromMemory(Value val, Operation* op, fir::AliasAnalysis& aa) {
+  auto effects = getMemoryEffects(op);
+  for (const auto& effect: effects) {
+    if (isa<MemoryEffects::Read>(effect.getEffect()) && effect.getValue()) {
+      if (aa.alias(effect.getValue(), val).isMay()) return true;
+    }
+  }
+  return false;
+}
+
+
 
 TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
   if (auto refTy = llvm::dyn_cast<fir::ReferenceType>(ty)) {

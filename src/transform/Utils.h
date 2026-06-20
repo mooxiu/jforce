@@ -1,6 +1,7 @@
 #ifndef UTILS_H 
 #define UTILS_H 
 
+#include "flang/Optimizer/Analysis/AliasAnalysis.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
@@ -32,5 +33,11 @@ struct TypeInfo {
 
 
 TypeInfo inspectTypeInfo(mlir::Type ty);
+
+bool mayAccessMemory(Value val, Operation* op, fir::AliasAnalysis& aa);
+
+bool mayWriteToMemory(Value val, Operation* op, fir::AliasAnalysis& aa);
+
+bool mayReadFromMemory(Value val, Operation* op, fir::AliasAnalysis& aa);
 
 #endif
