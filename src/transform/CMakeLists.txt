@@ -27,6 +27,7 @@ add_library(JitTransforms STATIC
   SwitchOutlineFuncPass.cpp
   IfConversionPass.cpp
   FoldRepeatConversionPass.cpp
+  Utils.cpp
 
   # INFO: some passes copied and adapted from Enzyme-JAX project
   EnzymeJAX/PolygeistMem2RegPass.cpp
