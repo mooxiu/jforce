@@ -8,7 +8,6 @@
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "flang/Optimizer/Analysis/AliasAnalysis.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -186,7 +185,7 @@ public:
 
 struct MemOpsFoldingPass
     : public mlir::PassWrapper<MemOpsFoldingPass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
+                               mlir::OperationPass<func::FuncOp>> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
     return;
@@ -195,11 +194,11 @@ struct MemOpsFoldingPass
   StringRef getArgument() const override { return "jforce-mem-ops-folding"; }
 
   void runOnOperation() override {
-    auto moduleOp = getOperation();
+    auto funcOp = getOperation();
     MLIRContext *ctx = getOperation()->getContext();
 
     bool hasHLFIR = false;
-    moduleOp.walk([&](mlir::Operation *op) {
+    funcOp.walk([&](mlir::Operation *op) {
       if (op->getDialect()->getNamespace() == "hlfir") {
         hasHLFIR = true;
         return mlir::WalkResult::interrupt(); 
@@ -208,7 +207,7 @@ struct MemOpsFoldingPass
     });
 
     if (hasHLFIR) {
-      moduleOp.emitError("Precondition failed: HLFIR operations are not allowed in this pass!");
+      funcOp.emitError("Precondition failed: HLFIR operations are not allowed in this pass!");
       return signalPassFailure();
     }
 
@@ -219,7 +218,7 @@ struct MemOpsFoldingPass
     patterns.add<FoldRepeatStoreOps>(ctx, aliasAnalysis);
     GreedyRewriteConfig config;
     config.enableFolding();
-    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns), config))) {
+    if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
       signalPassFailure();
       return;
     }
