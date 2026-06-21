@@ -62,11 +62,13 @@ public:
 
   // using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(fir::LoadOp loadOp, PatternRewriter &rewriter) const final {
-    while (Operation* prev = loadOp->getPrevNode()) {
+    Operation* prev = loadOp->getPrevNode();
+    while (prev != nullptr) {
       if (auto storeOp = llvm::dyn_cast<fir::StoreOp>(prev)) {
         auto res = aliasAnalysis.alias(storeOp.getMemref(), loadOp.getMemref());
         if (res.isMust()) {
           rewriter.replaceAllUsesWith(loadOp.getResult(), storeOp.getValue());
+          rewriter.eraseOp(loadOp);
           return success();
         }
       }
@@ -80,6 +82,7 @@ public:
       if (prev->getNumRegions() > 0) {
         return failure();
       }
+      prev = prev->getPrevNode();
     }
     return failure();
   }
@@ -107,7 +110,8 @@ public:
 
   // using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(fir::StoreOp storeOp, PatternRewriter &rewriter) const final {
-    while(auto prev = storeOp->getPrevNode()) {
+    Operation* prev = storeOp->getPrevNode();
+    while(prev != nullptr) {
       if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(prev)) {
         auto res = aliasAnalysis.alias(loadOp.getMemref(), storeOp.getMemref());
         if (res.isMust()) {
@@ -127,6 +131,7 @@ public:
       if (prev->getNumRegions() > 0) {
         return failure();
       }
+      prev = prev ->getPrevNode();
     }
     return failure();
   }
@@ -160,7 +165,8 @@ public:
 
   // using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(fir::StoreOp storeOp, PatternRewriter &rewriter) const final {
-    while(auto prev = storeOp->getPrevNode()) {
+    Operation* prev = storeOp->getPrevNode();
+    while(prev != nullptr) {
       if (auto repeatStoreOp = llvm::dyn_cast<fir::StoreOp>(prev)) {
         if (aliasAnalysis.alias(storeOp.getMemref(), repeatStoreOp.getMemref()).isMust()) {
           rewriter.eraseOp(repeatStoreOp);
@@ -176,6 +182,7 @@ public:
       if (prev->getNumRegions() > 0) {
         return failure();
       }
+      prev = prev ->getPrevNode();
     }
     return failure();
   }

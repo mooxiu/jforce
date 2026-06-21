@@ -237,10 +237,10 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase1.addPass(createCanonicalizerPass());
 
   // 2. ShapeInference HLFIR -> FIR -> Optimize -> Memref, Affine, SCF
-  auto& nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
   // - 2.1 HLFIR -> FIR
-  nestedPMPhase2.addPass(hlfir::createConvertHLFIRtoFIR());
+  pm.addPass(hlfir::createConvertHLFIRtoFIR());
   // - 2.2 FIR and optimize
+  auto& nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase2.addPass(xla_jit::createFoldRepeatConversionsPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(createLoopInvariantCodeMotionPass());
