@@ -20,9 +20,14 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "transform/Utils.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LogicalResult.h"
 #include <cassert>
 #include <cstdlib>
+#include <optional>
 
 using namespace mlir;
 
@@ -114,7 +119,7 @@ public:
     while(prev != nullptr) {
       if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(prev)) {
         auto res = aliasAnalysis.alias(loadOp.getMemref(), storeOp.getMemref());
-        if (res.isMust()) {
+        if (res.isMust() && storeOp.getValue() == loadOp.getResult()) {
           rewriter.eraseOp(storeOp);
           return success();
         }
@@ -189,6 +194,79 @@ public:
 };
 
 
+// Before:
+//  fir.store %val to %mem
+//  //%mem will not be accessed later anywhere in this function
+//
+// After:
+//  <NOTHING>
+
+struct FoldOrphanAllocaStore: public OpRewritePattern<fir::StoreOp> {
+private:
+  fir::AliasAnalysis& aliasAnalysis;
+
+  std::optional<llvm::SmallVector<Value>> getAllocaMemTrace(fir::StoreOp storeOp) const {
+    llvm::SmallVector<Value> res;
+    auto mem = storeOp.getMemref();
+    res.push_back(mem);
+    auto defOp = mem.getDefiningOp();
+    
+    while (defOp) {
+      if (llvm::isa<fir::AllocaOp>(defOp)) {
+        return res;
+      }
+      if (auto declareOp = llvm::dyn_cast<fir::DeclareOp>(defOp)) {
+        mem = declareOp.getMemref();
+        defOp = mem.getDefiningOp();
+        res.push_back(mem);
+        continue;
+      }
+      if (llvm::isa<fir::ArrayCoorOp>(defOp)){
+        return std::nullopt;
+      }
+      return std::nullopt; 
+    }
+    return std::nullopt;
+  }
+
+public:
+  FoldOrphanAllocaStore(mlir::MLIRContext* ctx, fir::AliasAnalysis& aa)
+    : OpRewritePattern<fir::StoreOp>(ctx), aliasAnalysis(aa) {}
+
+  LogicalResult matchAndRewrite(fir::StoreOp storeOp, PatternRewriter &rewriter) const final {
+    auto memTrace = getAllocaMemTrace(storeOp);
+    if (!memTrace.has_value()) {
+      return failure(); 
+    }
+    auto funcOp = storeOp->getParentOfType<func::FuncOp>();
+    if (!funcOp) return failure();
+
+    auto loopOp = storeOp->getParentOfType<fir::DoLoopOp>();
+    if (!loopOp) return failure();
+    for (Operation& op : loopOp.getRegion().front().getOperations()) {
+      if (&op == storeOp || llvm::isa<fir::DeclareOp, fir::AllocaOp>(&op)) {
+        continue;
+      }
+      if (mayAccessMemory(storeOp.getMemref(), &op, this->aliasAnalysis)) {
+        return failure();
+      }
+    }
+
+    Operation* nextOp = loopOp->getNextNode();
+    while (nextOp != nullptr) {
+      if (nextOp->hasTrait<OpTrait::IsTerminator>()) {
+        break;
+      }
+      if (mayAccessMemory(storeOp.getMemref(), nextOp, this->aliasAnalysis)) {
+        return failure();
+      }
+      nextOp = nextOp->getNextNode();
+    }
+
+    rewriter.eraseOp(storeOp);
+    return success();
+  }
+};
 
 struct MemOpsFoldingPass
     : public mlir::PassWrapper<MemOpsFoldingPass,
@@ -223,6 +301,7 @@ struct MemOpsFoldingPass
     patterns.add<ReduceWriteAndReadSameAddr>(ctx, aliasAnalysis);
     patterns.add<ReduceReadAndWriteSameAddr>(ctx, aliasAnalysis);
     patterns.add<FoldRepeatStoreOps>(ctx, aliasAnalysis);
+    patterns.add<FoldOrphanAllocaStore>(ctx, aliasAnalysis);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {

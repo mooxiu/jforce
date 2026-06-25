@@ -722,13 +722,6 @@ struct OptimizeMemOpsPass
     MLIRContext *ctx = getOperation()->getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp>>(ctx);
-    patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<fir::DoLoopOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<scf::ForOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<affine::AffineForOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<fir::LoadOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<memref::LoadOp>>(ctx);
     patterns.add<HoistWriteOpFromLoop<fir::StoreOp>>(ctx);

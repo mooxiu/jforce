@@ -1208,6 +1208,21 @@ static void scanOperationsAndInserts(
         }
         updateTracking<CREATE_VAL>(tracking, {}, {constOp.getResult()}, {stablehloConstOp.getResult()});
       })
+      .Case<fir::ZeroOp>([&](fir::ZeroOp zeroOp){
+        mlir::Type resType = zeroOp.getType();
+        mlir::Attribute zeroAttr;
+        if (resType.isIndex()) {
+          zeroAttr = IntegerAttr::get(IntegerType::get(opBuilder.getContext(), 64), 0);
+        } else if (llvm::isa<mlir::IntegerType>(resType)) {
+          zeroAttr = IntegerAttr::get(resType, 0);
+        } else if (llvm::isa<mlir::FloatType>(resType)) {
+          zeroAttr = FloatAttr::get(resType, 0.0);
+        } else {
+          zeroAttr = opBuilder.getZeroAttr(resType);
+        }
+        auto stablehloZeroOp = stablehlo::ConstantOp::create(opBuilder, hloFuncOp.getLoc(), zeroAttr);
+        updateTracking<CREATE_VAL>(tracking, {}, {zeroOp.getResult()}, {stablehloZeroOp.getResult()});
+      })
       .Case<fir::AllocaOp, memref::AllocaOp>([&](auto allocaOp) {
         updateTracking<CREATE_MEM>(tracking, {}, {allocaOp.getResult()}, {});
       })
