@@ -3,7 +3,6 @@
 
 
 #include "../support/utilities.h"
-#include "MemUtils.h"
 #include "flang/Optimizer/Dialect/FIRAttr.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
@@ -109,20 +108,6 @@ static std::optional<bool> isTargetOrPointer(Value val) {
   }
 };
 
-static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
-  llvm::SmallVector<Value> addrs;
-  if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(op)) {
-    addrs.push_back(loadOp.getMemref());
-  } else if (auto desigOp = llvm::dyn_cast<hlfir::DesignateOp>(op)) {
-    addrs.push_back(desigOp.getMemref());
-  } else if (auto callOp = llvm::dyn_cast<func::CallOp>(op)) {
-    for (auto param : callOp.getOperands()) {
-      addrs.push_back(param);
-    }
-  }
-  return addrs;
-}
-
 
 // Mem2reg is supposed to cover alloca, but we need aliasing analysis here.
 //
@@ -225,9 +210,9 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
     }
 
     for (Operation* op = readOp->getNextNode(); op != storeOp; op = op->getNextNode()) {
-      if (isOperationPossiblelyWriteToAddr(op, addr)) {
-        return failure();
-      }
+      // if (isOperationPossiblelyWriteToAddr(op, addr)) {
+      //   return failure();
+      // }
     }
 
     rewriter.eraseOp(storeOp);
@@ -589,16 +574,16 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     bool hasOtherMemAccess = false;
     bool hasBreak = false;
     loopOp->walk([&](Operation* op){
-      if (isOperationPossiblelyReadFromAddr(op, mem)) {
-        hasOtherMemAccess = true;
-        WalkResult::interrupt();
-      } 
-      if (isOperationPossiblelyWriteToAddr(op, mem)) {
-        if (op != writeOp) {
-          hasOtherMemAccess = true;
-          WalkResult::interrupt();
-        }
-      }
+      // if (isOperationPossiblelyReadFromAddr(op, mem)) {
+      //   hasOtherMemAccess = true;
+      //   WalkResult::interrupt();
+      // } 
+      // if (isOperationPossiblelyWriteToAddr(op, mem)) {
+      //   if (op != writeOp) {
+      //     hasOtherMemAccess = true;
+      //     WalkResult::interrupt();
+      //   }
+      // }
       if (llvm::isa<func::ReturnOp>(op)) {
         hasBreak = true;
         WalkResult::interrupt(); 
@@ -707,10 +692,10 @@ struct HoistReadOpFromLoop : public OpRewritePattern<ReadOpTy> {
 
     bool hasWrite = false;
     loopOp->walk([&](Operation* op){
-      if (isOperationPossiblelyWriteToAddr(op, addr)) {
-        hasWrite = true;
-        return WalkResult::interrupt();
-      };
+      // if (isOperationPossiblelyWriteToAddr(op, addr)) {
+      //   hasWrite = true;
+      //   return WalkResult::interrupt();
+      // };
       return WalkResult::advance();
     });
     if (hasWrite) {
@@ -737,13 +722,6 @@ struct OptimizeMemOpsPass
     MLIRContext *ctx = getOperation()->getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp>>(ctx);
-    patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<fir::DoLoopOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<scf::ForOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<affine::AffineForOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<fir::LoadOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<memref::LoadOp>>(ctx);
     patterns.add<HoistWriteOpFromLoop<fir::StoreOp>>(ctx);

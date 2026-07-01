@@ -14,6 +14,7 @@
 #include "flang/Optimizer/HLFIR/Passes.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "stablehlo/transforms/optimization/Passes.h"
+#include "transform/Utils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
@@ -102,24 +103,18 @@ llvm::SmallVector<jitArg> packJitArg(int64_t NumArgs, void **TgtArgs,
 }
 
 void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::SmallVector<jitArg> args) {
-  llvm::SmallVector<mlir::Attribute> argsAttr;
   auto ctx = builder.getContext();
+  auto attrName = builder.getStringAttr(JIT_LITERAL_VAL_ATTR_NAME);
   for (int i = 0; i < args.size(); i++) {
-    llvm::SmallVector<mlir::NamedAttribute> perArgAttr;
-
     if (args[i].isLiteral) {
       std::uintptr_t literalAddr = reinterpret_cast<std::uintptr_t>(args[i].hostPtr);
       auto attr = IntegerAttr::get(
         IntegerType::get(ctx, sizeof(void*) * 8),
         literalAddr
       );
-      perArgAttr.push_back(builder.getNamedAttr(JIT_LITERAL_VAL_ATTR_NAME, attr));
+      kernelFunc.setArgAttr(i, attrName, attr);
     }
-
-    argsAttr.push_back(builder.getDictionaryAttr(perArgAttr));
   }
-
-  kernelFunc.setArgAttrsAttr(builder.getArrayAttr(argsAttr));
   return;
 }
 
@@ -223,11 +218,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
 
+  // 1. AOT -> Shape Inference
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
-  nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
-  nestedPMPhase1.addPass(createCanonicalizerPass());
-  nestedPMPhase1.addPass(xla_jit::createMemOpsFoldingPass());
-  nestedPMPhase1.addPass(createCanonicalizerPass());
   nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
   nestedPMPhase1.addPass(createCanonicalizerPass());
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
@@ -239,35 +231,39 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase1.addPass(xla_jit::createShapeInferPass());
   nestedPMPhase1.addPass(createCanonicalizerPass());
 
+  // 2. ShapeInference HLFIR -> FIR -> Optimize -> Memref, Affine, SCF
+  // - 2.1 HLFIR -> FIR
   pm.addPass(hlfir::createConvertHLFIRtoFIR());
+  // - 2.2 FIR and optimize
   auto& nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
-  nestedPMPhase2.addPass(fir::createFIRToMemRef());
   nestedPMPhase2.addPass(xla_jit::createFoldRepeatConversionsPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(createLoopInvariantCodeMotionPass());
   nestedPMPhase2.addPass(createCSEPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(xla_jit::createMemOpsFoldingPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(xla_jit::createCleanFIRLoopPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
+  // - 2.3 FIR -> MemRef
+  nestedPMPhase2.addPass(fir::createFIRToMemRef());
   nestedPMPhase2.addPass(xla_jit::createCleanFIROpsPass());
   nestedPMPhase2.addPass(fir::createPromoteToAffinePass());
   nestedPMPhase2.addPass(affine::createAffineLoopNormalizePass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(fir::createFIRToSCFPass()); // for fir.if -> scf.if
   nestedPMPhase2.addPass(createCanonicalizerPass());
+
+  // 3. Common MLIR -> Affine Loops
   nestedPMPhase2.addPass(xla_jit::createFoldSCFIfPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
-
   nestedPMPhase2.addPass(xla_jit::createPolygeistMem2RegPass());
-  nestedPMPhase2.addPass(createCanonicalizerPass());
-  nestedPMPhase2.addPass(xla_jit::createOptimizeMemOpsPass());
-  nestedPMPhase2.addPass(createCanonicalizerPass());
-  nestedPMPhase2.addPass(xla_jit::createFoldRepeatConversionsPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(xla_jit::createLoopSinkingPass());
   pm.addPass(xla_jit::createAffineCFGPass());
-  nestedPMPhase2.addPass(xla_jit::createFoldRepeatConversionsPass());
-  nestedPMPhase2.addPass(createCanonicalizerPass());
+
+
+  // 4. Outline Affine loops, Tensorize, mergeback
   pm.addPass(xla_jit::createOutlineAffinePass());
   auto& nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase3.addPass(xla_jit::createAffineToStableHLORaisingPass());

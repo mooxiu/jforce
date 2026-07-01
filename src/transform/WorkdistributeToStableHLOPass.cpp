@@ -706,21 +706,18 @@ static void handleBuiltinOperators(TrackingInfo &tracking, OpBuilder &opBuilder,
 // For example:
 // - %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
 static void handleConvertOp(TrackingInfo &tracking, OpBuilder &opBuilder, func::FuncOp &funcOp, fir::ConvertOp convertOp) {
-  auto firOprand = convertOp.getOperand();
-  assert(tracking.valueMap.contains(firOprand) && "firOprand not exist!");
-  auto convertFrom = tracking.valueMap.lookup(firOprand);
-  assert(convertFrom && "Operand of convertOp should exist!\n");
+  
+  auto convertFrom = convertOp.getOperand();
+  auto convertTo = convertOp.getResult();
+  auto convertFromTypeInfo = inspectTypeInfo(convertFrom.getType());
+  auto convertToTypeInfo = inspectTypeInfo(convertTo.getType());
 
-  auto resTy = convertOp.getResult().getType();
-  auto resTyInfo = inspectTypeInfo(resTy);
-  auto convertFromTyInfo = inspectTypeInfo(convertFrom.getType());
-  if (resTyInfo.elementTy == convertFromTyInfo.elementTy) {
-    // mem conversion, only update mapping
-    updateTracking<OperationType::MEM_TO_MEM>(tracking, {firOprand}, {convertOp.getResult()}, {});
+  if (convertFromTypeInfo.elementTy == convertToTypeInfo.elementTy) {
+    // INFO: mem conversion
+    updateTracking<OperationType::MEM_TO_MEM>(tracking, {convertFrom}, {convertTo}, {});
   } else {
-    // value conversion, need to create new
-    auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), convertFrom, resTy);
-    updateTracking<OperationType::VAL_TO_VAL>(tracking, {firOprand}, {convertOp.getResult()}, {stableHLOConvertOp.getResult()});
+    auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, funcOp.getLoc(), convertFrom, convertTo.getType());
+    updateTracking<OperationType::VAL_TO_VAL>(tracking, {convertFrom}, {convertTo}, {stableHLOConvertOp.getResult()});
   }
 }
 
@@ -1211,7 +1208,22 @@ static void scanOperationsAndInserts(
         }
         updateTracking<CREATE_VAL>(tracking, {}, {constOp.getResult()}, {stablehloConstOp.getResult()});
       })
-      .Case<fir::AllocaOp>([&](fir::AllocaOp allocaOp) {
+      .Case<fir::ZeroOp>([&](fir::ZeroOp zeroOp){
+        mlir::Type resType = zeroOp.getType();
+        mlir::Attribute zeroAttr;
+        if (resType.isIndex()) {
+          zeroAttr = IntegerAttr::get(IntegerType::get(opBuilder.getContext(), 64), 0);
+        } else if (llvm::isa<mlir::IntegerType>(resType)) {
+          zeroAttr = IntegerAttr::get(resType, 0);
+        } else if (llvm::isa<mlir::FloatType>(resType)) {
+          zeroAttr = FloatAttr::get(resType, 0.0);
+        } else {
+          zeroAttr = opBuilder.getZeroAttr(resType);
+        }
+        auto stablehloZeroOp = stablehlo::ConstantOp::create(opBuilder, hloFuncOp.getLoc(), zeroAttr);
+        updateTracking<CREATE_VAL>(tracking, {}, {zeroOp.getResult()}, {stablehloZeroOp.getResult()});
+      })
+      .Case<fir::AllocaOp, memref::AllocaOp>([&](auto allocaOp) {
         updateTracking<CREATE_MEM>(tracking, {}, {allocaOp.getResult()}, {});
       })
       .Case<fir::ConvertOp>([&] (fir::ConvertOp convertOp) {

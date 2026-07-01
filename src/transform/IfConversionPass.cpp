@@ -1,9 +1,9 @@
-#include "MemUtils.h"
-#include "flang/Optimizer/Dialect/FIRDialect.h"
+// FIXME: do not use this pass, use EnzymeJAX's corresponding pass instead.
+
+
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -111,7 +111,7 @@ struct SinkStoreOps: OpRewritePattern<fir::IfOp> {
 
   static void getSinkableOperations(Block& block, llvm::DenseMap<Value, Operation*>& sinkableStoreOps) {
     for (auto& op: block.getOperations()) {
-      Operation* opPtr = &op;
+      // Operation* opPtr = &op;
       if (auto assignOp = llvm::dyn_cast<hlfir::AssignOp>(&op)) {
         auto mem = assignOp.getLhs();
         auto val = assignOp.getRhs();
@@ -131,11 +131,11 @@ struct SinkStoreOps: OpRewritePattern<fir::IfOp> {
         continue;
       }
 
-      for (const auto& entry: sinkableStoreOps) {
-        if (isOperationPossiblelyReadFromAddr(&op, entry.getFirst())) {
-          sinkableStoreOps.erase(entry.getFirst());
-        }
-      }
+      // for (const auto& entry: sinkableStoreOps) {
+        // if (isOperationPossiblelyReadFromAddr(&op, entry.getFirst())) {
+        //   sinkableStoreOps.erase(entry.getFirst());
+        // }
+      // }
     }
   }
 
