@@ -66,10 +66,10 @@ private:
 public:
   // Key: value in FIR function
   // Value: value in StableHLO function
-  // TODO: this map should only track from "original MLIR canonical mem" to "StableHLO MLIR tensor"
+  // FIXME: this map should only track from "original MLIR canonical mem" to "StableHLO MLIR tensor"
   IRMapping valueMap;
 
-  // TODO: this map should only tracking from "original MLIR mem" to "original MLIR canonical mem"
+  // FIXME: this map should only tracking from "original MLIR mem" to "original MLIR canonical mem"
   IRMapping aliasMap;
 
   // Key: value of one of StableHLO function's arguments
