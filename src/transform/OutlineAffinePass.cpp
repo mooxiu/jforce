@@ -1,4 +1,5 @@
 #include "Utils.h"
+#include "flang/Optimizer/Dialect/FIROps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,6 +22,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -43,6 +45,30 @@ namespace {
 template <typename LoopType>
 struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
   using OpRewritePattern<LoopType>::OpRewritePattern;
+
+  static Value getCanonicalMem(Value v) {
+    while (true) {
+      if (auto op = v.getDefiningOp<fir::ConvertOp>()) {
+        v = op.getOperand();
+        continue;
+      }
+      if (auto op = v.getDefiningOp<memref::CastOp>()) {
+        v = op.getSource();
+        continue;
+      }
+      if (auto op = v.getDefiningOp<UnrealizedConversionCastOp>()) {
+        if (op.getInputs().size() == 1) {
+          v = op.getInputs()[0];
+          continue;
+        }
+      }
+      if (auto op = v.getDefiningOp<fir::DeclareOp>()) {
+        v = op.getMemref();
+        continue;
+      }
+      return v;
+    }
+  }
 
   static llvm::SetVector<Value> getPredefinedVals(LoopType loopOp) {
     // Collect all values defined outside of the affineOp itself.
@@ -121,60 +147,79 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
     }
   }
 
-  static void fillOutlinedFunc(MLIRContext *ctx, LoopType loopOp,
-                               PatternRewriter &rewritter, Block *entryBlock,
-                               const llvm::SetVector<Value> &preloopDefinedVals,
-                               const llvm::SmallVector<Value> &realInputArgs) {
+  static void materializeOutlinedFunc(
+    MLIRContext *ctx, 
+    LoopType loopOp,
+    PatternRewriter &rewritter, 
+    Block *entryBlock,
+    const llvm::SetVector<Value>& dependVals,
+    const llvm::SetVector<Value>& uniqueDependVals,
+    const llvm::DenseMap<Value, Value>& dependValsToUniqueVals,
+    const llvm::SmallVector<Value> &realInputArgs
+  ) {
     rewritter.setInsertionPointToEnd(entryBlock);
     IRMapping mapping;
+
+    llvm::DenseMap<Value, Value> uniqueValToMappedVal;
     int outlinedFuncIdx = 0;
-    for (int i = 0; i < preloopDefinedVals.size(); i++) {
-      auto outVal = preloopDefinedVals[i];
+
+    for (Value uniqueVal : uniqueDependVals) {
+      if (matchPattern(uniqueVal, m_Constant())) {
+        auto clonedConst = rewritter.clone(*uniqueVal.getDefiningOp());
+        uniqueValToMappedVal[uniqueVal] = clonedConst->getResult(0);
+        continue;
+      }
+
       auto blockArg = entryBlock->getArgument(outlinedFuncIdx);
       outlinedFuncIdx += 1;
 
-      // mlir::IntegerAttr attr;
-      if (matchPattern(outVal, m_Constant())) {
-        outlinedFuncIdx -= 1;
-        auto clonedConst = rewritter.clone(*outVal.getDefiningOp());
-        mapping.map(outVal, clonedConst->getResult(0));
-        // if (outVal.getType().isIndex()) {
-        //   auto constIndexOp = arith::ConstantIndexOp::create(rewritter, loopOp.getLoc(), attr.getInt());
-        //   mapping.map(outVal, constIndexOp.getResult());
-        // } else if (outVal.getType().isInteger()) {
-        //   auto constIntOp = arith::ConstantIntOp::create(rewritter, loopOp.getLoc(), attr.getInt(), outVal.getType().getIntOrFloatBitWidth());
-        //   mapping.map(outVal, constIntOp.getResult());
-        // } else {
-        //   llvm::errs() << "Unexpected value type!\n";
-        //   std::exit(EXIT_FAILURE);
-        // }
-      } else if (llvm::isa<mlir::MemRefType>(outVal.getType())) {
-        mapping.map(outVal, blockArg);
-      } else if (outVal.getType().isIndex()) {
-        // auto loadOp = memref::LoadOp::create(rewritter, forOp.getLoc(), blockArg, {});
-        auto loadOp = affine::AffineLoadOp::create(rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
-        auto castBackOp = arith::IndexCastOp::create(rewritter, loopOp.getLoc(), IndexType::get(ctx), loadOp.getResult());
-        mapping.map(outVal, castBackOp.getResult());
-      } else if (outVal.getType().isIntOrFloat()) {
-        // auto loadOp = memref::LoadOp::create(rewritter, forOp.getLoc(), blockArg, {});
-        auto loadOp = affine::AffineLoadOp::create(rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
-        mapping.map(outVal, loadOp.getResult());
+      if (llvm::isa<mlir::MemRefType>(uniqueVal.getType())) {
+        uniqueValToMappedVal[uniqueVal] = blockArg;
+      } else if (uniqueVal.getType().isIndex()) {
+        auto loadOp = affine::AffineLoadOp::create(
+            rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
+        auto castBackOp = arith::IndexCastOp::create(
+            rewritter, loopOp.getLoc(), IndexType::get(ctx), loadOp.getResult());
+        uniqueValToMappedVal[uniqueVal] = castBackOp.getResult();
+      } else if (uniqueVal.getType().isIntOrFloat()) {
+        auto loadOp = affine::AffineLoadOp::create(
+            rewritter, loopOp.getLoc(), AffineMap::get(ctx), blockArg);
+        uniqueValToMappedVal[uniqueVal] = loadOp.getResult();
       } else {
         llvm::errs() << "Should not go here.\n";
         std::exit(EXIT_FAILURE);
       }
     }
 
-    for (int i = 0; i < realInputArgs.size(); i++) {
-      mapping.map(*(realInputArgs.begin() + i), entryBlock->getArgument(i));
+    for (Value depVal : dependVals) {
+      auto repIt = dependValsToUniqueVals.find(depVal);
+      if (repIt == dependValsToUniqueVals.end()) {
+        llvm::errs() << "Cannot find representative for captured value!\n";
+        depVal.dump();
+        std::exit(EXIT_FAILURE);
+      }
+
+      Value uniqueVal = repIt->second;
+
+      auto mappedIt = uniqueValToMappedVal.find(uniqueVal);
+      if (mappedIt == uniqueValToMappedVal.end()) {
+        llvm::errs() << "Cannot find mapped value for representative!\n";
+        uniqueVal.dump();
+        std::exit(EXIT_FAILURE);
+      }
+
+      mapping.map(depVal, mappedIt->second);
     }
+
     auto cloned = rewritter.clone(*loopOp.getOperation(), mapping);
-    for (const auto& val: cloned->getResults()) {
+
+    for (const auto &val : cloned->getResults()) {
       auto blockArg = entryBlock->getArgument(outlinedFuncIdx);
       affine::AffineStoreOp::create(rewritter, loopOp.getLoc(), val, blockArg, {});
       outlinedFuncIdx += 1;
     }
-    func::ReturnOp::create(rewritter, loopOp.getLoc()); // the returnOp should be empty
+
+    func::ReturnOp::create(rewritter, loopOp.getLoc());
   }
 
   static Type convertToParamType(MLIRContext* ctx, Value val) {
@@ -195,6 +240,26 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
     }
   }
 
+  static void deAliasing(
+    const SetVector<Value>& dependVals, 
+    SetVector<Value>& uniqueDependVals, 
+    DenseMap<Value, Value>& dependValsToUnqiueVals
+  ) {
+    llvm::DenseSet<Value> cannons;
+    llvm::DenseMap<Value, Value> cannonsToUniqueVals;
+    for (const auto& dependVal: dependVals) {
+      Value cannon = getCanonicalMem(dependVal);
+      if (cannons.contains(cannon)) {
+        dependValsToUnqiueVals[dependVal] = cannonsToUniqueVals[cannon];
+      } else {
+        uniqueDependVals.insert(dependVal);
+        cannons.insert(cannon);
+        cannonsToUniqueVals[cannon] = dependVal;
+        dependValsToUnqiueVals[dependVal] = dependVal;
+      }
+    }
+  }
+
   LogicalResult matchAndRewrite(LoopType loopOp,
                                 PatternRewriter &rewritter) const final {
     if (loopOp -> template getParentOfType<affine::AffineForOp>() 
@@ -209,14 +274,25 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
     }
     auto ctx = rewritter.getContext();
 
-    // Including defined values before the loop, loop operands.
+
+    // WARNING: dependVals here might include alias memory, for example:
+    // %9 = fir.convert %0 
+    // %11 = fir.convert %0
+    // affine.for { ... use of %9 and %11...}
+    // Here, %9 and %11 might be aliases with each other, outlined function should only have both of them in the input arguments.
+    // Instead of using fir::AliasAnalysis here, we write our own method because we can not handle `MayAlias`.
     llvm::SetVector<Value> dependVals;
     mlir::getUsedValuesDefinedAbove({loopOp.getRegion()}, dependVals);
-    llvm::for_each(loopOp.getOperands(), [&](Value forOpVal) { dependVals.insert(forOpVal); });
+    llvm::for_each(loopOp.getOperands(), 
+                   [&](Value forOpVal) { dependVals.insert(forOpVal); });
     auto loopReturnedVals  = loopOp.getResults();
+    
+    llvm::SetVector<Value> uniqueDependVals;
+    llvm::DenseMap<Value, Value> dependValsToUnqiueVals;
+    deAliasing(dependVals, uniqueDependVals, dependValsToUnqiueVals);
 
     llvm::SmallVector<Type> outlinedFuncInputTypes;
-    llvm::for_each(dependVals, [&](Value val){
+    llvm::for_each(uniqueDependVals, [&](Value val){
       auto ty = convertToParamType(ctx, val);
       if (ty) {
         outlinedFuncInputTypes.push_back(ty);
@@ -233,8 +309,17 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
 
     llvm::SmallVector<Value> realInputArgs;
     llvm::DenseMap<Value, Value> affineResToMem;
-    prepareCallOp(ctx, loopOp, rewritter, realInputArgs, affineResToMem, dependVals);
-    fillOutlinedFunc(ctx, loopOp, rewritter, entryBlock, dependVals, realInputArgs);
+    prepareCallOp(ctx, loopOp, rewritter, realInputArgs, affineResToMem, uniqueDependVals);
+    materializeOutlinedFunc(
+      ctx, 
+      loopOp, 
+      rewritter, 
+      entryBlock, 
+      dependVals, 
+      uniqueDependVals,
+      dependValsToUnqiueVals,
+      realInputArgs
+    );
 
     rewritter.setInsertionPoint(loopOp);
     func::CallOp::create(rewritter, loopOp.getLoc(), outlinedFunc, realInputArgs);

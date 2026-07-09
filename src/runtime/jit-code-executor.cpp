@@ -265,6 +265,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   // 4. Outline Affine loops, Tensorize, mergeback
   pm.addPass(xla_jit::createOutlineAffinePass());
+  pm.addPass(xla_jit::createAffineCFGPass());
   auto& nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase3.addPass(xla_jit::createAffineToStableHLORaisingPass());
   nestedPMPhase3.addPass(xla_jit::createArithRaisingPass());

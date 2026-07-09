@@ -66,7 +66,12 @@ private:
 public:
   // Key: value in FIR function
   // Value: value in StableHLO function
+  // FIXME: this map should only track from "original MLIR canonical mem" to "StableHLO MLIR tensor"
   IRMapping valueMap;
+
+  // FIXME: this map should only tracking from "original MLIR mem" to "original MLIR canonical mem"
+  IRMapping aliasMap;
+
   // Key: value of one of StableHLO function's arguments
   // Value: value in FIR function
   IRMapping argsTrackingMap;
@@ -89,6 +94,32 @@ enum OperationType {
   VAL_TO_VAL,
   MEM_TO_MEM,
 };
+
+// FIXME: this is a ad-hoc fix, need to add alias map to tracking
+static void mapMemAndAliasChain(TrackingInfo &tracking, Value mem, Value hloVal) {
+  if (!mem) return;
+
+  tracking.valueMap.map(mem, hloVal);
+  Operation *defOp = mem.getDefiningOp();
+
+  if (!defOp) return;
+  if (auto convOp = llvm::dyn_cast<fir::ConvertOp>(defOp)) {
+    mapMemAndAliasChain(tracking, convOp.getOperand(), hloVal);
+    return;
+  }
+  if (auto declOp = llvm::dyn_cast<fir::DeclareOp>(defOp)) {
+    mapMemAndAliasChain(tracking, declOp.getOperand(0), hloVal);
+    return;
+  }
+  if (auto declOp = llvm::dyn_cast<hlfir::DeclareOp>(defOp)) {
+    mapMemAndAliasChain(tracking, declOp.getOperand(0), hloVal);
+    return;
+  }
+  if (auto castOp = llvm::dyn_cast<memref::CastOp>(defOp)) {
+    mapMemAndAliasChain(tracking, castOp.getSource(), hloVal);
+    return;
+  }
+}
 
 template<OperationType Ty>
 static void updateTracking(
@@ -151,7 +182,7 @@ static void updateTracking(
           tracking.argsTrackingMap.map(memHLO, valHLO);
         }
         // this is a mem has not written to anything
-        tracking.valueMap.map(mem, valHLO);
+        mapMemAndAliasChain(tracking, mem, valHLO);
       }
       break;
     case VAL_TO_VAL:
@@ -1103,11 +1134,12 @@ static void handleFuncCallOp(
     if (tracking.valueMap.contains(originalArg)) {
       translatedArgs[i] = tracking.valueMap.lookup(originalArg); 
     } else {
-      auto argTypeInfo = inspectTypeInfo(originalArg.getType());
-      auto zeroAttr = opBuilder.getZeroAttr(argTypeInfo.elementTy);
-      auto dummyOp = stablehlo::ConstantOp::create(
-        opBuilder, callOp.getLoc(), DenseElementsAttr::get(RankedTensorType::get(argTypeInfo.shape, argTypeInfo.elementTy), zeroAttr));
-      translatedArgs[i] = dummyOp.getResult(); 
+      llvm::errs() << "[JForce ERROR] Untracked call operand #" << i << ": ";
+      originalArg.print(llvm::errs());
+      llvm::errs() << "\nOriginal call op:\n";
+      callOp.print(llvm::errs());
+      llvm::errs() << "\n";
+      llvm_unreachable("Untracked call operand in WorkdistributeToStableHLOPass");
     }
   }
   auto moduleOp = callOp->getParentOfType<ModuleOp>();
@@ -1119,7 +1151,7 @@ static void handleFuncCallOp(
   updateTracking<OperationType::VAL_TO_VAL>(tracking, callOp.getOperands(), callOp.getResults(), translatedCallOp.getResults());
 };
 
-// FIXME: this category is not correct, should rewrite
+// TODO: this category is not correct, should rewrite
 static void handleGeneralRelayOp(
   TrackingInfo &tracking, 
   OpBuilder &opBuilder,
