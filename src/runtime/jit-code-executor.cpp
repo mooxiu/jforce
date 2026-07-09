@@ -260,7 +260,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase2.addPass(xla_jit::createPolygeistMem2RegPass());
   nestedPMPhase2.addPass(createCanonicalizerPass());
   nestedPMPhase2.addPass(xla_jit::createLoopSinkingPass());
-  pm.addPass(xla_jit::createAffineCFGPass());
+  nestedPMPhase2.addPass(xla_jit::createRecognizeMinMaxPass());
+  // pm.addPass(xla_jit::createAffineCFGPass());
 
 
   // 4. Outline Affine loops, Tensorize, mergeback

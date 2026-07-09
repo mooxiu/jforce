@@ -32,7 +32,7 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createPolygeistMem2RegPass();
   std::unique_ptr<mlir::Pass> createFoldSCFIfPass();
   std::unique_ptr<mlir::Pass> createFoldRepeatConversionsPass();
-
+  std::unique_ptr<mlir::Pass> createRecognizeMinMaxPass();
 
   void registerMemOpsFoldingPass();
   void registerCleanTempsPass();
@@ -61,6 +61,7 @@ namespace xla_jit {
   void registerPolygeistMem2RegPass();
   void registerFoldSCFIfPass();
   void registerFoldRepeatConversionsPass();
+  void registerRecognizeMinMaxPass();
 }
 
 #endif
