@@ -188,15 +188,9 @@ struct ShapeInferPass
                   dop.getMemref(), dop.getShape(), dop.getTypeparams(),
                   dop.getDummyScope(), dop.getStorage(),
                   dop.getStorageOffsetAttr(), dop.getUniqNameAttr(),
-                  dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), nullptr
-                  // dop.getDummyArgNoAttr()
+                  dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), 
+                  dop.getSkipReboxAttr(), nullptr
               );
-              // auto ndop = hlfir::DeclareOp::create(opBuilder, funcOp.getLoc(),
-              // newBoxType, dop.getMemref(), dop.getShape(), dop.getTypeparams(),
-              // dop.getDummyScope(), dop.getStorage(),
-              // dop.getStorageOffsetAttr(), dop.getUniqNameAttr(),
-              // dop.getFortranAttrsAttr(), dop.getDataAttrAttr(),
-              // dop.getDummyArgNoAttr());
               dop.replaceAllUsesWith(ndop.getResults());
               dop.erase();
             }
