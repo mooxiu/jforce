@@ -27,6 +27,7 @@ add_library(JitTransforms STATIC
   SwitchOutlineFuncPass.cpp
   IfConversionPass.cpp
   FoldRepeatConversionPass.cpp
+  CmpToMINMAXPass.cpp
   Utils.cpp
 
   # INFO: some passes copied and adapted from Enzyme-JAX project
