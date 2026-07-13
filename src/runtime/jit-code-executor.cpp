@@ -167,6 +167,12 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // #undef p
   // #undef h
 
+  // there is an extra pointer added...
+  // TODO: Temporary only
+  NumArgs -= 1;
+  NumHostArgs -= 1;
+  ArgSizes -= 1;
+
   assert(NumArgs == NumHostArgs);
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
