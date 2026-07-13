@@ -5,6 +5,7 @@ add_library(JitTransforms STATIC
   trimArgsPass.cpp
   workdistributeToStableHLOPass.cpp
   passes.cpp
+  translate.cpp
 )
 
 target_include_directories(JitTransforms
