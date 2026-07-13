@@ -1,25 +1,53 @@
 #include "flang/Optimizer/Dialect/FIROps.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Matchers.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Rewrite/FrozenRewritePatternSet.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/TypeSwitch.h"
+#include "support/utilities.h"
+#include <cassert>
 
 using namespace mlir;
 
 namespace {
 
+struct ReplaceFIRNoReassoc: OpRewritePattern<fir::NoReassocOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(fir::NoReassocOp noReassocOp,
+                                PatternRewriter &rewriter) const final {
+    rewriter.replaceAllUsesWith(noReassocOp.getRes(), noReassocOp.getVal());
+    rewriter.eraseOp(noReassocOp);
+    return success();
+  }
+};
+
+
+// cases like %182 = fir.convert %29 : (!fir.ref<f64>) -> memref<f64>, might be in a if-else condition or in a loop
+struct HositFIRConvertOps: OpRewritePattern<fir::ConvertOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(fir::ConvertOp convertOp,
+                                PatternRewriter &rewriter) const final {
+    auto definedOp = convertOp.getOperand().getDefiningOp();
+    if (definedOp->getParentOp() != convertOp->getParentOp()) {
+      rewriter.moveOpBefore(convertOp, convertOp->getParentOp());
+      return success();
+    }
+    return failure();
+  }
+};
+
 // Before:
 //  1. fir.convert index -> i32/64 
 //  2. fir.i32 -> i64
 //  3. fir.i64 -> i32
+
 //
 // After:
 //  1. arith.index_case index -> i32/i64
@@ -28,54 +56,96 @@ namespace {
 struct ReplaceFIRConvertOps : OpRewritePattern<fir::ConvertOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(fir::ConvertOp convertOp,
-                                PatternRewriter &rewriter) const final {
-    auto fromVal = convertOp.getOperand();
-    auto fromValType = fromVal.getType();
-    auto toVal = convertOp.getResult();
-    auto toValType = toVal.getType();
+  LogicalResult matchAndRewrite(fir::ConvertOp op, PatternRewriter &rewriter) const final {
+    Location loc = op.getLoc();
 
-    if (!(fromValType.isIntOrIndex() && toValType.isIntOrIndex())) {
+    Value input = op.getOperand();
+    Type fromTy = input.getType();
+    Type toTy = op.getResult().getType();
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+
+
+    if (!(fromTy.isIntOrIndexOrFloat() && toTy.isIntOrIndexOrFloat()))
       return failure();
-    }
 
-    mlir::IntegerAttr attr;
-    if (matchPattern(fromVal, m_Constant(&attr))) {
-      auto constVal = attr.getInt();
-      if (toValType.isIndex()) {
-        // arith::ConstantIndexOp::create(rewriter, convertOp.getLoc(),
-        // constVal);
-        rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(convertOp,
-                                                            constVal);
-      } else if (toValType.isInteger()) {
-        rewriter.replaceOpWithNewOp<arith::ConstantIntOp>(
-            convertOp, constVal, toValType.getIntOrFloatBitWidth());
-      } else {
-        return failure();
-      }
+    if (fromTy == toTy) {
+      rewriter.replaceOp(op, input);
       return success();
     }
 
-    Operation *castOp;
-    if (fromValType.isIndex() && toValType.isInteger()) {
-      rewriter.replaceOpWithNewOp<arith::IndexCastOp>(convertOp, toValType,
-                                                      fromVal);
-      return success();
-    } else if (fromValType.isInteger() && toValType.isInteger()) {
-      if (fromValType.getIntOrFloatBitWidth() <
-          toValType.getIntOrFloatBitWidth()) {
-        rewriter.replaceOpWithNewOp<arith::ExtSIOp>(convertOp, toValType,
-                                                    fromVal);
+    if (fromTy.isIndex()) {
+      if (toTy.isIndex()) {
+        rewriter.replaceOp(op, input);
         return success();
-      } else {
-        rewriter.replaceOpWithNewOp<arith::TruncIOp>(convertOp, toValType,
-                                                     fromVal);
+      }
+      if (toTy.isInteger()) {
+        rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, toTy, input);
+        return success();
+      }
+      if (toTy.isFloat()) {
+        Type i64Ty = rewriter.getI64Type();
+        Value intVal = arith::IndexCastOp::create(rewriter, loc, i64Ty, input).getResult();
+        rewriter.replaceOpWithNewOp<arith::SIToFPOp>(op, toTy, intVal);
         return success();
       }
     }
+
+    if (fromTy.isInteger()) {
+      if (toTy.isIndex()) {
+        rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, toTy, input);
+        return success();
+      }
+      if (toTy.isInteger()) {
+        unsigned fromWidth = fromTy.getIntOrFloatBitWidth();
+        unsigned toWidth = toTy.getIntOrFloatBitWidth();
+        if (fromWidth < toWidth) {
+          rewriter.replaceOpWithNewOp<arith::ExtSIOp>(op, toTy, input);
+        } else if (fromWidth > toWidth) {
+          rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, toTy, input);
+        } else {
+          rewriter.replaceOp(op, input);
+        }
+        return success();
+      }
+
+      if (toTy.isFloat()) {
+        rewriter.replaceOpWithNewOp<arith::SIToFPOp>(op, toTy, input);
+        return success();
+      }
+    }
+
+    if (fromTy.isFloat()) {
+      if (toTy.isFloat()) {
+        unsigned fromWidth = fromTy.getIntOrFloatBitWidth();
+        unsigned toWidth = toTy.getIntOrFloatBitWidth();
+        if (fromWidth < toWidth) {
+          rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, toTy, input);
+        } else if (fromWidth > toWidth) {
+          rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, toTy, input);
+        } else {
+          rewriter.replaceOp(op, input);
+        }
+        return success();
+      }
+      if (toTy.isInteger()) {
+        rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, toTy, input);
+        return success();
+      }
+      if (toTy.isIndex()) {
+        Type i64Ty = rewriter.getI64Type();
+        auto intVal = arith::FPToUIOp::create(rewriter, loc, i64Ty, input).getResult();
+        rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, toTy, intVal);
+        return success();
+      }
+    }
+
+    DEBUG_PRINT("Unexpected convert op: ");
+    DEBUG_PRINT_OP(op);
     return failure();
   }
 };
+  
 
 struct CleanFIROpsPass
     : public mlir::PassWrapper<CleanFIROpsPass,
@@ -91,26 +161,19 @@ struct CleanFIROpsPass
     auto funcOp = getOperation();
     MLIRContext* ctx = getOperation()->getContext();
 
-    llvm::SmallVector<Operation *> loopOps;
-    funcOp.walk([&](Operation* op){
-      llvm::TypeSwitch<Operation*>(op).
-        Case<fir::DoLoopOp, scf::ForOp, affine::AffineForOp>(
-          [&](auto loopOp){loopOps.push_back(loopOp);}
-        );
-    });
-
     RewritePatternSet patterns(ctx);
     patterns.add<ReplaceFIRConvertOps>(ctx);
+    patterns.add<ReplaceFIRNoReassoc>(ctx);
+    patterns.add<HositFIRConvertOps>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));
     
-    for (auto loopOp: loopOps) {
-      if (failed(applyPatternsGreedily(loopOp, frozenPatterns, config))) {
-        signalPassFailure();
-        return;
-      }
+    if (failed(applyPatternsGreedily(funcOp, frozenPatterns, config))) {
+      signalPassFailure();
+      return;
     }
+    return;
   }
 };
 } // namespace

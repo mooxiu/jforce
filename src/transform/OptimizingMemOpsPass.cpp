@@ -1,3 +1,7 @@
+/// TODO: Some operations should be done by MemOpsFoldingPass.
+/// This pass should only do hositing.
+
+
 #include "../support/utilities.h"
 #include "flang/Optimizer/Dialect/FIRAttr.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
@@ -16,7 +20,6 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/WalkResult.h"
@@ -63,7 +66,7 @@ static std::optional<Value> __getAncient(Value val) {
   }
 
   auto defOp = val.getDefiningOp();
-  if (llvm::isa<fir::DeclareOp, hlfir::DeclareOp>(defOp)) {
+  if (llvm::isa<fir::DeclareOp, hlfir::DeclareOp, fir::AllocaOp, memref::AllocaOp>(defOp)) {
     return val;
   } else if (auto convertOp = llvm::dyn_cast<fir::ConvertOp>(defOp)) {
     return __getAncient(convertOp.getOperand());
@@ -78,14 +81,19 @@ static std::optional<bool> isTargetOrPointer(Value val) {
     return std::nullopt;
   }
   auto defOp = ancientVal->getDefiningOp();
-  assert(llvm::isa<fir::DeclareOp>(defOp) ||
-         llvm::isa<hlfir::DeclareOp>(defOp));
+  assert(
+    llvm::isa<fir::DeclareOp>(defOp) ||
+    llvm::isa<hlfir::DeclareOp>(defOp) ||
+    llvm::isa<fir::AllocaOp>(defOp) ||
+    llvm::isa<memref::AllocaOp>(defOp));
 
   ::std::optional<::fir::FortranVariableFlagsEnum> fortranAttrs;
   if (auto firDeclareOp = llvm::dyn_cast<fir::DeclareOp>(defOp)) {
     fortranAttrs = firDeclareOp.getFortranAttrs();
   } else if (auto hlfirDeclareOp = llvm::dyn_cast<hlfir::DeclareOp>(defOp)) {
     fortranAttrs = hlfirDeclareOp.getFortranAttrs();
+  } else if (llvm::isa<fir::AllocaOp, memref::AllocaOp>(defOp)) {
+    return false;
   } else {
     llvm_unreachable("Should be one of the above declareOps!\n");
   }
@@ -100,57 +108,6 @@ static std::optional<bool> isTargetOrPointer(Value val) {
   }
 };
 
-static llvm::SmallVector<Value> getReadFromAddr(Operation *op) {
-  llvm::SmallVector<Value> addrs;
-  if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(op)) {
-    addrs.push_back(loadOp.getMemref());
-  } else if (auto desigOp = llvm::dyn_cast<hlfir::DesignateOp>(op)) {
-    addrs.push_back(desigOp.getMemref());
-  } else if (auto callOp = llvm::dyn_cast<func::CallOp>(op)) {
-    for (auto param : callOp.getOperands()) {
-      addrs.push_back(param);
-    }
-  }
-  return addrs;
-}
-
-static bool isOperationPossiblelyWriteToAddr(Operation* op, Value addr) {
-  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!memInterface) {
-    return llvm::is_contained(op->getOperands(), addr);
-  }
-  
-  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-  memInterface.getEffects(effects);
-  for (const auto &effect : effects) {
-    if (isa<MemoryEffects::Write>(effect.getEffect())) {
-      Value effectValue = effect.getValue();
-      if (effectValue == addr || effectValue == nullptr) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-static bool isOperationPossiblelyReadFromAddr(Operation* op, Value addr) {
-  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!memInterface) {
-    return llvm::is_contained(op->getOperands(), addr);
-  }
-  
-  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-  memInterface.getEffects(effects);
-  for (const auto &effect : effects) {
-    if (isa<MemoryEffects::Read>(effect.getEffect())) {
-      Value effectValue = effect.getValue();
-      if (effectValue == addr || effectValue == nullptr) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 // Mem2reg is supposed to cover alloca, but we need aliasing analysis here.
 //
@@ -226,6 +183,7 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
   
   LogicalResult matchAndRewrite(StoreTy storeOp,
                                 PatternRewriter &rewriter) const final {
+    DEBUG_PRINT_OP(storeOp);
     Value addr = storeOp.getMemref();
     if (isTargetOrPointer(addr).has_value() && isTargetOrPointer(addr).value()) {
       return failure();
@@ -233,9 +191,6 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
 
     Value val = storeOp.getValue();
     Operation* readOp = val.getDefiningOp();
-    DEBUG_PRINT("compare reading and storeOp");
-    DEBUG_PRINT_OP(storeOp);
-    DEBUG_PRINT_OP(readOp);
     if (readOp->getBlock() != storeOp->getBlock()) {
       // We do not consider cross block situation, it will makes the analysis much more difficult.
       return failure();
@@ -251,15 +206,13 @@ struct ReduceReadAndWriteSameAddr : public OpRewritePattern<StoreTy> {
         return failure();
       }
     } else {
-      DEBUG_PRINT("Unexpected readOp: ");
-      DEBUG_PRINT_OP(readOp);
       return failure();
     }
 
     for (Operation* op = readOp->getNextNode(); op != storeOp; op = op->getNextNode()) {
-      if (isOperationPossiblelyWriteToAddr(op, addr)) {
-        return failure();
-      }
+      // if (isOperationPossiblelyWriteToAddr(op, addr)) {
+      //   return failure();
+      // }
     }
 
     rewriter.eraseOp(storeOp);
@@ -315,9 +268,10 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
       }
     };
 
-    doLoopOp.walk([&](Operation *op) {
-      llvm::TypeSwitch<Operation *>(op)
-          .template Case<fir::StoreOp, memref::StoreOp>([&](auto storeOp) {
+    for (auto &op: doLoopOp.getRegion().front().getOperations()) {
+      llvm::TypeSwitch<Operation&>(op)
+        .template Case<fir::StoreOp, memref::StoreOp>(
+          [&](auto storeOp) {
             auto addr = storeOp.getMemref();
             auto opList = repeatedStoreOps.find(addr);
             if (opList != repeatedStoreOps.end()) {
@@ -327,21 +281,33 @@ struct ReduceRepeatWriteAddr : public OpRewritePattern<LoopTy> {
               repeatedStoreOps[addr] = emptyList;
             }
             return;
-          })
-          .template Case<fir::LoadOp, hlfir::DesignateOp, memref::LoadOp>(
-              [&](auto loadOp) {
-                auto addr = loadOp.getMemref();
-                popLast(addr);
-                return;
-              })
-          .template Case<func::CallOp>([&](func::CallOp callOp) {
-            llvm::for_each(callOp.getOperands(),
-                           [&](auto param) { popLast(param); });
+          }
+        )
+        .template Case<fir::LoadOp, hlfir::DesignateOp, memref::LoadOp>(
+          [&](auto loadOp) {
+            auto addr = loadOp.getMemref();
+            popLast(addr);
             return;
-          })
-          .Default([](auto) { return; });
-      return;
-    });
+          }
+        )
+        .template Case<func::CallOp>(
+          [&](func::CallOp callOp) {
+            llvm::for_each(callOp.getOperands(), [&](auto param) { popLast(param); });
+            return;
+          }
+        )
+        .Default(
+          [&](auto& op) { 
+            if (!op.getRegions().empty()) {
+              // conservative move: suppose there is read of all operations here.
+              for (auto& entry: repeatedStoreOps) {
+                popLast(entry.getFirst());
+              }
+            }
+            return; 
+          }
+        );
+    }
 
     llvm::DenseSet<Operation *> toDeleteOps;
     for (auto &entry : repeatedStoreOps) {
@@ -404,7 +370,6 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
       return affineForOp.getInductionVar();
     } else {
       llvm::errs() << "Unexpected loopOp type, cannot get IV!\n";
-      DEBUG_PRINT_OP(loopOp);
       return nullptr;
     }
   }
@@ -609,16 +574,16 @@ struct HoistWriteOpFromLoop : public OpRewritePattern<WriteOpTy> {
     bool hasOtherMemAccess = false;
     bool hasBreak = false;
     loopOp->walk([&](Operation* op){
-      if (isOperationPossiblelyReadFromAddr(op, mem)) {
-        hasOtherMemAccess = true;
-        WalkResult::interrupt();
-      } 
-      if (isOperationPossiblelyWriteToAddr(op, mem)) {
-        if (op != writeOp) {
-          hasOtherMemAccess = true;
-          WalkResult::interrupt();
-        }
-      }
+      // if (isOperationPossiblelyReadFromAddr(op, mem)) {
+      //   hasOtherMemAccess = true;
+      //   WalkResult::interrupt();
+      // } 
+      // if (isOperationPossiblelyWriteToAddr(op, mem)) {
+      //   if (op != writeOp) {
+      //     hasOtherMemAccess = true;
+      //     WalkResult::interrupt();
+      //   }
+      // }
       if (llvm::isa<func::ReturnOp>(op)) {
         hasBreak = true;
         WalkResult::interrupt(); 
@@ -727,10 +692,10 @@ struct HoistReadOpFromLoop : public OpRewritePattern<ReadOpTy> {
 
     bool hasWrite = false;
     loopOp->walk([&](Operation* op){
-      if (isOperationPossiblelyWriteToAddr(op, addr)) {
-        hasWrite = true;
-        return WalkResult::interrupt();
-      };
+      // if (isOperationPossiblelyWriteToAddr(op, addr)) {
+      //   hasWrite = true;
+      //   return WalkResult::interrupt();
+      // };
       return WalkResult::advance();
     });
     if (hasWrite) {
@@ -757,13 +722,6 @@ struct OptimizeMemOpsPass
     MLIRContext *ctx = getOperation()->getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns.add<ReduceWriteAndReadSameAddr<fir::LoadOp>>(ctx);
-    patterns.add<ReduceWriteAndReadSameAddr<memref::LoadOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<fir::StoreOp>>(ctx);
-    patterns.add<ReduceReadAndWriteSameAddr<memref::StoreOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<fir::DoLoopOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<scf::ForOp>>(ctx);
-    patterns.add<ReduceRepeatWriteAddr<affine::AffineForOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<fir::LoadOp>>(ctx);
     patterns.add<HoistReadOpFromLoop<memref::LoadOp>>(ctx);
     patterns.add<HoistWriteOpFromLoop<fir::StoreOp>>(ctx);

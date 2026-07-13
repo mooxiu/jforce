@@ -5,6 +5,8 @@
 #include <memory>
 
 namespace xla_jit {
+  std::unique_ptr<mlir::Pass> createMemOpsFoldingPass();
+  std::unique_ptr<mlir::Pass> createCleanTempsPass();
   std::unique_ptr<mlir::Pass> createAnnotatePass();
   std::unique_ptr<mlir::Pass> createAliasingPass(); 
   std::unique_ptr<mlir::Pass> createShapeInferPass(); 
@@ -22,10 +24,19 @@ namespace xla_jit {
   std::unique_ptr<mlir::Pass> createPropagateConstantsPass();
   std::unique_ptr<mlir::Pass> createCleanFIRLoadPass();
   std::unique_ptr<mlir::Pass> createCleanFIROpsPass();
+  [[deprecated("Should use MemOpsFoldingPass instead")]]
   std::unique_ptr<mlir::Pass> createOptimizeMemOpsPass();
   std::unique_ptr<mlir::Pass> createLoopSinkingPass();
   std::unique_ptr<mlir::Pass> createRemergePass();
+  [[deprecated("Should use FoldSCFIfPass of EnzymeJAX")]]
+  std::unique_ptr<mlir::Pass> createIfConversionPass();
+  std::unique_ptr<mlir::Pass> createPolygeistMem2RegPass();
+  std::unique_ptr<mlir::Pass> createFoldSCFIfPass();
+  std::unique_ptr<mlir::Pass> createFoldRepeatConversionsPass();
+  std::unique_ptr<mlir::Pass> createRecognizeMinMaxPass();
 
+  void registerMemOpsFoldingPass();
+  void registerCleanTempsPass();
   void registerAnnotatePass();
   void registerAliasingPass();
   void registerShapeInferPass();
@@ -42,10 +53,17 @@ namespace xla_jit {
   void registerOutlineAffinePass();
   void registerPropagateConstantsPass();
   void registerCleanFIROpsPass();
+  [[deprecated("Should use MemOpsFoldingPass instead")]]
   void registerOptimizeMemOpsPass();
   void registerAllJitPasses();
   void registerLoopSinkingPass();
   void registerRemergePass();
+  [[deprecated("Should use FoldSCFIfPass of EnzymeJAX")]]
+  void registerIfConversionPass();
+  void registerPolygeistMem2RegPass();
+  void registerFoldSCFIfPass();
+  void registerFoldRepeatConversionsPass();
+  void registerRecognizeMinMaxPass();
 }
 
 #endif

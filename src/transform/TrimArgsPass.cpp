@@ -10,6 +10,28 @@
 
 using namespace mlir;
 
+
+// FIXME: check the MLIR after transformation, the %arg0 does not match its literal_val, I think I forgot to change the attribute.
+//
+// // -----// IR Dump Before {anonymous}::TrimArgsPass (jforce-trim-args) ('func.func' operation: @main) //----- //
+// module {
+//   func.func @main(%arg0: tensor<i32> {jit.literal_val = 99 : i64, tf.aliasing_output = 0 : i64}, %arg1: tensor<f64> {jit.literal_val = 4604480259023595110 : i64, tf.aliasing_output = 1 : i64}, %arg2: tensor<f64> {jit.literal_val = 4604480259023595110 : i64, tf.aliasing_output = 2 : i64}, %arg3: tensor<f64> {jit.literal_val = 4599075939685498880 : i64, tf.aliasing_output = 3 : i64}, %arg4: tensor<99xf64> {tf.aliasing_output = 4 : i64}, %arg5: tensor<i32> {jit.literal_val = 99 : i64, tf.aliasing_output = 5 : i64}, %arg6: tensor<i32> {jit.literal_val = 99 : i64, tf.aliasing_output = 6 : i64}) -> (tensor<i32>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<99xf64>, tensor<i32>, tensor<i32>) {
+//     %0 = stablehlo.add %arg2, %arg3 : tensor<f64>
+//     %1 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f64>) -> tensor<99xf64>
+//     return %arg0, %arg1, %arg2, %arg3, %1, %arg5, %arg6 : tensor<i32>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<99xf64>, tensor<i32>, tensor<i32>
+//   }
+// }
+//
+//
+// // -----// IR Dump After {anonymous}::TrimArgsPass (jforce-trim-args) ('func.func' operation: @main) //----- //
+// module {
+//   func.func @main(%arg0: tensor<f64> {jit.literal_val = 99 : i64, tf.aliasing_output = 0 : i64}, %arg1: tensor<f64> {jit.literal_val = 4604480259023595110 : i64, tf.aliasing_output = 1 : i64}, %arg2: tensor<99xf64> {jit.literal_val = 4604480259023595110 : i64, tf.aliasing_output = 2 : i64}) -> (tensor<f64>, tensor<f64>, tensor<99xf64>) attributes {jit.args_mapping = [2 : ui32, 0 : ui32, 4 : ui32, 2 : ui32, 3 : ui32, 1 : ui32]} {
+//     %0 = stablehlo.add %arg0, %arg1 : tensor<f64>
+//     %1 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f64>) -> tensor<99xf64>
+//     return %arg0, %arg1, %1 : tensor<f64>, tensor<f64>, tensor<99xf64>
+//   }
+// }
+
 namespace {
 struct TrimArgsPass:
   mlir::PassWrapper<TrimArgsPass, mlir::OperationPass<mlir::func::FuncOp>> {

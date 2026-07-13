@@ -1,5 +1,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -74,13 +77,18 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
     rewritter.setInsertionPointAfter(callOp);
     for (int paramIdx = 0; paramIdx < paramsSize; paramIdx++) {
       auto hloFuncCallOpRes = hloFuncCallOp.getResult(paramIdx);
-      RankedTensorType hloResultTensorType = llvm::dyn_cast<RankedTensorType>(hloFuncCallOpRes.getType()); 
-      auto hloResultMemrefType = MemRefType::get(hloResultTensorType.getShape(), hloResultTensorType.getElementType());
-      auto hloTensorResToMemrefOp = bufferization::ToBufferOp::create(rewritter, callOp.getLoc(), hloResultMemrefType, hloFuncCallOpRes);
-      rewritter.replaceUsesWithIf(memrefFuncParams[paramIdx], hloTensorResToMemrefOp.getResult(), [&](OpOperand& useOperand){
-        auto useOp = useOperand.getOwner();
-        return hloTensorResToMemrefOp.getResult().getDefiningOp()->isBeforeInBlock(useOp);
-      });
+      // memref.tensor_store has been replaced with bufferization.materialize_in_destination, see: https://github.com/llvm/llvm-project/pull/71010
+      if (llvm::isa<MemRefType>(memrefFuncParams[paramIdx].getType())) {
+        bufferization::MaterializeInDestinationOp::create(
+            rewritter,
+            callOp.getLoc(), 
+            mlir::TypeRange{},
+            hloFuncCallOpRes,
+            memrefFuncParams[paramIdx],
+            false,
+            true
+        );
+      }
     }
     
     rewritter.eraseOp(callOp);
@@ -125,7 +133,10 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
 
 struct SwitchOutlineFuncPass: public mlir::PassWrapper<SwitchOutlineFuncPass, OperationPass<ModuleOp>> {
   void getDependentDialects(mlir::DialectRegistry & registry) const override {
-    registry.insert<bufferization::BufferizationDialect>();
+    registry.insert<
+        bufferization::BufferizationDialect,
+        memref::MemRefDialect
+      >();
   }
 
   StringRef getArgument() const override { 
