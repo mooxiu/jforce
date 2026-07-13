@@ -6,4 +6,5 @@ void xla_jit::registerAllJitPasses() {
   registerShapeInferPass();
   registerTrimArgsPass(); 
   registerWorkdistributeToStableHLOPass();   
+  registerTranslatePass();
 }

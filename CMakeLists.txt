@@ -67,6 +67,23 @@ find_package(Clang REQUIRED CONFIG)
 find_package(Flang REQUIRED CONFIG)
 # StableHLO does not have *Config.cmake, so we cannot do in that way
 
+list(APPEND CMAKE_MODULE_PATH
+  "${MLIR_CMAKE_DIR}"
+  "${LLVM_CMAKE_DIR}"
+)
+
+include(AddLLVM)
+include(AddMLIR)
+
+set(LLVM_LIT_ARGS "-sv" CACHE STRING "Default options for lit")
+
+set(JFORCE_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
+set(JFORCE_BINARY_DIR "${PROJECT_BINARY_DIR}")
+set(JFORCE_TOOLS_DIR "${PROJECT_BINARY_DIR}/src/tool")
+
+option(JFORCE_INCLUDE_TESTS "Enable JForce tests" ON)
+
+
 # -------------------- Find StableHLO --------------------  
 # set(STABLEHLO_SRC_PATH "${STABLEHLO_PROJECT}/stablehlo")
 set(STABLEHLO_BUILD_PATH "${STABLEHLO_PROJECT}/build")
@@ -142,4 +159,9 @@ endif()
 # -DCMAKE_BUILD_TYPE=Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   target_compile_definitions(jit-code-executor PRIVATE ENABLE_XLA_DEBUG)
+endif()
+
+if(JFORCE_INCLUDE_TESTS)
+  enable_testing()
+  add_subdirectory(test)
 endif()
