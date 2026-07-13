@@ -9,7 +9,6 @@ else()
 endif()
 
 add_library(JitTransforms STATIC 
-  translate.cpp
   MemOpsFoldingPass.cpp
   CleanTempsPass.cpp
   AnnotatePass.cpp
@@ -17,6 +16,7 @@ add_library(JitTransforms STATIC
   ShapeInferPass.cpp
   TrimArgsPass.cpp
   WorkdistributeToStableHLOPass.cpp
+  Translate.cpp # INFO: intend to replace WorkdistributeToStableHLOPass.cpp 
   Passes.cpp
   CleanFIRLoopPass.cpp
   OptimizingMemOpsPass.cpp
