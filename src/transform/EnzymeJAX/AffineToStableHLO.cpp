@@ -32,18 +32,27 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/IR/IntegerSet.h"
 
 // #include "Interfaces/AutoDiffTypeInterface.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+// #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 
 // #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "support/utilities.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdint>
 #include <isl/ctx.h>
 #include <isl/ilp.h>
 #include <isl/map.h>
@@ -51,6 +60,7 @@
 #include <isl/space.h>
 #include <isl/val.h>
 #include <optional>
+#include <string>
 
 #define DEBUG_TYPE "raise-affine-to-stablehlo"
 
@@ -1620,9 +1630,27 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         return failure();
       auto kind = arith::symbolizeAtomicRMWKind(intAttr.getInt()).value();
 
+      DEBUG_PRINT("symbolizeAtomicRMWKind is: " + std::to_string(uint64_t(kind)));
+
       switch (kind) {
       case arith::AtomicRMWKind::addf:
       case arith::AtomicRMWKind::addi:
+        break;
+      case arith::AtomicRMWKind::mulf:
+      case arith::AtomicRMWKind::muli:
+        DEBUG_PRINT("Implementing symbolizeAtomicRMWKind which is mulf or muli!");
+        break;
+      case arith::AtomicRMWKind::maximumf:
+      case arith::AtomicRMWKind::maxnumf:
+      case arith::AtomicRMWKind::maxs:
+      case arith::AtomicRMWKind::maxu:
+        DEBUG_PRINT("Implementing symbolizeAtomicRMWKind which is max!");
+        break;
+      case arith::AtomicRMWKind::minimumf:
+      case arith::AtomicRMWKind::minnumf:
+      case arith::AtomicRMWKind::mins:
+      case arith::AtomicRMWKind::minu:
+        DEBUG_PRINT("Implementing symbolizeAtomicRMWKind which is min!");
         break;
       default:
         return failure();
@@ -1633,15 +1661,69 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
 
       auto unrankedTensorType = RankedTensorType::get(
           {}, cast<RankedTensorType>(val.getType()).getElementType());
-      Value inits[1] = {stablehlo::ConstantOp::create(
-          builder,
-          rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
-          builder.getZeroAttr(unrankedTensorType))};
 
-      auto red = stablehlo::ReduceOp::create(
-          builder,
-          rewriteLocation(val.getLoc(), pc.options.strip_llvm_debuginfo), types,
-          inputs, inits, builder.getDenseI64ArrayAttr(idxs_to_reduce));
+      stablehlo::ReduceOp red;
+      if (kind == arith::AtomicRMWKind::addf || kind == arith::AtomicRMWKind::addi) {
+        Value inits[1] = {stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getZeroAttr(unrankedTensorType))};
+
+        red = stablehlo::ReduceOp::create(
+            builder,
+            rewriteLocation(val.getLoc(), pc.options.strip_llvm_debuginfo), types,
+            inputs, inits, builder.getDenseI64ArrayAttr(idxs_to_reduce));
+      } else if (kind == arith::AtomicRMWKind::mulf || kind == arith::AtomicRMWKind::muli) {
+        Value inits[1] = {stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getOneAttr(unrankedTensorType))};
+
+        red = stablehlo::ReduceOp::create(
+            builder,
+            rewriteLocation(val.getLoc(), pc.options.strip_llvm_debuginfo), types,
+            inputs, inits, builder.getDenseI64ArrayAttr(idxs_to_reduce));
+      } else if (kind == arith::AtomicRMWKind::maximumf || kind == arith::AtomicRMWKind::maxnumf) {
+        auto elemTy = llvm::cast<FloatType>(unrankedTensorType.getElementType());
+        const llvm::fltSemantics &sem = elemTy.getFloatSemantics();
+        llvm::APFloat initVal = llvm::APFloat::getLargest(sem, /*Negative=*/true);
+        Value inits[1] = {
+          stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            DenseElementsAttr::get(unrankedTensorType, FloatAttr::get(elemTy, initVal)))
+        };
+
+        red = stablehlo::ReduceOp::create(
+            builder,
+            rewriteLocation(val.getLoc(), pc.options.strip_llvm_debuginfo), types,
+            inputs, inits, builder.getDenseI64ArrayAttr(idxs_to_reduce));
+      } else if (kind == arith::AtomicRMWKind::maxu || kind == arith::AtomicRMWKind::maxs) { 
+        // TODO: implement me!
+        llvm_unreachable("");
+      } else if (kind == arith::AtomicRMWKind::minimumf || kind == arith::AtomicRMWKind::minnumf) {
+        auto elemTy = llvm::cast<FloatType>(unrankedTensorType.getElementType());
+        const llvm::fltSemantics &sem = elemTy.getFloatSemantics();
+        llvm::APFloat initVal = llvm::APFloat::getLargest(sem, /*Negative=*/false);
+        Value inits[1] = {
+          stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            DenseElementsAttr::get(unrankedTensorType, FloatAttr::get(elemTy, initVal)))
+        };
+
+        red = stablehlo::ReduceOp::create(
+            builder,
+            rewriteLocation(val.getLoc(), pc.options.strip_llvm_debuginfo), types,
+            inputs, inits, builder.getDenseI64ArrayAttr(idxs_to_reduce));
+
+      } else if (kind == arith::AtomicRMWKind::minu || kind == arith::AtomicRMWKind::mins) {
+        // TODO: implement me!
+        llvm_unreachable("");
+      } else {
+        llvm::errs() << "\nUnexpected kind: " << kind << "\n"; 
+        return failure();
+      }
 
       auto block = new Block();
       red.getBody().push_back(block);
@@ -1655,14 +1737,43 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
 
       {
         OpBuilder builder(block, block->end());
-        auto addOp = stablehlo::AddOp::create(
+        if (kind == arith::AtomicRMWKind::addf || kind == arith::AtomicRMWKind::addi) {
+          auto addOp = stablehlo::AddOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), a,
+              b);
+          stablehlo::ReturnOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+              addOp.getResult());
+        } else if (kind == arith::AtomicRMWKind::mulf || kind == arith::AtomicRMWKind::muli) {
+          auto mulOp = stablehlo::MulOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), a,
+              b);
+          stablehlo::ReturnOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+              mulOp.getResult());
+        } else if (kind == arith::AtomicRMWKind::maximumf || kind == arith::AtomicRMWKind::maxnumf || kind == arith::AtomicRMWKind::maxu || kind == arith::AtomicRMWKind::maxs) {
+          auto maxOp = stablehlo::MaxOp::create(
             builder,
             rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), a,
             b);
-        stablehlo::ReturnOp::create(
+          stablehlo::ReturnOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+              maxOp.getResult());
+        } else if (kind == arith::AtomicRMWKind::minimumf || kind == arith::AtomicRMWKind::minnumf || kind == arith::AtomicRMWKind::minu || kind == arith::AtomicRMWKind::mins) {
+          auto minOp = stablehlo::MinOp::create(
             builder,
-            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
-            addOp.getResult());
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), a,
+            b);
+          stablehlo::ReturnOp::create(
+              builder,
+              rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+              minOp.getResult());
+        }
       }
 
       SmallVector<Value> vals;

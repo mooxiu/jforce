@@ -9,6 +9,12 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
+#include "flang/Optimizer/HLFIR/Passes.h"
+#include "flang/Optimizer/Transforms/Passes.h"
+#include "stablehlo/transforms/optimization/Passes.h"
+#include "transform/Utils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
@@ -114,24 +120,18 @@ llvm::SmallVector<jitArg> packJitArg(int64_t NumArgs, void **TgtArgs,
 }
 
 void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::SmallVector<jitArg> args) {
-  llvm::SmallVector<mlir::Attribute> argsAttr;
   auto ctx = builder.getContext();
+  auto attrName = builder.getStringAttr(JIT_LITERAL_VAL_ATTR_NAME);
   for (int i = 0; i < args.size(); i++) {
-    llvm::SmallVector<mlir::NamedAttribute> perArgAttr;
-
     if (args[i].isLiteral) {
       std::uintptr_t literalAddr = reinterpret_cast<std::uintptr_t>(args[i].hostPtr);
       auto attr = IntegerAttr::get(
         IntegerType::get(ctx, sizeof(void*) * 8),
         literalAddr
       );
-      perArgAttr.push_back(builder.getNamedAttr(JIT_LITERAL_VAL_ATTR_NAME, attr));
+      kernelFunc.setArgAttr(i, attrName, attr);
     }
-
-    argsAttr.push_back(builder.getDictionaryAttr(perArgAttr));
   }
-
-  kernelFunc.setArgAttrsAttr(builder.getArrayAttr(argsAttr));
   return;
 }
 
@@ -162,29 +162,35 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                    void **ArgNames) {
   PROFILE_SCOPE("total", Phase::TOTAL);
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  // std::cerr << "Got a jit call with " << NumArgs << " args into:\n" <<
-  // JitCodeC << "\n"; llvm::dbgs() << "\nreceive a jit call\n";
-  //
-  // #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
-  // #define h(A) \
-  //   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
-  //   for (unsigned I = 0; I < NumArgs; I++) {
-  //     std::cerr << "Device Arg #" << I << ":\n";
-  //     p(TgtArgs);
-  //     p(TgtOffsets);
-  //   }
-  //   for (unsigned I = 0; I < NumHostArgs; I++) {
-  //     std::cerr << "Host Arg #" << I << ":\n";
-  //     p(ArgBasePtrs);
-  //     p(ArgPtrs);
-  //     p(ArgSizes);
-  //     h(ArgTypes);
-  //     h(ArgNames);
-  //   }
-  // #undef p
-  // #undef h
+  std::cerr << "Got a jit call with " << NumArgs << " args into:\n" <<
+  JitCodeC << "\n"; llvm::dbgs() << "\nreceive a jit call\n";
+
+  #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
+  #define h(A) \
+    std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
+    for (unsigned I = 0; I < NumArgs; I++) {
+      std::cerr << "Device Arg #" << I << ":\n";
+      p(TgtArgs);
+      p(TgtOffsets);
+    }
+    for (unsigned I = 0; I < NumHostArgs; I++) {
+      std::cerr << "Host Arg #" << I << ":\n";
+      p(ArgBasePtrs);
+      p(ArgPtrs);
+      p(ArgSizes);
+      h(ArgTypes);
+      h(ArgNames);
+    }
+  #undef p
+  #undef h
 
   assert(NumArgs == NumHostArgs);
+  // there is an extra pointer added...
+  // TODO: Temporary only
+  NumArgs -= 1;
+  NumHostArgs -= 1;
+  ArgSizes -= 1;
+  
 
   auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
   auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCodePtrUint);
@@ -230,14 +236,66 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   // pm.enableCrashReproducerGeneration("./crash_repro.mlir");
   // pm.enableTiming();
 
+  // 1. AOT -> Shape Inference
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
+  nestedPMPhase1.addPass(xla_jit::createPropagateConstantsPass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
+  nestedPMPhase1.addPass(createSCCPPass());
+  nestedPMPhase1.addPass(createCSEPass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
   nestedPMPhase1.addPass(xla_jit::createShapeInferPass());
-  pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
-  // pm.addPass(xla_jit::createTranslatePass());
+  nestedPMPhase1.addPass(createCanonicalizerPass());
+
+  // 2. ShapeInference HLFIR -> FIR -> Optimize -> Memref, Affine, SCF
+  // - 2.1 HLFIR -> FIR
+  pm.addPass(hlfir::createConvertHLFIRtoFIR());
+  // - 2.2 FIR and optimize
   auto& nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
-  nestedPMPhase2.addPass(xla_jit::createAliasingPass());
-  nestedPMPhase2.addPass(xla_jit::createTrimArgsPass());
+  nestedPMPhase2.addPass(xla_jit::createFoldRepeatConversionsPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(createLoopInvariantCodeMotionPass());
+  nestedPMPhase2.addPass(createCSEPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(xla_jit::createMemOpsFoldingPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(xla_jit::createCleanFIRLoopPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  // - 2.3 FIR -> MemRef
+  nestedPMPhase2.addPass(fir::createFIRToMemRef());
+  nestedPMPhase2.addPass(xla_jit::createCleanFIROpsPass());
+  nestedPMPhase2.addPass(fir::createPromoteToAffinePass());
+  nestedPMPhase2.addPass(affine::createAffineLoopNormalizePass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(fir::createFIRToSCFPass()); // for fir.if -> scf.if
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+
+  // 3. Common MLIR -> Affine Loops
+  nestedPMPhase2.addPass(xla_jit::createFoldSCFIfPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(xla_jit::createPolygeistMem2RegPass());
+  nestedPMPhase2.addPass(createCanonicalizerPass());
+  nestedPMPhase2.addPass(xla_jit::createLoopSinkingPass());
+  nestedPMPhase2.addPass(xla_jit::createRecognizeMinMaxPass());
+  // pm.addPass(xla_jit::createAffineCFGPass());
+
+
+  // 4. Outline Affine loops, Tensorize, mergeback
+  pm.addPass(xla_jit::createOutlineAffinePass());
+  pm.addPass(xla_jit::createAffineCFGPass());
+  auto& nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase3.addPass(xla_jit::createAffineToStableHLORaisingPass());
+  nestedPMPhase3.addPass(xla_jit::createArithRaisingPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(xla_jit::createRemergePass());
+  pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
+  pm.addPass(createInlinerPass());
+  auto& nestedPMPhase4 = pm.nest<mlir::func::FuncOp>();
+  nestedPMPhase4.addPass(stablehlo::createStablehloAggressiveSimplificationPass());
+  nestedPMPhase4.addPass(xla_jit::createAliasingPass());
+  nestedPMPhase4.addPass(xla_jit::createTrimArgsPass());
   if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);

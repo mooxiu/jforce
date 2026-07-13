@@ -1,6 +1,7 @@
 #ifndef UTILS_H 
 #define UTILS_H 
 
+#include "flang/Optimizer/Analysis/AliasAnalysis.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
