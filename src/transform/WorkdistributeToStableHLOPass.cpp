@@ -1299,8 +1299,6 @@ static void scanOperationsAndInserts(
           assert(tracking.valueMap.contains(declaredOprand) && "declaredOperand not exist!");
           tracking.valueMap.map(declareOp->getOpResult(i),
                                 tracking.valueMap.lookup(declaredOprand));
-          tracking.argsTrackingMap.map(tracking.valueMap.lookup(declaredOprand),
-                                       declareOp->getOpResult(0));
         }
       })
       .Case<hlfir::DesignateOp>([&](hlfir::DesignateOp designateOp) {

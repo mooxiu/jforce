@@ -9,12 +9,9 @@ else()
 endif()
 
 add_library(JitTransforms STATIC 
-<<<<<<< HEAD
   translate.cpp
-=======
   MemOpsFoldingPass.cpp
   CleanTempsPass.cpp
->>>>>>> dc57845 (Dev/jforce scalar e2e (#36))
   AnnotatePass.cpp
   AliasingPass.cpp
   ShapeInferPass.cpp
