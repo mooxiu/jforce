@@ -1,4 +1,5 @@
 #include "Utils.h"
+#include "flang/Optimizer/Dialect/FIRType.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -67,6 +68,9 @@ TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
     typeInfo.rank = tensorTy.getRank();
     typeInfo.shape = tensorTy.getShape();
     return inspectTypeInfoInternal(tensorTy.getElementType(), typeInfo);
+  }
+  if (auto boxTy = llvm::dyn_cast<fir::BoxType>(ty)) {
+    return inspectTypeInfoInternal(boxTy.getElementType(), typeInfo);
   }
   if (ty.isIntOrIndexOrFloat()) {
     if (typeInfo.rank == 0) {

@@ -1,10 +1,10 @@
 // RUN: split-file %s %t
 // RUN: %jforce-opt %t/slice-read.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SLICE-READ
-// RUN : %jforce-opt %t/slice-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SLICE-WRITE
-// RUN : %jforce-opt %t/slice-to-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SLICE2SLICE
-// RUN : %jforce-opt %t/overlap.mlir --jforce-translatev2 | FileCheck %s --check-prefix=OVERLAP
-// RUN : %jforce-opt %t/read-after-slice-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=READ-AFTER-WRITE
-// RUN : %jforce-opt %t/repeated-read.mlir --jforce-translatev2 --cse | FileCheck %s --check-prefix=REPEATED
+// RUN: %jforce-opt %t/slice-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SLICE-WRITE
+// RUN: %jforce-opt %t/slice-to-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SLICE2SLICE
+// RUN: %jforce-opt %t/overlap.mlir --jforce-translatev2 | FileCheck %s --check-prefix=OVERLAP
+// RUN: %jforce-opt %t/read-after-slice-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=READ-AFTER-WRITE
+// RUN: %jforce-opt %t/repeated-read.mlir --jforce-translatev2 --cse | FileCheck %s --check-prefix=REPEATED
 
 //--- slice-read.mlir
 // Fortran A(2:4) becomes zero-based StableHLO [1:4).

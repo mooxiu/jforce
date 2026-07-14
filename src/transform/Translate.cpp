@@ -20,6 +20,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -335,8 +336,38 @@ static void translateOperation(
       if (assignToRefVal.triplets.empty()) {
         state.memoryMap[assignToRefVal.root] = assignFromVal;
       } else {
-        // TODO: update some of the root
-        llvm_unreachable("implement me!");
+        auto LHSZipTriplets = assignToRefVal.getZipTriplets(); 
+        auto isDenseUpdate = llvm::all_of(LHSZipTriplets[2], [](int64_t stride){return stride == 1;});
+        Value updatedVal; 
+        if (isDenseUpdate) {
+          // Update with dynamic_slice_update
+          llvm::SmallVector<Value> startIndices;
+          llvm::for_each(LHSZipTriplets[0], [&](int64_t idx){
+            auto type = RankedTensorType::get({}, opBuilder.getI64Type());
+            auto attr = DenseIntElementsAttr::get(type, {llvm::APInt(64, idx, /*isSigned=*/true)});
+            auto constOp = stablehlo::ConstantOp::create(
+              opBuilder,
+              assignOp.getLoc(),
+              attr
+            );
+            startIndices.push_back(constOp.getResult());
+          });
+
+          auto assignedToRootVal = state.memoryMap.at(assignToRefVal.root);
+          auto updateOp = stablehlo::DynamicUpdateSliceOp::create(
+            opBuilder, 
+            assignOp.getLoc(),
+            /*result=*/ assignedToRootVal.getType(),
+            assignedToRootVal,
+            assignFromVal,
+            startIndices
+          );
+          updatedVal = updateOp.getResult();
+        } else {
+          // TODO: Update with scatter
+          llvm_unreachable("Implement me!"); 
+        }
+        state.memoryMap[assignToRefVal.root] = updatedVal;
       }
     })
     .Case([&](fir::LoadOp loadOp){
