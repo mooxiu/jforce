@@ -27,6 +27,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -42,9 +43,9 @@ using namespace mlir;
 namespace {
 
 struct Triplet {
-  long lb; // start
-  long ub; // limit
-  long step; // stride
+  int64_t lb; // start, zero based
+  int64_t ub; // limit
+  int64_t step; // stride
 };
 
 // For example: %slice = %v[1:5:1, 2:5:2];
@@ -53,14 +54,14 @@ struct RefValue {
   Value root;
   llvm::SmallVector<Triplet> triplets;
 
-  llvm::SmallVector<llvm::SmallVector<long>, 3> getZipTriplets() {
-    llvm::SmallVector<llvm::SmallVector<long>, 3> res;
+  llvm::SmallVector<llvm::SmallVector<int64_t>, 3> getZipTriplets() {
+    llvm::SmallVector<llvm::SmallVector<int64_t>, 3> res;
     if (this->triplets.empty()) {
       return res;
     }
-    llvm::SmallVector<long> starts;
-    llvm::SmallVector<long> limits;
-    llvm::SmallVector<long> strides;
+    llvm::SmallVector<int64_t> starts;
+    llvm::SmallVector<int64_t> limits;
+    llvm::SmallVector<int64_t> strides;
     for (const auto& triplet: this->triplets) {
       starts.push_back(triplet.lb);
       limits.push_back(triplet.ub);
@@ -87,13 +88,14 @@ struct TranslationState {
   Value slicing(
     OpBuilder& opBuilder,
     Value hloVal, 
-    const llvm::SmallVector<llvm::SmallVector<long>, 3>& zipTriplets 
+    const llvm::SmallVector<llvm::SmallVector<int64_t>, 3>& zipTriplets 
   ) {
     if (zipTriplets.empty() || zipTriplets[0].empty()) {
       return hloVal;
     }
-    auto toAttr = [](MLIRContext* ctx, llvm::SmallVector<long> intList) -> ::mlir::DenseI64ArrayAttr {
-      return DenseI64ArrayAttr::get(ctx, intList);
+    auto toAttr = [](MLIRContext* ctx, llvm::SmallVector<int64_t> intList) -> ::mlir::DenseI64ArrayAttr {
+      llvm::SmallVector<long> longList = llvm::to_vector(llvm::map_range(intList, [](int64_t ele){return long(ele);}));
+      return DenseI64ArrayAttr::get(ctx, longList);
     };
     MLIRContext* ctx = opBuilder.getContext();
     auto sliceOp = stablehlo::SliceOp::create(
@@ -121,6 +123,7 @@ struct TranslationState {
       return slicing(opBuilder, rootVal, refVal.getZipTriplets());
     }
   }
+
 };
 
 ///  Example of source type:
@@ -222,6 +225,68 @@ static void translateElemental(
   
 }
 
+// Fortran index can start from minus value, we should extract the information from sliceShiftMap.
+static llvm::SmallVector<int64_t> getLowerBounds(
+  hlfir::DesignateOp designateOp,
+  const llvm::DenseMap<Value, llvm::SmallVector<int64_t>>& sliceShiftMap
+) {
+  size_t rank = designateOp.getIsTriplet().size();
+  llvm::SmallVector<int64_t> lowerBounds(rank, 1); // initiated as 1
+  auto declareOp = designateOp.getMemref().getDefiningOp<hlfir::DeclareOp>();
+  if (!declareOp) return lowerBounds;
+  Value shape = declareOp.getShape();
+  if (!shape) return lowerBounds;
+  if (auto shapeShiftOp = shape.getDefiningOp<fir::ShapeShiftOp>()) {
+    auto it = sliceShiftMap.find(shapeShiftOp.getResult());
+    assert(it != sliceShiftMap.end() && "Static shape_shift lower bounds must be recorded");
+    assert(it->second.size() == rank && "Lower-bound count must match designate rank");
+    lowerBounds = it->second;
+  } else {
+    assert(shape.getDefiningOp<fir::ShapeOp>() && "Expected fir.shape or fir.shape_shift");
+  }
+  return lowerBounds;
+}
+
+static llvm::SmallVector<Triplet> extractStaticTriplets(
+  hlfir::DesignateOp designateOp,
+  llvm::ArrayRef<int64_t> lowerBounds
+) {
+  auto indices = designateOp.getIndices();
+  auto isTriplet = designateOp.getIsTriplet();
+
+  assert(!isTriplet.empty());
+  assert(llvm::all_of(isTriplet, [](bool flag) { return flag; }) && "Only pure-triplet designates are supported");
+  assert(indices.size() == isTriplet.size() * 3);
+  assert(lowerBounds.size() == isTriplet.size());
+
+  auto getConstantInt = [](Value val) {
+    IntegerAttr attr;
+    if (matchPattern(val, m_Constant(&attr))) {
+      return attr.getInt();
+    };
+    llvm_unreachable("Should be constant");
+  };
+
+  llvm::SmallVector<Triplet> result;
+  result.reserve(isTriplet.size());
+  auto it = indices.begin();
+  for (auto [dim, flag] : llvm::enumerate(isTriplet)) {
+    assert(flag);
+    int64_t fortranLower = getConstantInt(*it++);
+    int64_t fortranUpper = getConstantInt(*it++);
+    int64_t stride = getConstantInt(*it++);
+    assert(stride > 0 && "Only positive static strides are supported");
+    int64_t arrayLowerBound = lowerBounds[dim];
+    result.push_back({
+        .lb = fortranLower - arrayLowerBound,
+        .ub = fortranUpper - arrayLowerBound + 1,
+        .step = stride,
+    });
+  }
+  assert(it == indices.end());
+  return result;
+}
+
 static void translateOperation(
   OpBuilder& opBuilder, 
   TranslationState& state, 
@@ -281,6 +346,18 @@ static void translateOperation(
       }
       auto loadedVal = state.getReferenceValue(opBuilder, loadOp.getMemref());
       state.valueMap[loadOp.getResult()] = loadedVal;
+    })
+    .Case([&](hlfir::DesignateOp designateOp) {
+      auto lowerBounds = getLowerBounds(designateOp, sliceShiftMap);
+      auto triplets = extractStaticTriplets(designateOp, lowerBounds);
+      std::reverse(triplets.begin(), triplets.end()); // Fortran is column based, so should reverse
+      assert(state.referenceMap.contains(designateOp.getMemref()));
+      auto memRefVal = state.referenceMap.at(designateOp.getMemref());
+      assert(memRefVal.triplets.empty()); // TODO: it can be a slice of a slice, so actually we should cover the composed triplets!
+      state.referenceMap[designateOp.getResult()] = RefValue{
+        .root = memRefVal.root,
+        .triplets = std::move(triplets),
+      };
     })
     .Default([&](auto){
       DEBUG_PRINT("Skipped During Translation: ");
