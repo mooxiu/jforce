@@ -7,6 +7,11 @@
 // RUN: %jforce-opt %t/declare-chain.mlir --jforce-translatev2 | FileCheck %s --check-prefix=DECLARE
 // RUN: %jforce-opt %t/read-after-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=RAW
 // RUN: %jforce-opt %t/self-assign.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SELF
+// RUN: %jforce-opt %t/local-temporary.mlir --jforce-translatev2 | FileCheck %s --check-prefix=LOCAL-TEMP
+// RUN: %jforce-opt %t/transpose-basic.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-BASIC
+// RUN: %jforce-opt %t/transpose-chain.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-CHAIN
+// RUN: %jforce-opt %t/transpose-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-SLICE
+// RUN: %jforce-opt %t/transpose-after-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-AFTER-WRITE
 // XRUN : %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
 
 //--- dummy.mlir
@@ -116,6 +121,238 @@ func.func @kernel(%arg0: !fir.ref<f64>) {
   // SELF: return %arg0 : tensor<f64>
   return
 }
+
+//--- local-temporary.mlir
+func.func @kernel(
+    %a: !fir.ref<!fir.array<4xf64>>,
+    %b: !fir.ref<!fir.array<4xf64>>) {
+  %c4 = arith.constant 4 : index
+  %shape = fir.shape %c4 : (index) -> !fir.shape<1>
+
+  %a_decl:2 = hlfir.declare %a(%shape) {uniq_name = ""}
+      : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>)
+      -> (!fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>)
+
+  %tmp = fir.alloca !fir.array<4xf64> {uniq_name = ""}
+  %tmp_decl:2 = hlfir.declare %tmp(%shape) {uniq_name = ""}
+      : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>)
+      -> (!fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape) {uniq_name = ""}
+      : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>)
+      -> (!fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>)
+
+  hlfir.assign %a_decl#0 to %tmp_decl#0 : !fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>
+  hlfir.assign %tmp_decl#0 to %b_decl#0 : !fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>
+  // LOCAL-TEMP: return %arg0, %arg0
+  return
+}
+
+
+//--- transpose-basic.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<2x3xf64>>,
+    %b: !fir.ref<!fir.array<3x2xf64>>) {
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+
+  %shape_a = fir.shape %c2, %c3
+      : (index, index) -> !fir.shape<2>
+  %shape_b = fir.shape %c3, %c2
+      : (index, index) -> !fir.shape<2>
+
+  %a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape_b) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<3x2xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<3x2xf64>>,
+          !fir.ref<!fir.array<3x2xf64>>)
+
+  %transposed = hlfir.transpose %a_decl#0
+      : (!fir.ref<!fir.array<2x3xf64>>)
+      -> !hlfir.expr<3x2xf64>
+
+  hlfir.assign %transposed to %b_decl#0
+      : !hlfir.expr<3x2xf64>,
+        !fir.ref<!fir.array<3x2xf64>>
+
+  hlfir.destroy %transposed : !hlfir.expr<3x2xf64>
+  return
+}
+
+// TRANSPOSE-BASIC-LABEL: func.func @main(
+// TRANSPOSE-BASIC-SAME: %arg0: tensor<3x2xf64>
+// TRANSPOSE-BASIC-SAME: %arg1: tensor<2x3xf64>
+// TRANSPOSE-BASIC: %[[T:.*]] = stablehlo.transpose %arg0, dims = [1, 0]
+// TRANSPOSE-BASIC-SAME: (tensor<3x2xf64>) -> tensor<2x3xf64>
+// TRANSPOSE-BASIC: return %arg0, %[[T]]
+
+
+//--- transpose-chain.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<2x3xf64>>,
+    %b: !fir.ref<!fir.array<2x3xf64>>) {
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+
+  %shape = fir.shape %c2, %c3
+      : (index, index) -> !fir.shape<2>
+
+  %a_decl:2 = hlfir.declare %a(%shape) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %t0 = hlfir.transpose %a_decl#0
+      : (!fir.ref<!fir.array<2x3xf64>>)
+      -> !hlfir.expr<3x2xf64>
+
+  %t1 = hlfir.transpose %t0
+      : (!hlfir.expr<3x2xf64>)
+      -> !hlfir.expr<2x3xf64>
+
+  hlfir.assign %t1 to %b_decl#0
+      : !hlfir.expr<2x3xf64>,
+        !fir.ref<!fir.array<2x3xf64>>
+
+  hlfir.destroy %t1 : !hlfir.expr<2x3xf64>
+  hlfir.destroy %t0 : !hlfir.expr<3x2xf64>
+  return
+}
+
+// TRANSPOSE-CHAIN-LABEL: func.func @main(
+// TRANSPOSE-CHAIN: %[[T0:.*]] = stablehlo.transpose %arg0, dims = [1, 0]
+// TRANSPOSE-CHAIN-SAME: (tensor<3x2xf64>) -> tensor<2x3xf64>
+// TRANSPOSE-CHAIN: %[[T1:.*]] = stablehlo.transpose %[[T0]], dims = [1, 0]
+// TRANSPOSE-CHAIN-SAME: (tensor<2x3xf64>) -> tensor<3x2xf64>
+// TRANSPOSE-CHAIN: return %arg0, %[[T1]]
+
+
+//--- transpose-slice.mlir
+
+func.func @kernel(
+    %a: !fir.box<!fir.array<6x8xf64>>,
+    %b: !fir.box<!fir.array<4x3xf64>>) {
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %c4 = arith.constant 4 : index
+  %c6 = arith.constant 6 : index
+
+  %slice_shape = fir.shape %c3, %c4
+      : (index, index) -> !fir.shape<2>
+
+  %slice = hlfir.designate %a
+      (%c2:%c4:%c1, %c3:%c6:%c1)
+      shape %slice_shape
+      : (!fir.box<!fir.array<6x8xf64>>,
+         index, index, index,
+         index, index, index,
+         !fir.shape<2>)
+      -> !fir.box<!fir.array<3x4xf64>>
+
+  %transposed = hlfir.transpose %slice
+      : (!fir.box<!fir.array<3x4xf64>>)
+      -> !hlfir.expr<4x3xf64>
+
+  hlfir.assign %transposed to %b
+      : !hlfir.expr<4x3xf64>,
+        !fir.box<!fir.array<4x3xf64>>
+
+  hlfir.destroy %transposed : !hlfir.expr<4x3xf64>
+  return
+}
+
+// TRANSPOSE-SLICE-LABEL: func.func @main(
+// TRANSPOSE-SLICE-SAME: %arg0: tensor<8x6xf64>
+// TRANSPOSE-SLICE-SAME: %arg1: tensor<3x4xf64>
+// TRANSPOSE-SLICE: %[[SLICE:.*]] = stablehlo.slice %arg0 [2:6, 1:4]
+// TRANSPOSE-SLICE-SAME: (tensor<8x6xf64>) -> tensor<4x3xf64>
+// TRANSPOSE-SLICE: %[[T:.*]] = stablehlo.transpose %[[SLICE]], dims = [1, 0]
+// TRANSPOSE-SLICE-SAME: (tensor<4x3xf64>) -> tensor<3x4xf64>
+// TRANSPOSE-SLICE: return %arg0, %[[T]]
+
+//--- transpose-after-write.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<2x3xf64>>,
+    %b: !fir.ref<!fir.array<2x3xf64>>,
+    %out: !fir.ref<!fir.array<3x2xf64>>) {
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+
+  %shape_input = fir.shape %c2, %c3
+      : (index, index) -> !fir.shape<2>
+  %shape_output = fir.shape %c3, %c2
+      : (index, index) -> !fir.shape<2>
+
+  %a_decl:2 = hlfir.declare %a(%shape_input) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape_input) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %out_decl:2 = hlfir.declare %out(%shape_output) {uniq_name = "out"}
+      : (!fir.ref<!fir.array<3x2xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<3x2xf64>>,
+          !fir.ref<!fir.array<3x2xf64>>)
+
+  hlfir.assign %b_decl#0 to %a_decl#0
+      : !fir.ref<!fir.array<2x3xf64>>,
+        !fir.ref<!fir.array<2x3xf64>>
+
+  %transposed = hlfir.transpose %a_decl#0
+      : (!fir.ref<!fir.array<2x3xf64>>)
+      -> !hlfir.expr<3x2xf64>
+
+  hlfir.assign %transposed to %out_decl#0
+      : !hlfir.expr<3x2xf64>,
+        !fir.ref<!fir.array<3x2xf64>>
+
+  hlfir.destroy %transposed : !hlfir.expr<3x2xf64>
+  return
+}
+
+// TRANSPOSE-AFTER-WRITE-LABEL: func.func @main(
+// TRANSPOSE-AFTER-WRITE: %[[T:.*]] = stablehlo.transpose %arg1, dims = [1, 0]
+// TRANSPOSE-AFTER-WRITE-SAME: (tensor<3x2xf64>) -> tensor<2x3xf64>
+// TRANSPOSE-AFTER-WRITE: return %arg1, %arg1, %[[T]]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
