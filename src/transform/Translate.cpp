@@ -5,6 +5,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -125,6 +126,15 @@ struct TranslationState {
     }
   }
 
+  Value getValue(OpBuilder& opBuilder, Value memOrVal) {
+    if (this->valueMap.contains(memOrVal)) {
+      return this->valueMap.at(memOrVal);
+    } else {
+      return this->getReferenceValue(opBuilder, memOrVal);
+    }
+    memOrVal.dump();
+    llvm_unreachable("Value is neither an SSA value nor a reference");
+  }
 };
 
 ///  Example of source type:
@@ -325,12 +335,9 @@ static void translateOperation(
       assert(state.referenceMap.contains(assignTo));
       assert(state.referenceMap.contains(assignFrom) || state.valueMap.contains(assignFrom));
 
-      Value assignFromVal;
-      if (state.valueMap.contains(assignFrom)) {
-        assignFromVal = state.valueMap.at(assignFrom);
-      } else {
-        assignFromVal = state.getReferenceValue(opBuilder, assignFrom);
-      }
+      Value assignFromVal = state.getValue(opBuilder, assignFrom);
+      
+      
       // assignTo can be a slice of a memory, so we have to only update some of the memory.
       auto assignToRefVal = state.referenceMap.at(assignTo);
       if (assignToRefVal.triplets.empty()) {
@@ -390,9 +397,48 @@ static void translateOperation(
         .triplets = std::move(triplets),
       };
     })
-    .Default([&](auto){
-      DEBUG_PRINT("Skipped During Translation: ");
-      DEBUG_PRINT_OP(op);
+    .Case([&](fir::AllocaOp allocaOp){
+      state.referenceMap[allocaOp.getResult()] = {allocaOp.getResult(), {}};
+    })
+    // INFO: built-in array operations
+    .Case([&](hlfir::TransposeOp transposeOp){
+      auto opTy = toCorrespondingTensorTy(transposeOp.getOperand().getType());
+      auto resTy = RankedTensorType::get(
+        llvm::SmallVector<int64_t>{opTy.getShape()[1], opTy.getShape()[0]},
+        opTy.getElementType());
+      auto stablehloTransposeOp = stablehlo::TransposeOp::create(
+        opBuilder, op->getLoc(), resTy, state.getValue(opBuilder, transposeOp.getOperand()),
+        llvm::SmallVector<int64_t>{1, 0});
+      state.valueMap[transposeOp.getResult()] = stablehloTransposeOp.getResult();
+    })
+    .Case([&](hlfir::MatmulOp mmOp){
+      // %36 = hlfir.matmul %33#0 %35#0 {fastmath = #arith.fastmath<contract>}
+      // : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) ->
+      // !hlfir.expr<?x?xf64>
+      auto op0 = state.getValue(opBuilder, mmOp.getOperand(0));
+      auto op1 = state.getValue(opBuilder, mmOp.getOperand(1));
+      auto op0Ty = toCorrespondingTensorTy(op0.getType());
+      auto op1Ty = toCorrespondingTensorTy(op1.getType());
+      auto resTy = RankedTensorType::get(
+          llvm::SmallVector<int64_t>{op1Ty.getShape()[0],
+                                     op0Ty.getShape()[1]},
+          op0Ty.getElementType());
+      mlir::ArrayAttr config = {};
+      mlir::stablehlo::DotAlgorithmAttr algo = {};
+      auto dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          op->getContext(), SmallVector<int64_t>{}, SmallVector<int64_t>{},
+          SmallVector<int64_t>{1}, SmallVector<int64_t>{0});
+      auto stablehloDotGeneralOp = stablehlo::DotGeneralOp::create(
+          opBuilder, op->getLoc(), resTy, op1, op0, dims, config, algo);
+      state.valueMap[mmOp.getResult()] = stablehloDotGeneralOp.getResult();
+    })
+    .Case<fir::ShapeOp, fir::ShapeShiftOp, hlfir::DestroyOp,
+      func::ReturnOp, omp::WorkdistributeOp, omp::TeamsOp, omp::TerminatorOp>([](auto) {
+        // No runtime tensor semantics.
+    })
+    .Default([&](auto unsupportedOp){
+      unsupportedOp->dump();
+      llvm_unreachable("Unsupported operation in TranslatePass");
     });
   return;
 }

@@ -12,6 +12,10 @@
 // RUN: %jforce-opt %t/transpose-chain.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-CHAIN
 // RUN: %jforce-opt %t/transpose-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-SLICE
 // RUN: %jforce-opt %t/transpose-after-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=TRANSPOSE-AFTER-WRITE
+// RUN: %jforce-opt %t/matmul-basic.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-BASIC
+// RUN: %jforce-opt %t/matmul-order.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-ORDER
+// RUN: %jforce-opt %t/matmul-chain.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-CHAIN
+// RUN: %jforce-opt %t/matmul-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-SLICE
 // XRUN : %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
 
 //--- dummy.mlir
@@ -333,16 +337,283 @@ func.func @kernel(
 // TRANSPOSE-AFTER-WRITE: return %arg1, %arg1, %[[T]]
 
 
+//--- matmul-basic.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<2x3xf64>>,
+    %b: !fir.ref<!fir.array<3x4xf64>>,
+    %c: !fir.ref<!fir.array<2x4xf64>>) {
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %c4 = arith.constant 4 : index
+
+  %shape_a = fir.shape %c2, %c3
+      : (index, index) -> !fir.shape<2>
+  %shape_b = fir.shape %c3, %c4
+      : (index, index) -> !fir.shape<2>
+  %shape_c = fir.shape %c2, %c4
+      : (index, index) -> !fir.shape<2>
+
+  %a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape_b) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<3x4xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<3x4xf64>>,
+          !fir.ref<!fir.array<3x4xf64>>)
+
+  %c_decl:2 = hlfir.declare %c(%shape_c) {uniq_name = "c"}
+      : (!fir.ref<!fir.array<2x4xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x4xf64>>,
+          !fir.ref<!fir.array<2x4xf64>>)
+
+  %result = hlfir.matmul %a_decl#0 %b_decl#0
+      {fastmath = #arith.fastmath<contract>}
+      : (!fir.ref<!fir.array<2x3xf64>>,
+         !fir.ref<!fir.array<3x4xf64>>)
+      -> !hlfir.expr<2x4xf64>
+
+  hlfir.assign %result to %c_decl#0
+      : !hlfir.expr<2x4xf64>,
+        !fir.ref<!fir.array<2x4xf64>>
+
+  hlfir.destroy %result : !hlfir.expr<2x4xf64>
+  return
+}
+
+// MATMUL-BASIC-LABEL: func.func @main(
+// MATMUL-BASIC-SAME: %arg0: tensor<3x2xf64>
+// MATMUL-BASIC-SAME: %arg1: tensor<4x3xf64>
+// MATMUL-BASIC-SAME: %arg2: tensor<4x2xf64>
+// MATMUL-BASIC: %[[RESULT:.*]] = stablehlo.dot_general %arg1, %arg0,
+// MATMUL-BASIC-SAME: contracting_dims = [1] x [0]
+// MATMUL-BASIC-SAME: tensor<4x3xf64>, tensor<3x2xf64>
+// MATMUL-BASIC-SAME: -> tensor<4x2xf64>
+// MATMUL-BASIC: return %arg0, %arg1, %[[RESULT]]
+
+//--- matmul-order.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<5x2xf32>>,
+    %b: !fir.ref<!fir.array<2x7xf32>>,
+    %c: !fir.ref<!fir.array<5x7xf32>>) {
+  %c2 = arith.constant 2 : index
+  %c5 = arith.constant 5 : index
+  %c7 = arith.constant 7 : index
+
+  %shape_a = fir.shape %c5, %c2
+      : (index, index) -> !fir.shape<2>
+  %shape_b = fir.shape %c2, %c7
+      : (index, index) -> !fir.shape<2>
+  %shape_c = fir.shape %c5, %c7
+      : (index, index) -> !fir.shape<2>
+
+  %a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<5x2xf32>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<5x2xf32>>,
+          !fir.ref<!fir.array<5x2xf32>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape_b) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<2x7xf32>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x7xf32>>,
+          !fir.ref<!fir.array<2x7xf32>>)
+
+  %c_decl:2 = hlfir.declare %c(%shape_c) {uniq_name = "c"}
+      : (!fir.ref<!fir.array<5x7xf32>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<5x7xf32>>,
+          !fir.ref<!fir.array<5x7xf32>>)
+
+  %result = hlfir.matmul %a_decl#0 %b_decl#0
+      : (!fir.ref<!fir.array<5x2xf32>>,
+         !fir.ref<!fir.array<2x7xf32>>)
+      -> !hlfir.expr<5x7xf32>
+
+  hlfir.assign %result to %c_decl#0
+      : !hlfir.expr<5x7xf32>,
+        !fir.ref<!fir.array<5x7xf32>>
+
+  hlfir.destroy %result : !hlfir.expr<5x7xf32>
+  return
+}
+
+// MATMUL-ORDER-LABEL: func.func @main(
+// MATMUL-ORDER: %[[RESULT:.*]] = stablehlo.dot_general %arg1, %arg0,
+// MATMUL-ORDER-SAME: contracting_dims = [1] x [0]
+// MATMUL-ORDER-SAME: tensor<7x2xf32>, tensor<2x5xf32>
+// MATMUL-ORDER-SAME: -> tensor<7x5xf32>
+// MATMUL-ORDER: return %arg0, %arg1, %[[RESULT]]
 
 
 
+//--- matmul-chain.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<2x3xf64>>,
+    %b: !fir.ref<!fir.array<3x4xf64>>,
+    %c: !fir.ref<!fir.array<4x5xf64>>,
+    %d: !fir.ref<!fir.array<2x5xf64>>) {
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %c4 = arith.constant 4 : index
+  %c5 = arith.constant 5 : index
+
+  %shape_a = fir.shape %c2, %c3
+      : (index, index) -> !fir.shape<2>
+  %shape_b = fir.shape %c3, %c4
+      : (index, index) -> !fir.shape<2>
+  %shape_c = fir.shape %c4, %c5
+      : (index, index) -> !fir.shape<2>
+  %shape_d = fir.shape %c2, %c5
+      : (index, index) -> !fir.shape<2>
+
+  %a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x3xf64>>,
+          !fir.ref<!fir.array<2x3xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape_b) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<3x4xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<3x4xf64>>,
+          !fir.ref<!fir.array<3x4xf64>>)
+
+  %c_decl:2 = hlfir.declare %c(%shape_c) {uniq_name = "c"}
+      : (!fir.ref<!fir.array<4x5xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<4x5xf64>>,
+          !fir.ref<!fir.array<4x5xf64>>)
+
+  %d_decl:2 = hlfir.declare %d(%shape_d) {uniq_name = "d"}
+      : (!fir.ref<!fir.array<2x5xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x5xf64>>,
+          !fir.ref<!fir.array<2x5xf64>>)
+
+  %ab = hlfir.matmul %a_decl#0 %b_decl#0
+      : (!fir.ref<!fir.array<2x3xf64>>,
+         !fir.ref<!fir.array<3x4xf64>>)
+      -> !hlfir.expr<2x4xf64>
+
+  %abc = hlfir.matmul %ab %c_decl#0
+      : (!hlfir.expr<2x4xf64>,
+         !fir.ref<!fir.array<4x5xf64>>)
+      -> !hlfir.expr<2x5xf64>
+
+  hlfir.assign %abc to %d_decl#0
+      : !hlfir.expr<2x5xf64>,
+        !fir.ref<!fir.array<2x5xf64>>
+
+  hlfir.destroy %abc : !hlfir.expr<2x5xf64>
+  hlfir.destroy %ab : !hlfir.expr<2x4xf64>
+  return
+}
+
+// MATMUL-CHAIN-LABEL: func.func @main(
+// First: B x A in reversed StableHLO layout.
+// MATMUL-CHAIN: %[[AB:.*]] = stablehlo.dot_general %arg1, %arg0,
+// MATMUL-CHAIN-SAME: contracting_dims = [1] x [0]
+// MATMUL-CHAIN-SAME: -> tensor<4x2xf64>
+
+// Second: C x AB.
+// MATMUL-CHAIN: %[[ABC:.*]] = stablehlo.dot_general %arg2, %[[AB]],
+// MATMUL-CHAIN-SAME: contracting_dims = [1] x [0]
+// MATMUL-CHAIN-SAME: tensor<5x4xf64>, tensor<4x2xf64>
+// MATMUL-CHAIN-SAME: -> tensor<5x2xf64>
+
+// MATMUL-CHAIN: return %arg0, %arg1, %arg2, %[[ABC]]
 
 
 
+//--- matmul-slice.mlir
 
+func.func @kernel(
+    %a: !fir.ref<!fir.array<4x5xf64>>,
+    %b: !fir.ref<!fir.array<5x6xf64>>,
+    %c: !fir.ref<!fir.array<2x4xf64>>) {
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %c4 = arith.constant 4 : index
+  %c5 = arith.constant 5 : index
+  %c6 = arith.constant 6 : index
 
+  %shape_a = fir.shape %c4, %c5
+      : (index, index) -> !fir.shape<2>
+  %shape_b = fir.shape %c5, %c6
+      : (index, index) -> !fir.shape<2>
+  %shape_c = fir.shape %c2, %c4
+      : (index, index) -> !fir.shape<2>
 
+  %slice_shape_a = fir.shape %c2, %c3
+      : (index, index) -> !fir.shape<2>
+  %slice_shape_b = fir.shape %c3, %c4
+      : (index, index) -> !fir.shape<2>
 
+  %a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<4x5xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<4x5xf64>>,
+          !fir.ref<!fir.array<4x5xf64>>)
+
+  %b_decl:2 = hlfir.declare %b(%shape_b) {uniq_name = "b"}
+      : (!fir.ref<!fir.array<5x6xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<5x6xf64>>,
+          !fir.ref<!fir.array<5x6xf64>>)
+
+  %c_decl:2 = hlfir.declare %c(%shape_c) {uniq_name = "c"}
+      : (!fir.ref<!fir.array<2x4xf64>>, !fir.shape<2>)
+      -> (!fir.ref<!fir.array<2x4xf64>>,
+          !fir.ref<!fir.array<2x4xf64>>)
+
+  // A(2:3, 2:4), shape = 2x3.
+  %a_slice = hlfir.designate %a_decl#0
+      (%c2:%c3:%c1, %c2:%c4:%c1)
+      shape %slice_shape_a
+      : (!fir.ref<!fir.array<4x5xf64>>,
+         index, index, index,
+         index, index, index,
+         !fir.shape<2>)
+      -> !fir.box<!fir.array<2x3xf64>>
+
+  // B(2:4, 2:5), shape = 3x4.
+  %b_slice = hlfir.designate %b_decl#0
+      (%c2:%c4:%c1, %c2:%c5:%c1)
+      shape %slice_shape_b
+      : (!fir.ref<!fir.array<5x6xf64>>,
+         index, index, index,
+         index, index, index,
+         !fir.shape<2>)
+      -> !fir.box<!fir.array<3x4xf64>>
+
+  %result = hlfir.matmul %a_slice %b_slice
+      : (!fir.box<!fir.array<2x3xf64>>,
+         !fir.box<!fir.array<3x4xf64>>)
+      -> !hlfir.expr<2x4xf64>
+
+  hlfir.assign %result to %c_decl#0
+      : !hlfir.expr<2x4xf64>,
+        !fir.ref<!fir.array<2x4xf64>>
+
+  hlfir.destroy %result : !hlfir.expr<2x4xf64>
+  return
+}
+
+// MATMUL-SLICE-LABEL: func.func @main(
+// A(2:3, 2:4): reversed dimensions [column, row].
+// MATMUL-SLICE: %[[A_SLICE:.*]] = stablehlo.slice %arg0 [1:4, 1:3]
+// MATMUL-SLICE-SAME: tensor<5x4xf64> 
+// MATMUL-SLICE-SAME: -> tensor<3x2xf64>
+
+// B(2:4, 2:5).
+// MATMUL-SLICE: %[[B_SLICE:.*]] = stablehlo.slice %arg1 [1:5, 1:4]
+// MATMUL-SLICE-SAME: tensor<6x5xf64>
+// MATMUL-SLICE-SAME: -> tensor<4x3xf64>
+
+// StableHLO computes reversed B × reversed A.
+// MATMUL-SLICE: %[[RESULT:.*]] = stablehlo.dot_general %[[B_SLICE]], %[[A_SLICE]],
+// MATMUL-SLICE-SAME: contracting_dims = [1] x [0]
+// MATMUL-SLICE-SAME: tensor<4x3xf64>, tensor<3x2xf64>
+// MATMUL-SLICE-SAME: -> tensor<4x2xf64>
+
+// MATMUL-SLICE: return %arg0, %arg1, %[[RESULT]]
 
 
 
