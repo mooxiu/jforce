@@ -14,10 +14,12 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/Region.h"
 #include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -126,7 +128,8 @@ struct TranslationState {
     }
   }
 
-  Value getValue(OpBuilder& opBuilder, Value memOrVal) {
+  // Get the corresponding tensor value in stablehlo function.
+  Value getTensorValue(OpBuilder& opBuilder, Value memOrVal) {
     if (this->valueMap.contains(memOrVal)) {
       return this->valueMap.at(memOrVal);
     } else {
@@ -226,6 +229,243 @@ static void terminateFunction(
 };
 
 
+static Value handleBinaryArithOp(
+  OpBuilder& opBuilder, 
+  TranslationState& state, 
+  Operation* op, 
+  const llvm::SmallVector<Value>& args
+) {
+  Location loc = op->getLoc();
+  auto alignShape = [&](Value hloO0, Value hloO1) -> std::pair<Value, Value> {
+    assert(llvm::isa<RankedTensorType>(hloO1.getType()));
+    assert(llvm::isa<RankedTensorType>(hloO1.getType()));
+    auto typeInfo0 = inspectTypeInfo(hloO0.getType());
+    auto typeInfo1 = inspectTypeInfo(hloO1.getType());
+    if (typeInfo0.rank == typeInfo1.rank) {
+      assert(typeInfo0.shape == typeInfo1.shape);
+      return std::pair<Value, Value>(hloO0, hloO1);
+    }
+    if (typeInfo0.rank < typeInfo1.rank) {
+      auto broadcastOp = stablehlo::BroadcastInDimOp::create(
+        opBuilder, 
+        loc,
+        hloO1.getType(),
+        hloO0,
+        opBuilder.getDenseI64ArrayAttr({})
+      );
+      return std::make_pair(broadcastOp.getResult(), hloO1);
+    } else {
+      // hlo0 has larger rank
+      auto broadcastOp = stablehlo::BroadcastInDimOp::create(
+        opBuilder, 
+        loc,
+        hloO0.getType(),
+        hloO1,
+        opBuilder.getDenseI64ArrayAttr({})
+      );
+      return std::make_pair(hloO0, broadcastOp.getResult());
+    }
+  };
+  auto opPair = alignShape(args[0], args[1]);
+  auto hloO0 = opPair.first;
+  auto hloO1 = opPair.second;
+  Operation* createdHLOOp = llvm::TypeSwitch<Operation*, Operation*>(op)
+    .Case<arith::AddFOp, arith::AddIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::AddOp::create(opBuilder, loc, resTy, hloO0, hloO1);
+    })
+    .Case<arith::SubFOp, arith::SubIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::SubtractOp::create(opBuilder, loc, resTy, hloO0, hloO1);
+    })
+    .Case<arith::MulFOp, arith::MulIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::MulOp::create(opBuilder, loc, resTy, hloO0, hloO1);
+    })
+    .Case<arith::DivFOp, arith::DivSIOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::DivOp::create(opBuilder, loc, resTy, hloO0, hloO1);
+    })
+    .Case<arith::CmpFOp>([&](arith::CmpFOp cmpOp){
+      stablehlo::ComparisonDirection direction;
+      switch (cmpOp.getPredicate()) {
+        case arith::CmpFPredicate::OEQ:
+        case arith::CmpFPredicate::UEQ:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpFPredicate::ONE:
+        case arith::CmpFPredicate::UNE:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        case arith::CmpFPredicate::OGT:
+        case arith::CmpFPredicate::UGT:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpFPredicate::OGE:
+        case arith::CmpFPredicate::UGE:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpFPredicate::OLT:
+        case arith::CmpFPredicate::ULT:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpFPredicate::OLE:
+        case arith::CmpFPredicate::ULE:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        default:
+          llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      return stablehlo::CompareOp::create(opBuilder, loc, hloO0, hloO1, direction, stablehlo::ComparisonType::FLOAT);
+    })
+    .Case<arith::CmpIOp>([&](arith::CmpIOp cmpOp){
+      stablehlo::ComparisonDirection direction;
+      switch (cmpOp.getPredicate()) {
+        case arith::CmpIPredicate::eq:
+          direction = stablehlo::ComparisonDirection::EQ;
+          break;
+        case arith::CmpIPredicate::ne:
+          direction = stablehlo::ComparisonDirection::NE;
+          break;
+        case arith::CmpIPredicate::sgt:
+        case arith::CmpIPredicate::ugt:
+          direction = stablehlo::ComparisonDirection::GT;
+          break;
+        case arith::CmpIPredicate::sge:
+        case arith::CmpIPredicate::uge:
+          direction = stablehlo::ComparisonDirection::GE;
+          break;
+        case arith::CmpIPredicate::slt:
+        case arith::CmpIPredicate::ult:
+          direction = stablehlo::ComparisonDirection::LT;
+          break;
+        case arith::CmpIPredicate::sle:
+        case arith::CmpIPredicate::ule:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
+        default:
+          llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      return stablehlo::CompareOp::create(opBuilder, loc, hloO0, hloO1, direction, stablehlo::ComparisonType::SIGNED);
+    });
+  assert(createdHLOOp->getNumResults() == 1);
+  return createdHLOOp->getResult(0);
+}
+
+static Value handleUninaryArithOp(
+  OpBuilder& opBuilder, 
+  TranslationState& state, 
+  Operation* op, 
+  const llvm::SmallVector<Value>& args
+) {
+  assert(op->getNumResults() == 1 && op->getNumOperands() == 1);
+  auto operand = args[0];
+  auto loc = op->getLoc(); 
+  auto createdHLOOp = llvm::TypeSwitch<Operation*, Operation*>(op)
+    .Case([&](math::SinOp sop) {
+      return stablehlo::SineOp::create(opBuilder, loc, operand, {});
+    })
+    .Case([&](math::ExpOp eop) {
+      return stablehlo::ExpOp::create(opBuilder, loc, operand, {});
+    })
+    .Case([&](math::SqrtOp sop) {
+      return stablehlo::SqrtOp::create(opBuilder, loc, operand, {});
+    })
+    .Case([&](arith::NegFOp nop) {
+      return stablehlo::NegOp::create(opBuilder, loc, operand);
+    })
+    .Default([](auto) -> Operation* {
+      llvm_unreachable("Unsupported");
+    })
+  ;
+  assert(createdHLOOp->getNumResults() == 1);
+  return createdHLOOp->getResult(0);
+}
+
+static Value handleArithOp(
+  OpBuilder& opBuilder,
+  TranslationState& state,
+  Operation* arithOp,
+  llvm::SmallVector<Value>& tensorArgs
+) {
+  return llvm::TypeSwitch<Operation*, Value>(arithOp)
+    .Case<arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
+          arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
+          arith::CmpFOp, arith::CmpIOp
+    >([&](Operation* binaryArithOp) {
+      assert(tensorArgs.size() == 2);
+      return handleBinaryArithOp(opBuilder, state, binaryArithOp, tensorArgs); 
+    })
+    .Case<math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp>([&](Operation* unaryArithOp){
+      assert(tensorArgs.size() == 1);
+      return handleUninaryArithOp(opBuilder, state, unaryArithOp, tensorArgs);
+    });
+}
+
+struct ElementalState {
+  TranslationState& globalState;
+  llvm::DenseMap<Value, Value> localValueMap;
+
+  ElementalState(TranslationState& state): globalState(state){};
+
+  Value getTensorValue(OpBuilder &builder, Value value) {
+    if (auto it = localValueMap.find(value);
+        it != localValueMap.end()) {
+      return it->second;
+    }
+    return globalState.getTensorValue(builder, value);
+  }
+};
+
+static void translateElementalOp(
+  OpBuilder& opBuilder,
+  Operation* op,
+  ElementalState& eleState
+) {
+  llvm::TypeSwitch<Operation*, void>(op)
+    .Case([&](hlfir::DesignateOp designateOp){
+      assert(llvm::all_of(designateOp.getIsTriplet(), [](bool isTriplet){return !isTriplet;}));
+      auto memrefTensor = eleState.globalState.getTensorValue(opBuilder, designateOp.getMemref());
+      eleState.localValueMap[designateOp.getResult()] = memrefTensor;
+    })
+    .Case([&](hlfir::ApplyOp applyOp){
+      auto operandTensor = eleState.globalState.getTensorValue(opBuilder, applyOp.getOperand(0));
+      eleState.localValueMap[applyOp.getResult()] = operandTensor;
+    })
+    .Case([&](fir::LoadOp loadOp){
+      auto memrefTensor = eleState.getTensorValue(opBuilder, loadOp.getMemref());
+      eleState.localValueMap[loadOp.getResult()] = memrefTensor;
+    })
+    .Case<
+      arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
+      arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
+      arith::CmpFOp, arith::CmpIOp,
+      math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp
+    >(
+      [&](Operation* arithOp){
+      // Reuse the handleArithOp
+      assert(op->getNumResults() == 1);
+      llvm::SmallVector<Value> tensorArgs;
+      for (const auto& operand: op->getOperands()) {
+        tensorArgs.push_back(eleState.getTensorValue(opBuilder, operand));
+      }
+      eleState.localValueMap[op->getResult(0)] = handleArithOp(opBuilder, eleState.globalState, arithOp, tensorArgs);
+    })
+    .Default([](auto unsupported){
+      llvm_unreachable("unsupported");
+    });
+}
+
+// INFO: this function only intends to cover elemental operation lowered from element-wise operations.
+// For example: A = b * C, A = b + C, A = MAX(b, C)... where A, C are arrays, b is element.
+// Example:
+//    %13 = hlfir.elemental %0 : (!fir.shape<2>) -> !hlfir.expr<1024x1024xf64> {
+//    ^bb0(%arg17: index, %arg18: index):
+//      %16 = hlfir.designate %7#0 (%arg17, %arg18)  : (!fir.ref<!fir.array<1024x1024xf64>>, index, index) -> !fir.ref<f64>
+//      %17 = fir.load %16 : !fir.ref<f64>
+//      %18 = arith.mulf %17, %12 fastmath<contract> : f64
+//      hlfir.yield_element %18 : f64
+//    }
 static void translateElemental(
   OpBuilder& opBuilder, 
   TranslationState& state, 
@@ -233,7 +473,20 @@ static void translateElemental(
   hlfir::ElementalOp elementalOp,
   const llvm::DenseMap<Value, llvm::SmallVector<int64_t>>& sliceShiftMap
 ) {
-  
+  OpBuilder::InsertionGuard guard(opBuilder);
+  opBuilder.setInsertionPointToEnd(&newFunc.front());
+
+  assert(elementalOp.getRegion().hasOneBlock());
+  auto& block = elementalOp.getRegion().getBlocks().front(); 
+  ElementalState eleState(state);
+  for (Operation& op: block.without_terminator()) {
+    translateElementalOp(opBuilder, &op, eleState);
+  }
+  auto yieldOp = llvm::cast<hlfir::YieldElementOp>(block.getTerminator());
+  assert(yieldOp);
+  assert(eleState.localValueMap.contains(yieldOp.getElementValue()));
+  Value yieldedTensor = eleState.localValueMap.at(yieldOp.getElementValue());
+  state.valueMap[elementalOp.getResult()] = yieldedTensor;
 }
 
 // Fortran index can start from minus value, we should extract the information from sliceShiftMap.
@@ -335,7 +588,7 @@ static void translateOperation(
       assert(state.referenceMap.contains(assignTo));
       assert(state.referenceMap.contains(assignFrom) || state.valueMap.contains(assignFrom));
 
-      Value assignFromVal = state.getValue(opBuilder, assignFrom);
+      Value assignFromVal = state.getTensorValue(opBuilder, assignFrom);
       
       
       // assignTo can be a slice of a memory, so we have to only update some of the memory.
@@ -407,7 +660,7 @@ static void translateOperation(
         llvm::SmallVector<int64_t>{opTy.getShape()[1], opTy.getShape()[0]},
         opTy.getElementType());
       auto stablehloTransposeOp = stablehlo::TransposeOp::create(
-        opBuilder, op->getLoc(), resTy, state.getValue(opBuilder, transposeOp.getOperand()),
+        opBuilder, op->getLoc(), resTy, state.getTensorValue(opBuilder, transposeOp.getOperand()),
         llvm::SmallVector<int64_t>{1, 0});
       state.valueMap[transposeOp.getResult()] = stablehloTransposeOp.getResult();
     })
@@ -415,8 +668,8 @@ static void translateOperation(
       // %36 = hlfir.matmul %33#0 %35#0 {fastmath = #arith.fastmath<contract>}
       // : (!fir.box<!fir.array<?x?xf64>>, !fir.box<!fir.array<?x?xf64>>) ->
       // !hlfir.expr<?x?xf64>
-      auto op0 = state.getValue(opBuilder, mmOp.getOperand(0));
-      auto op1 = state.getValue(opBuilder, mmOp.getOperand(1));
+      auto op0 = state.getTensorValue(opBuilder, mmOp.getOperand(0));
+      auto op1 = state.getTensorValue(opBuilder, mmOp.getOperand(1));
       auto op0Ty = toCorrespondingTensorTy(op0.getType());
       auto op1Ty = toCorrespondingTensorTy(op1.getType());
       auto resTy = RankedTensorType::get(

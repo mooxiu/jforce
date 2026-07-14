@@ -616,17 +616,6 @@ func.func @kernel(
 // MATMUL-SLICE: return %arg0, %arg1, %[[RESULT]]
 
 
-
-
-
-
-
-
-
-
-
-
-
 //--- attention.mlir
 // Complicated Workdistribute Example
 func.func @kernel(%arg0: !fir.ref<!fir.array<1024x1024xf64>>, %arg1: !fir.ref<!fir.array<1024x1024xf64>>, %arg2: !fir.ref<f64>, %arg3: !fir.ref<!fir.array<1024x1024xf64>>, %arg4: !fir.ref<!fir.array<1024x1024xf64>>, %arg5: !fir.ref<i32>, %arg6: !fir.ref<i32>, %arg7: !fir.ref<i32>, %arg8: !fir.ref<i32>, %arg9: !fir.ref<i32>, %arg10: !fir.ref<i32>, %arg11: !fir.ref<i32>, %arg12: !fir.ref<i32>, %arg13: !fir.ref<i32>, %arg14: !fir.ref<i32>, %arg15: !fir.ref<i32>, %arg16: !fir.ref<i32>) {
