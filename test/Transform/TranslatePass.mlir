@@ -1,10 +1,19 @@
 // RUN: split-file %s %t
 // RUN: %jforce-opt %t/dummy.mlir --jforce-translatev2 | FileCheck %s --check-prefix=DUMMY
-// XRUN: %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
+// RUN: %jforce-opt %t/mem-to-mem.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MEM2MEM
+// RUN: %jforce-opt %t/constant-to-mem.mlir --jforce-translatev2 | FileCheck %s --check-prefix=CONST
+// RUN: %jforce-opt %t/sequential-assign.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SEQ
+// RUN: %jforce-opt %t/load-snapshot.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SNAPSHOT
+// RUN: %jforce-opt %t/declare-chain.mlir --jforce-translatev2 | FileCheck %s --check-prefix=DECLARE
+// RUN: %jforce-opt %t/read-after-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=RAW
+// RUN: %jforce-opt %t/self-assign.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SELF
+// XRUN : %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
 
 //--- dummy.mlir
 // Dummy Workdistribute Example
 func.func @kernel(%arg0: !fir.ref<!fir.array<99xf64>>, %arg1: !fir.ref<!fir.array<99xf64>>, %arg2: !fir.ref<i32>, %arg3: !fir.ref<i32>) {
+  // DUMMY-LABEL: func.func @main(%arg0: tensor<99xf64>, %arg1: tensor<99xf64>, %arg2: tensor<i32>, %arg3: tensor<i32> 
+  // DUMMY-SAME: tensor<99xf64>, tensor<99xf64>, tensor<i32>, tensor<i32>
   %c99 = arith.constant 99 : index
   %0 = fir.shape %c99 : (index) -> !fir.shape<1>
   %1:2 = hlfir.declare %arg0(%0) {uniq_name = ""} : (!fir.ref<!fir.array<99xf64>>, !fir.shape<1>) -> (!fir.ref<!fir.array<99xf64>>, !fir.ref<!fir.array<99xf64>>)
@@ -12,6 +21,7 @@ func.func @kernel(%arg0: !fir.ref<!fir.array<99xf64>>, %arg1: !fir.ref<!fir.arra
   omp.teams {
     omp.workdistribute {
       hlfir.assign %2#0 to %1#0 : !fir.ref<!fir.array<99xf64>>, !fir.ref<!fir.array<99xf64>>
+      // DUMMY: return %arg1, %arg1, %arg2, %arg3 : tensor<99xf64>, tensor<99xf64>, tensor<i32>, tensor<i32>
       omp.terminator
     }
     omp.terminator
@@ -19,9 +29,95 @@ func.func @kernel(%arg0: !fir.ref<!fir.array<99xf64>>, %arg1: !fir.ref<!fir.arra
   omp.terminator
 }
 
-// DUMMY-LABEL: func.func @main(%arg0: tensor<99xf64>, %arg1: tensor<99xf64>, %arg2: tensor<i32>, %arg3: tensor<i32> 
-// DUMMY-SAME: tensor<99xf64>, tensor<99xf64>, tensor<i32>, tensor<i32>
-// DUMMY-NEXT: return %arg1, %arg1, %arg2, %arg3 : tensor<99xf64>, tensor<99xf64>, tensor<i32>, tensor<i32>
+//--- mem-to-mem.mlir
+func.func @kernel(%arg0: !fir.ref<!fir.array<4xf64>>, %arg1: !fir.ref<!fir.array<4xf64>>) {
+  // MEM2MEM-LABEL: func.func @main
+  %c4 = arith.constant 4 : index
+  %shape = fir.shape %c4 : (index) -> !fir.shape<1>
+  %a:2 = hlfir.declare %arg0(%shape) {uniq_name = "a"}: (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> (!fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>)
+  %b:2 = hlfir.declare %arg1(%shape) {uniq_name = "b"}: (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>) -> (!fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>)
+  hlfir.assign %b#0 to %a#0: !fir.ref<!fir.array<4xf64>>, !fir.ref<!fir.array<4xf64>>
+  // MEM2MEM: return %arg1, %arg1 : tensor<4xf64>, tensor<4xf64>
+  return
+}
+
+//--- constant-to-mem.mlir
+func.func @kernel(%arg0: !fir.ref<f64>) {
+  // CONST-LABEL: func.func @main
+  %a:2 = hlfir.declare %arg0 {uniq_name = "a"}: (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %cst = arith.constant 3.000000e+00 : f64
+  // CONST: %[[C:.*]] = stablehlo.constant
+  hlfir.assign %cst to %a#0 : f64, !fir.ref<f64>
+  // CONST: return %[[C]] : tensor<f64>
+  return
+}
+
+//--- sequential-assign.mlir
+func.func @kernel(%arg0: !fir.ref<f64>, %arg1: !fir.ref<f64>, %arg2: !fir.ref<f64>) {
+  // SEQ-LABEL: func.func @main
+  %a:2 = hlfir.declare %arg0 {uniq_name = "a"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %b:2 = hlfir.declare %arg1 {uniq_name = "b"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %c:2 = hlfir.declare %arg2 {uniq_name = "c"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  hlfir.assign %b#0 to %a#0 : !fir.ref<f64>, !fir.ref<f64>
+  hlfir.assign %c#0 to %b#0 : !fir.ref<f64>, !fir.ref<f64>
+  // SEQ: return %arg1, %arg2, %arg2 : tensor<f64>, tensor<f64>, tensor<f64>
+  return
+}
+
+//--- load-snapshot.mlir
+func.func @kernel(%arg0: !fir.ref<f64>, %arg1: !fir.ref<f64>, %arg2: !fir.ref<f64>) {
+  // SNAPSHOT-LABEL: func.func @main
+  %a:2 = hlfir.declare %arg0 {uniq_name = "a"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %b:2 = hlfir.declare %arg1 {uniq_name = "b"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %c:2 = hlfir.declare %arg2 {uniq_name = "c"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %old_a = fir.load %a#0 : !fir.ref<f64>
+  hlfir.assign %b#0 to %a#0 : !fir.ref<f64>, !fir.ref<f64>
+  hlfir.assign %old_a to %c#0 : f64, !fir.ref<f64>
+  // SNAPSHOT: return %arg1, %arg1, %arg0 : tensor<f64>, tensor<f64>, tensor<f64>
+  return
+}
+
+//--- declare-chain.mlir
+func.func @kernel(%arg0: !fir.ref<f64>, %arg1: !fir.ref<f64>) {
+  // DECLARE-LABEL: func.func @main
+  %a0:2 = hlfir.declare %arg0 {uniq_name = "a0"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %a1:2 = hlfir.declare %a0#0 {uniq_name = "a1"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %b:2 = hlfir.declare %arg1 {uniq_name = "b"} : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  hlfir.assign %b#0 to %a1#0 : !fir.ref<f64>, !fir.ref<f64>
+  // DECLARE: return %arg1, %arg1 : tensor<f64>, tensor<f64>
+  return
+}
+
+//--- read-after-write.mlir
+func.func @kernel(
+    %arg0: !fir.ref<f64>,
+    %arg1: !fir.ref<f64>,
+    %arg2: !fir.ref<f64>) {
+  // RAW-LABEL: func.func @main
+  %a:2 = hlfir.declare %arg0 {uniq_name = "a"}
+      : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %b:2 = hlfir.declare %arg1 {uniq_name = "b"}
+      : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  %c:2 = hlfir.declare %arg2 {uniq_name = "c"}
+      : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+
+  hlfir.assign %b#0 to %a#0 : !fir.ref<f64>, !fir.ref<f64>
+  hlfir.assign %a#0 to %c#0 : !fir.ref<f64>, !fir.ref<f64>
+  // RAW: return %arg1, %arg1, %arg1 : tensor<f64>, tensor<f64>, tensor<f64>
+  return
+}
+
+//--- self-assign.mlir
+func.func @kernel(%arg0: !fir.ref<f64>) {
+  // SELF-LABEL: func.func @main
+  %a:2 = hlfir.declare %arg0 {uniq_name = "a"}
+      : (!fir.ref<f64>) -> (!fir.ref<f64>, !fir.ref<f64>)
+  hlfir.assign %a#0 to %a#0 : !fir.ref<f64>, !fir.ref<f64>
+  // SELF: return %arg0 : tensor<f64>
+  return
+}
+
+
 
 //--- attention.mlir
 // Complicated Workdistribute Example

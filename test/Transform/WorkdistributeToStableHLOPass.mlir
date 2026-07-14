@@ -1,6 +1,7 @@
-// XRUN: split-file %s %t
-// XRUN: %jforce-opt %t/dummy.mlir --jforce-translate | FileCheck %s --check-prefix=DUMMY
-// XRUN: %jforce-opt %t/attention.mlir --jforce-translate | FileCheck %s --check-prefix=ATTENTION
+// UNSUPPORTED: true
+// RUN: split-file %s %t
+// RUN: %jforce-opt %t/dummy.mlir --jforce-translate | FileCheck %s --check-prefix=DUMMY
+// RUN: %jforce-opt %t/attention.mlir --jforce-translate | FileCheck %s --check-prefix=ATTENTION
 
 //--- dummy.mlir
 // Dummy Workdistribute Example
