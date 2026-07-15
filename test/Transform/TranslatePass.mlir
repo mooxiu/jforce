@@ -18,6 +18,12 @@
 // RUN: %jforce-opt %t/matmul-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-SLICE
 // RUN: %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
 
+// RUN: %jforce-opt %t/sum-all-1d.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SUM-ALL-1D
+// RUN: %jforce-opt %t/sum-all-2d.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SUM-ALL-2D
+// RUN: %jforce-opt %t/sum-dim-1.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SUM-DIM-1
+// RUN: %jforce-opt %t/sum-dim-2.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SUM-DIM-2
+// RUN: %jforce-opt %t/sum-after-write.mlir --jforce-translatev2 | FileCheck %s --check-prefix=SUM-AFTER-WRITE
+
 //--- dummy.mlir
 // Dummy Workdistribute Example
 func.func @kernel(%arg0: !fir.ref<!fir.array<99xf64>>, %arg1: !fir.ref<!fir.array<99xf64>>, %arg2: !fir.ref<i32>, %arg3: !fir.ref<i32>) {
@@ -682,3 +688,215 @@ func.func @kernel(%arg0: !fir.ref<!fir.array<1024x1024xf64>>, %arg1: !fir.ref<!f
   omp.terminator
 }
 // ATTENTION-NEXT: return %arg0, %arg1, %arg2, %8, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9, %arg10, %arg11, %arg12, %arg13, %arg14, %arg15, %arg16 : tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<f64>, tensor<1024x1024xf64>, tensor<1024x1024xf64>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>
+
+
+//--- sum-all-1d.mlir
+
+func.func @kernel(
+    %a: !fir.ref<!fir.array<4xf64>>,
+    %result: !fir.ref<f64>) {
+  %c4 = arith.constant 4 : index
+  %shape_a = fir.shape %c4 : (index) -> !fir.shape<1>
+
+  %a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+      : (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>)
+      -> (!fir.ref<!fir.array<4xf64>>,
+          !fir.ref<!fir.array<4xf64>>)
+
+  %result_decl:2 = hlfir.declare %result {uniq_name = "result"}
+      : (!fir.ref<f64>)
+      -> (!fir.ref<f64>, !fir.ref<f64>)
+
+  %sum = hlfir.sum %a_decl#0
+      : (!fir.ref<!fir.array<4xf64>>) -> f64
+
+  hlfir.assign %sum to %result_decl#0
+      : f64, !fir.ref<f64>
+
+  return
+}
+
+// SUM-ALL-1D-LABEL: func.func @main(
+// SUM-ALL-1D-SAME: %arg0: tensor<4xf64>
+// SUM-ALL-1D-SAME: %arg1: tensor<f64>
+// SUM-ALL-1D: %[[ZERO:[a-zA-Z0-9_]+]] = stablehlo.constant dense<{{.*}}> : tensor<f64>
+// SUM-ALL-1D: %[[SUM:[a-zA-Z0-9_]+]] = stablehlo.reduce(%arg0 init: %[[ZERO]])
+// SUM-ALL-1D-SAME: dimensions = [0]
+// SUM-ALL-1D-SAME: (tensor<4xf64>, tensor<f64>) -> tensor<f64>
+// SUM-ALL-1D: return %arg0, %[[SUM]]
+
+
+//--- sum-all-2d.mlir
+
+func.func @kernel(
+%a: !fir.ref<!fir.array<2x3xf64>>,
+%result: !fir.ref<f64>) {
+%c2 = arith.constant 2 : index
+%c3 = arith.constant 3 : index
+%shape_a = fir.shape %c2, %c3
+: (index, index) -> !fir.shape<2>
+
+%a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+: (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+-> (!fir.ref<!fir.array<2x3xf64>>,
+!fir.ref<!fir.array<2x3xf64>>)
+
+%result_decl:2 = hlfir.declare %result {uniq_name = "result"}
+: (!fir.ref<f64>)
+-> (!fir.ref<f64>, !fir.ref<f64>)
+
+%sum = hlfir.sum %a_decl#0
+: (!fir.ref<!fir.array<2x3xf64>>) -> f64
+
+hlfir.assign %sum to %result_decl#0
+: f64, !fir.ref<f64>
+
+return
+}
+
+// SUM-ALL-2D-LABEL: func.func @main(
+// SUM-ALL-2D-SAME: %arg0: tensor<3x2xf64>
+// SUM-ALL-2D-SAME: %arg1: tensor<f64>
+// SUM-ALL-2D: %[[ZERO:[a-zA-Z0-9_]+]] = stablehlo.constant dense<{{.*}}> : tensor<f64>
+// SUM-ALL-2D: %[[SUM:[a-zA-Z0-9_]+]] = stablehlo.reduce(%arg0 init: %[[ZERO]])
+// SUM-ALL-2D-SAME: dimensions = [0, 1]
+// SUM-ALL-2D-SAME: (tensor<3x2xf64>, tensor<f64>) -> tensor<f64>
+// SUM-ALL-2D: return %arg0, %[[SUM]]
+
+//--- sum-dim-1.mlir
+
+func.func @kernel(
+%a: !fir.ref<!fir.array<2x3xf64>>,
+%result: !fir.ref<!fir.array<3xf64>>) {
+%c2 = arith.constant 2 : index
+%c3 = arith.constant 3 : index
+%dim = arith.constant 1 : i32
+
+%shape_a = fir.shape %c2, %c3
+: (index, index) -> !fir.shape<2>
+%shape_result = fir.shape %c3
+: (index) -> !fir.shape<1>
+
+%a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+: (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+-> (!fir.ref<!fir.array<2x3xf64>>,
+!fir.ref<!fir.array<2x3xf64>>)
+
+%result_decl:2 =
+hlfir.declare %result(%shape_result) {uniq_name = "result"}
+: (!fir.ref<!fir.array<3xf64>>, !fir.shape<1>)
+-> (!fir.ref<!fir.array<3xf64>>,
+!fir.ref<!fir.array<3xf64>>)
+
+%sum = hlfir.sum %a_decl#0 dim %dim
+: (!fir.ref<!fir.array<2x3xf64>>, i32)
+-> !hlfir.expr<3xf64>
+
+hlfir.assign %sum to %result_decl#0
+: !hlfir.expr<3xf64>,
+!fir.ref<!fir.array<3xf64>>
+
+hlfir.destroy %sum : !hlfir.expr<3xf64>
+return
+}
+
+// SUM-DIM-1-LABEL: func.func @main(
+// SUM-DIM-1-SAME: %arg0: tensor<3x2xf64>
+// SUM-DIM-1-SAME: %arg1: tensor<3xf64>
+// SUM-DIM-1: %[[ZERO:[a-zA-Z0-9_]+]] = stablehlo.constant dense<{{.*}}> : tensor<f64>
+// SUM-DIM-1: %[[SUM:[a-zA-Z0-9_]+]] = stablehlo.reduce(%arg0 init: %[[ZERO]])
+// SUM-DIM-1-SAME: dimensions = [1]
+// SUM-DIM-1-SAME: (tensor<3x2xf64>, tensor<f64>) -> tensor<3xf64>
+// SUM-DIM-1: return %arg0, %[[SUM]]
+
+//--- sum-dim-2.mlir
+
+func.func @kernel(
+%a: !fir.ref<!fir.array<2x3xf64>>,
+%result: !fir.ref<!fir.array<2xf64>>) {
+%c2 = arith.constant 2 : index
+%c3 = arith.constant 3 : index
+%dim = arith.constant 2 : i32
+
+%shape_a = fir.shape %c2, %c3
+: (index, index) -> !fir.shape<2>
+%shape_result = fir.shape %c2
+: (index) -> !fir.shape<1>
+
+%a_decl:2 = hlfir.declare %a(%shape_a) {uniq_name = "a"}
+: (!fir.ref<!fir.array<2x3xf64>>, !fir.shape<2>)
+-> (!fir.ref<!fir.array<2x3xf64>>,
+!fir.ref<!fir.array<2x3xf64>>)
+
+%result_decl:2 =
+hlfir.declare %result(%shape_result) {uniq_name = "result"}
+: (!fir.ref<!fir.array<2xf64>>, !fir.shape<1>)
+-> (!fir.ref<!fir.array<2xf64>>,
+!fir.ref<!fir.array<2xf64>>)
+
+%sum = hlfir.sum %a_decl#0 dim %dim
+: (!fir.ref<!fir.array<2x3xf64>>, i32)
+-> !hlfir.expr<2xf64>
+
+hlfir.assign %sum to %result_decl#0
+: !hlfir.expr<2xf64>,
+!fir.ref<!fir.array<2xf64>>
+
+hlfir.destroy %sum : !hlfir.expr<2xf64>
+return
+}
+
+// SUM-DIM-2-LABEL: func.func @main(
+// SUM-DIM-2-SAME: %arg0: tensor<3x2xf64>
+// SUM-DIM-2-SAME: %arg1: tensor<2xf64>
+// SUM-DIM-2: %[[ZERO:[a-zA-Z0-9_]+]] = stablehlo.constant dense<{{.*}}> : tensor<f64>
+// SUM-DIM-2: %[[SUM:[a-zA-Z0-9_]+]] = stablehlo.reduce(%arg0 init: %[[ZERO]])
+// SUM-DIM-2-SAME: dimensions = [0]
+// SUM-DIM-2-SAME: (tensor<3x2xf64>, tensor<f64>) -> tensor<2xf64>
+// SUM-DIM-2: return %arg0, %[[SUM]]
+
+//--- sum-after-write.mlir
+
+func.func @kernel(
+%a: !fir.ref<!fir.array<4xf64>>,
+%b: !fir.ref<!fir.array<4xf64>>,
+%result: !fir.ref<f64>) {
+%c4 = arith.constant 4 : index
+%shape = fir.shape %c4 : (index) -> !fir.shape<1>
+
+%a_decl:2 = hlfir.declare %a(%shape) {uniq_name = "a"}
+: (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>)
+-> (!fir.ref<!fir.array<4xf64>>,
+!fir.ref<!fir.array<4xf64>>)
+
+%b_decl:2 = hlfir.declare %b(%shape) {uniq_name = "b"}
+: (!fir.ref<!fir.array<4xf64>>, !fir.shape<1>)
+-> (!fir.ref<!fir.array<4xf64>>,
+!fir.ref<!fir.array<4xf64>>)
+
+%result_decl:2 = hlfir.declare %result {uniq_name = "result"}
+: (!fir.ref<f64>)
+-> (!fir.ref<f64>, !fir.ref<f64>)
+
+hlfir.assign %b_decl#0 to %a_decl#0
+: !fir.ref<!fir.array<4xf64>>,
+!fir.ref<!fir.array<4xf64>>
+
+%sum = hlfir.sum %a_decl#0
+: (!fir.ref<!fir.array<4xf64>>) -> f64
+
+hlfir.assign %sum to %result_decl#0
+: f64, !fir.ref<f64>
+
+return
+}
+
+// SUM-AFTER-WRITE-LABEL: func.func @main(
+// SUM-AFTER-WRITE: %[[ZERO:[a-zA-Z0-9_]+]] = stablehlo.constant dense<{{.*}}> : tensor<f64>
+// SUM-AFTER-WRITE: %[[SUM:[a-zA-Z0-9_]+]] = stablehlo.reduce(%arg1 init: %[[ZERO]])
+// SUM-AFTER-WRITE-SAME: dimensions = [0]
+// SUM-AFTER-WRITE-SAME: (tensor<4xf64>, tensor<f64>) -> tensor<f64>
+// SUM-AFTER-WRITE: return %arg1, %arg1, %[[SUM]]
+
+
+
