@@ -15,7 +15,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Matchers.h"
@@ -25,24 +24,21 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FormatVariadic.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <regex>
 #include <utility>
-#include "../support/profiler.h"
-#include "../support/utilities.h"
 #include "transform/Utils.h"
 
 using namespace mlir;
@@ -234,6 +230,7 @@ static void terminateFunction(
   return;
 };
 
+// TODO: only support 0 rank broadcasting
 static std::pair<Value, Value> alignShapes(
   OpBuilder& opBuilder,
   Location loc,
@@ -695,6 +692,22 @@ static void translateOperation(
       assert(state.valueMap.contains(nop.getOperand()));
       state.valueMap[nop.getResult()] = state.valueMap.at(nop.getOperand());
     })
+    .Case<
+      arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
+      arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
+      arith::CmpFOp, arith::CmpIOp,
+      math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp,
+      arith::SelectOp
+    >(
+      [&](Operation* arithOp){
+      // Reuse the handleArithOp
+      assert(op->getNumResults() == 1);
+      llvm::SmallVector<Value> tensorArgs;
+      for (const auto& operand: op->getOperands()) {
+        tensorArgs.push_back(state.getTensorValue(opBuilder, operand));
+      }
+      state.valueMap[op->getResult(0)] = handleArithOp(opBuilder, state, arithOp, tensorArgs);
+    })
     // INFO: built-in array operations
     .Case([&](hlfir::TransposeOp transposeOp){
       auto opTy = toCorrespondingTensorTy(transposeOp.getOperand().getType());
@@ -728,6 +741,8 @@ static void translateOperation(
       state.valueMap[mmOp.getResult()] = stablehloDotGeneralOp.getResult();
     })
     .Case([&](hlfir::SumOp sumOp){
+      assert(!sumOp.getMask() && "Masked SUM is not supported");
+      
       // From:
       // %17 = "hlfir.sum"(%16, %2) : (!hlfir.expr<100x128xf64>, i32) -> !hlfir.expr<?xf64>
       // To: Reduce operation
@@ -754,6 +769,8 @@ static void translateOperation(
         assert(constOp && "the dim must be known!");
         int64_t fortranDimVal = llvm::cast<IntegerAttr>(constOp.getValue()).getInt();
         int64_t stableHloDim = inputTy.getRank() - fortranDimVal;
+        assert(fortranDimVal >= 1);
+        assert(fortranDimVal <= inputTy.getRank());
         reduceDims.push_back(stableHloDim);
       } else {
         for (int64_t i = 0; i < inputTy.getRank(); ++i) {
@@ -833,24 +850,31 @@ static void translateOperation(
       state.valueMap[zeroOp.getResult()] = stablehloZeroOp.getResult();
     })
     .Case([&](fir::DeclareOp declareOp){
-      assert(declareOp.getNumOperands() == 1);
       assert(state.referenceMap.contains(declareOp.getMemref()));
       state.referenceMap[declareOp.getResult()] = state.referenceMap.at(declareOp.getMemref()); 
     })
     .Case([&](fir::ConvertOp convertOp){
+      auto isReferenceLike = [](Type type) -> bool {
+        return fir::isa_ref_type(type) 
+          || fir::isa_box_type(type)
+          || llvm::isa<MemRefType>(type);
+      };
       // If input element type and output element type is the same, should not generate any stablehlo convert.
       // For example:
       // - %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
       auto convertFrom = convertOp.getOperand();
       auto convertTo = convertOp.getResult();
-      auto convertFromTypeInfo = inspectTypeInfo(convertFrom.getType());
-      auto convertToTypeInfo = inspectTypeInfo(convertTo.getType());
       // both from and to are mems
-      if (convertFromTypeInfo.elementTy == convertToTypeInfo.elementTy) {
+      if (isReferenceLike(convertFrom.getType()) && isReferenceLike(convertTo.getType())) {
         assert(state.referenceMap.contains(convertFrom));
         state.referenceMap[convertTo] = state.referenceMap.at(convertFrom);
       } else {
-        auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, op->getLoc(), convertFrom, convertTo.getType());
+        assert(!isReferenceLike(convertFrom.getType()));
+        assert(!isReferenceLike(convertTo.getType()));
+        auto input = state.getTensorValue(opBuilder, convertFrom);
+        assert(llvm::isa<RankedTensorType>(input.getType()));
+        Type outputType = convertTo.getType();
+        auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, op->getLoc(), input, outputType);
         state.valueMap[convertTo] = stableHLOConvertOp.getResult();
       }
     })
@@ -869,7 +893,9 @@ static void translateOperation(
       auto storeFrom = storeOp.getValueToStore(); 
       auto storeTo = storeOp.getMemRef();
       assert(state.valueMap.contains(storeFrom));
-      state.memoryMap[storeTo] = state.getTensorValue(opBuilder, storeFrom);
+      auto storeToRef = state.referenceMap.at(storeTo);
+      assert(storeToRef.triplets.empty());
+      state.memoryMap[storeToRef.root] = state.getTensorValue(opBuilder, storeFrom);
     })
     .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
       // TODO: can have indices      
@@ -877,15 +903,23 @@ static void translateOperation(
       auto storeFrom = storeOp.getValueToStore(); 
       auto storeTo = storeOp.getMemRef();
       assert(state.valueMap.contains(storeFrom));
-      state.memoryMap[storeTo] = state.getTensorValue(opBuilder, storeFrom);
+      auto storeToRef = state.referenceMap.at(storeTo);
+      assert(storeToRef.triplets.empty());
+      state.memoryMap[storeToRef.root] = state.getTensorValue(opBuilder, storeFrom);
     })
     .Case([&](bufferization::MaterializeInDestinationOp mop){
-      state.memoryMap[mop.getDest()] = state.getTensorValue(opBuilder, mop.getSource());
+      assert(state.referenceMap.contains(mop.getDest()));
+      auto destRefVal = state.referenceMap.at(mop.getDest());
+      assert(destRefVal.triplets.empty());
+      state.memoryMap[destRefVal.root] = state.getTensorValue(opBuilder, mop.getSource());
     })
     .Case([&](bufferization::ToBufferOp toBufferOp){
+      state.referenceMap[toBufferOp.getResult()] = {toBufferOp.getResult(), {}};
       state.memoryMap[toBufferOp.getResult()] = state.getTensorValue(opBuilder, toBufferOp.getOperand());
     })
     .Case([&](func::CallOp callOp){
+      // NOTE: this operation is generated when outline the scalar loop, it will be replaced with a function call in the main function.
+      // In our outline pass design, this function's arguments count and returned values count will be strictly equal.
       auto paramsCount = callOp.getNumOperands();
       auto originalArgs = callOp.getArgOperands();
       llvm::SmallVector<Value> translatedArgs(paramsCount);
@@ -898,6 +932,7 @@ static void translateOperation(
       func::FuncOp calleeFunc = moduleOp.lookupSymbol<func::FuncOp>(callOp.getCallee());
       assert(calleeFunc);
       auto translatedCallOp = func::CallOp::create(opBuilder, callOp.getLoc(), calleeFunc, translatedArgs);
+      assert(callOp.getNumOperands() == callOp.getNumResults());
       assert(callOp.getNumResults() == translatedCallOp.getNumResults());
       for (int i = 0; i < callOp.getNumOperands(); i++) {
         state.valueMap[callOp.getResult(i)] = translatedCallOp.getResult(i);
@@ -953,6 +988,13 @@ struct TranslatePass
     return sliceShiftMap;
   };
 
+
+  bool isStableHLOFunction(::mlir::StringRef functionName) {
+    auto pattern = llvm::formatv("^{0}[0-9]+_raised$", JIT_OUTLINE_AFFINE_FUNC_PREFIX).str(); 
+    std::regex re(pattern);
+    return std::regex_match(functionName.str(), re);
+  }
+
   void getDependentDialects(mlir::DialectRegistry & registry) const override {
     registry.insert<stablehlo::StablehloDialect>();
   }
@@ -970,7 +1012,9 @@ struct TranslatePass
     // Add funcs to transform into list
     llvm::SmallVector<func::FuncOp>  funcsToReplace;
     moduleOp.walk([&](func::FuncOp fOp){
-      funcsToReplace.push_back(fOp);
+      if (!isStableHLOFunction(fOp.getName())) {
+        funcsToReplace.push_back(fOp);
+      }
     });
 
     for (func::FuncOp oldFOp: funcsToReplace) {
