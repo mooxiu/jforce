@@ -32,12 +32,10 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FormatVariadic.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
-#include <regex>
 #include <utility>
 #include "transform/Utils.h"
 
