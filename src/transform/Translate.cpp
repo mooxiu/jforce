@@ -399,7 +399,37 @@ static Value handleArithOp(
     .Case<math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp>([&](Operation* unaryArithOp){
       assert(tensorArgs.size() == 1);
       return handleUninaryArithOp(opBuilder, state, unaryArithOp, tensorArgs);
-    });
+    })
+    .Case([&](arith::SelectOp sop){
+      // %190 = "arith.select"(%189, %186, %187) : (i1, f64, f64) -> f64
+      assert(sop.getNumOperands() == 3 && "Unexpected select oeprands size!");
+      auto condSrc = tensorArgs[0];
+      auto trueSrc = tensorArgs[1];
+      auto falseSrc = tensorArgs[2];
+
+      // Consider example when comparing a tensor with a scalar 0: ReLU(x) =
+      // MAX(x, 0) In such a case, we have to broadcast the operand!
+      RankedTensorType trueTy = llvm::dyn_cast<RankedTensorType>(trueSrc.getType());
+      RankedTensorType falseTy = llvm::dyn_cast<RankedTensorType>(falseSrc.getType());
+
+      // StableHLO select requires true and false operands to have the same
+      // shape. Insert BroadcastInDim if there is a scalar vs tensor mismatch.
+      if (trueTy.getRank() != falseTy.getRank()) {
+        Value largerOperand = (trueTy.getRank() > falseTy.getRank()) ? trueSrc : falseSrc;
+        Value smallerOperand = (trueTy.getRank() > falseTy.getRank()) ? falseSrc : trueSrc;
+        RankedTensorType targetTy = llvm::dyn_cast<RankedTensorType>(largerOperand.getType());
+        DenseI64ArrayAttr diaa = opBuilder.getDenseI64ArrayAttr({});
+        auto broadcastOp = stablehlo::BroadcastInDimOp::create(opBuilder, sop.getLoc(), targetTy, smallerOperand, diaa);
+        if (trueTy.getRank() > falseTy.getRank()) {
+          falseSrc = broadcastOp.getResult();
+        } else {
+          trueSrc = broadcastOp.getResult();
+        }
+      }
+      auto stableHLOSelectRes = stablehlo::SelectOp::create(opBuilder, sop.getLoc(), condSrc, trueSrc, falseSrc);
+      return stableHLOSelectRes.getResult();
+    })
+  ;
 }
 
 struct ElementalState {
@@ -440,7 +470,8 @@ static void translateElementalOp(
       arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
       arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
       arith::CmpFOp, arith::CmpIOp,
-      math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp
+      math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp,
+      arith::SelectOp
     >(
       [&](Operation* arithOp){
       // Reuse the handleArithOp
@@ -451,7 +482,8 @@ static void translateElementalOp(
       }
       eleState.localValueMap[op->getResult(0)] = handleArithOp(opBuilder, eleState.globalState, arithOp, tensorArgs);
     })
-    .Default([](auto unsupported){
+    .Default([](Operation* unsupported){
+      unsupported->dump();
       llvm_unreachable("unsupported");
     });
 }
@@ -689,6 +721,7 @@ static void translateOperation(
       func::ReturnOp, omp::WorkdistributeOp, omp::TeamsOp, omp::TerminatorOp>([](auto) {
         // No runtime tensor semantics.
     })
+    // INFO: support especially for scalar operation
     .Default([&](auto unsupportedOp){
       unsupportedOp->dump();
       llvm_unreachable("Unsupported operation in TranslatePass");

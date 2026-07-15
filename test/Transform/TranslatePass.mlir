@@ -16,7 +16,7 @@
 // RUN: %jforce-opt %t/matmul-order.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-ORDER
 // RUN: %jforce-opt %t/matmul-chain.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-CHAIN
 // RUN: %jforce-opt %t/matmul-slice.mlir --jforce-translatev2 | FileCheck %s --check-prefix=MATMUL-SLICE
-// XRUN : %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
+// RUN: %jforce-opt %t/attention.mlir --jforce-translatev2 | FileCheck %s --check-prefix=ATTENTION
 
 //--- dummy.mlir
 // Dummy Workdistribute Example
