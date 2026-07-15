@@ -9,7 +9,6 @@ else()
 endif()
 
 add_library(JitTransforms STATIC 
-  TranslatePass.cpp
   MemOpsFoldingPass.cpp
   CleanTempsPass.cpp
   AnnotatePass.cpp
@@ -17,7 +16,7 @@ add_library(JitTransforms STATIC
   ShapeInferPass.cpp
   TrimArgsPass.cpp
   WorkdistributeToStableHLOPass.cpp
-  Passes.cpp
+  TranslatePass.cpp # INFO: intend to replace WorkdistributeToStableHLOPass.cpp 
   CleanFIRLoopPass.cpp
   OptimizingMemOpsPass.cpp
   CleanFIROpsPass.cpp
@@ -30,6 +29,7 @@ add_library(JitTransforms STATIC
   FoldRepeatConversionPass.cpp
   CmpToMINMAXPass.cpp
   Utils.cpp
+  Passes.cpp
 
   # INFO: some passes copied and adapted from Enzyme-JAX project
   EnzymeJAX/PolygeistMem2RegPass.cpp
