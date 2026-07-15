@@ -237,7 +237,7 @@ static Value handleBinaryArithOp(
 ) {
   Location loc = op->getLoc();
   auto alignShape = [&](Value hloO0, Value hloO1) -> std::pair<Value, Value> {
-    assert(llvm::isa<RankedTensorType>(hloO1.getType()));
+    assert(llvm::isa<RankedTensorType>(hloO0.getType()));
     assert(llvm::isa<RankedTensorType>(hloO1.getType()));
     auto typeInfo0 = inspectTypeInfo(hloO0.getType());
     auto typeInfo1 = inspectTypeInfo(hloO1.getType());
@@ -320,6 +320,7 @@ static Value handleBinaryArithOp(
     })
     .Case<arith::CmpIOp>([&](arith::CmpIOp cmpOp){
       stablehlo::ComparisonDirection direction;
+      bool isUnsigned = false;
       switch (cmpOp.getPredicate()) {
         case arith::CmpIPredicate::eq:
           direction = stablehlo::ComparisonDirection::EQ;
@@ -328,23 +329,38 @@ static Value handleBinaryArithOp(
           direction = stablehlo::ComparisonDirection::NE;
           break;
         case arith::CmpIPredicate::sgt:
-        case arith::CmpIPredicate::ugt:
           direction = stablehlo::ComparisonDirection::GT;
           break;
+        case arith::CmpIPredicate::ugt:
+          direction = stablehlo::ComparisonDirection::GT;
+          isUnsigned = true;
+          break;
         case arith::CmpIPredicate::sge:
-        case arith::CmpIPredicate::uge:
           direction = stablehlo::ComparisonDirection::GE;
           break;
+        case arith::CmpIPredicate::uge:
+          direction = stablehlo::ComparisonDirection::GE;
+          isUnsigned = true;
+          break;
         case arith::CmpIPredicate::slt:
-        case arith::CmpIPredicate::ult:
           direction = stablehlo::ComparisonDirection::LT;
           break;
+        case arith::CmpIPredicate::ult:
+          direction = stablehlo::ComparisonDirection::LT;
+          isUnsigned = true;
+          break;
         case arith::CmpIPredicate::sle:
+          direction = stablehlo::ComparisonDirection::LE;
+          break;
         case arith::CmpIPredicate::ule:
           direction = stablehlo::ComparisonDirection::LE;
+          isUnsigned = true;
           break;
         default:
           llvm_unreachable("Unsupported arith::CmpFPredicate for StableHLO conversion!");
+      }
+      if (isUnsigned) {
+        return stablehlo::CompareOp::create(opBuilder, loc, hloO0, hloO1, direction, stablehlo::ComparisonType::UNSIGNED);
       }
       return stablehlo::CompareOp::create(opBuilder, loc, hloO0, hloO1, direction, stablehlo::ComparisonType::SIGNED);
     });
