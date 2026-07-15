@@ -10,5 +10,4 @@ third_party/protos/generated
 leak_report.txt
 err.log
 xla_dump/
-tests/fortran/
-tests/tmp.mlir
+tests/
