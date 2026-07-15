@@ -989,10 +989,10 @@ struct TranslatePass
   };
 
 
-  bool isStableHLOFunction(::mlir::StringRef functionName) {
-    auto pattern = llvm::formatv("^{0}[0-9]+_raised$", JIT_OUTLINE_AFFINE_FUNC_PREFIX).str(); 
-    std::regex re(pattern);
-    return std::regex_match(functionName.str(), re);
+  bool isStableHLOFunction(func::FuncOp funcOp) {
+    return llvm::any_of(funcOp.front().getOperations(), [](Operation& op){
+      return op.getName().getDialectNamespace().contains_insensitive("stablehlo");
+    });
   }
 
   void getDependentDialects(mlir::DialectRegistry & registry) const override {
@@ -1012,7 +1012,7 @@ struct TranslatePass
     // Add funcs to transform into list
     llvm::SmallVector<func::FuncOp>  funcsToReplace;
     moduleOp.walk([&](func::FuncOp fOp){
-      if (!isStableHLOFunction(fOp.getName())) {
+      if (!isStableHLOFunction(fOp)) {
         funcsToReplace.push_back(fOp);
       }
     });
