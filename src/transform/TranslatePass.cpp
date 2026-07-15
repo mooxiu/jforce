@@ -2,9 +2,13 @@
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -12,6 +16,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
@@ -35,6 +40,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "transform/Utils.h"
@@ -228,6 +234,42 @@ static void terminateFunction(
   return;
 };
 
+static std::pair<Value, Value> alignShapes(
+  OpBuilder& opBuilder,
+  Location loc,
+  Value tensorVal0, 
+  Value tensorVal1
+) {
+  assert(llvm::isa<RankedTensorType>(tensorVal0.getType()));
+  assert(llvm::isa<RankedTensorType>(tensorVal1.getType()));
+  auto typeInfo0 = inspectTypeInfo(tensorVal0.getType());
+  auto typeInfo1 = inspectTypeInfo(tensorVal1.getType());
+  if (typeInfo0.rank == typeInfo1.rank) {
+    assert(typeInfo0.shape == typeInfo1.shape);
+    return std::pair<Value, Value>(tensorVal0, tensorVal1);
+  }
+  if (typeInfo0.rank < typeInfo1.rank) {
+    auto broadcastOp = stablehlo::BroadcastInDimOp::create(
+      opBuilder, 
+      loc,
+      tensorVal1.getType(),
+      tensorVal0,
+      opBuilder.getDenseI64ArrayAttr({})
+    );
+    return std::make_pair(broadcastOp.getResult(), tensorVal1);
+  } else {
+    // hlo0 has larger rank
+    auto broadcastOp = stablehlo::BroadcastInDimOp::create(
+      opBuilder, 
+      loc,
+      tensorVal0.getType(),
+      tensorVal1,
+      opBuilder.getDenseI64ArrayAttr({})
+    );
+    return std::make_pair(tensorVal0, broadcastOp.getResult());
+  }
+}
+
 
 static Value handleBinaryArithOp(
   OpBuilder& opBuilder, 
@@ -236,37 +278,7 @@ static Value handleBinaryArithOp(
   const llvm::SmallVector<Value>& args
 ) {
   Location loc = op->getLoc();
-  auto alignShape = [&](Value hloO0, Value hloO1) -> std::pair<Value, Value> {
-    assert(llvm::isa<RankedTensorType>(hloO0.getType()));
-    assert(llvm::isa<RankedTensorType>(hloO1.getType()));
-    auto typeInfo0 = inspectTypeInfo(hloO0.getType());
-    auto typeInfo1 = inspectTypeInfo(hloO1.getType());
-    if (typeInfo0.rank == typeInfo1.rank) {
-      assert(typeInfo0.shape == typeInfo1.shape);
-      return std::pair<Value, Value>(hloO0, hloO1);
-    }
-    if (typeInfo0.rank < typeInfo1.rank) {
-      auto broadcastOp = stablehlo::BroadcastInDimOp::create(
-        opBuilder, 
-        loc,
-        hloO1.getType(),
-        hloO0,
-        opBuilder.getDenseI64ArrayAttr({})
-      );
-      return std::make_pair(broadcastOp.getResult(), hloO1);
-    } else {
-      // hlo0 has larger rank
-      auto broadcastOp = stablehlo::BroadcastInDimOp::create(
-        opBuilder, 
-        loc,
-        hloO0.getType(),
-        hloO1,
-        opBuilder.getDenseI64ArrayAttr({})
-      );
-      return std::make_pair(hloO0, broadcastOp.getResult());
-    }
-  };
-  auto opPair = alignShape(args[0], args[1]);
+  auto opPair = alignShapes(opBuilder, loc, args[0], args[1]);
   auto hloO0 = opPair.first;
   auto hloO1 = opPair.second;
   Operation* createdHLOOp = llvm::TypeSwitch<Operation*, Operation*>(op)
@@ -419,30 +431,8 @@ static Value handleArithOp(
     .Case([&](arith::SelectOp sop){
       // %190 = "arith.select"(%189, %186, %187) : (i1, f64, f64) -> f64
       assert(sop.getNumOperands() == 3 && "Unexpected select oeprands size!");
-      auto condSrc = tensorArgs[0];
-      auto trueSrc = tensorArgs[1];
-      auto falseSrc = tensorArgs[2];
-
-      // Consider example when comparing a tensor with a scalar 0: ReLU(x) =
-      // MAX(x, 0) In such a case, we have to broadcast the operand!
-      RankedTensorType trueTy = llvm::dyn_cast<RankedTensorType>(trueSrc.getType());
-      RankedTensorType falseTy = llvm::dyn_cast<RankedTensorType>(falseSrc.getType());
-
-      // StableHLO select requires true and false operands to have the same
-      // shape. Insert BroadcastInDim if there is a scalar vs tensor mismatch.
-      if (trueTy.getRank() != falseTy.getRank()) {
-        Value largerOperand = (trueTy.getRank() > falseTy.getRank()) ? trueSrc : falseSrc;
-        Value smallerOperand = (trueTy.getRank() > falseTy.getRank()) ? falseSrc : trueSrc;
-        RankedTensorType targetTy = llvm::dyn_cast<RankedTensorType>(largerOperand.getType());
-        DenseI64ArrayAttr diaa = opBuilder.getDenseI64ArrayAttr({});
-        auto broadcastOp = stablehlo::BroadcastInDimOp::create(opBuilder, sop.getLoc(), targetTy, smallerOperand, diaa);
-        if (trueTy.getRank() > falseTy.getRank()) {
-          falseSrc = broadcastOp.getResult();
-        } else {
-          trueSrc = broadcastOp.getResult();
-        }
-      }
-      auto stableHLOSelectRes = stablehlo::SelectOp::create(opBuilder, sop.getLoc(), condSrc, trueSrc, falseSrc);
+      auto [trueTensor, falseTensor] = alignShapes(opBuilder, sop.getLoc(), tensorArgs[1], tensorArgs[2]);
+      auto stableHLOSelectRes = stablehlo::SelectOp::create(opBuilder, sop.getLoc(), tensorArgs[0], trueTensor, falseTensor);
       return stableHLOSelectRes.getResult();
     })
   ;
@@ -698,8 +688,12 @@ static void translateOperation(
         .triplets = std::move(triplets),
       };
     })
-    .Case([&](fir::AllocaOp allocaOp){
+    .Case<fir::AllocaOp, memref::AllocaOp>([&](auto allocaOp){
       state.referenceMap[allocaOp.getResult()] = {allocaOp.getResult(), {}};
+    })
+    .Case([&](hlfir::NoReassocOp nop){
+      assert(state.valueMap.contains(nop.getOperand()));
+      state.valueMap[nop.getResult()] = state.valueMap.at(nop.getOperand());
     })
     // INFO: built-in array operations
     .Case([&](hlfir::TransposeOp transposeOp){
@@ -733,11 +727,187 @@ static void translateOperation(
           opBuilder, op->getLoc(), resTy, op1, op0, dims, config, algo);
       state.valueMap[mmOp.getResult()] = stablehloDotGeneralOp.getResult();
     })
+    .Case([&](hlfir::SumOp sumOp){
+      // From:
+      // %17 = "hlfir.sum"(%16, %2) : (!hlfir.expr<100x128xf64>, i32) -> !hlfir.expr<?xf64>
+      // To: Reduce operation
+      auto inputFir = sumOp.getArray();
+      auto inputHlo = state.getTensorValue(opBuilder, inputFir);
+      assert(inputHlo && "inputHlo not exist!");
+
+      auto inputTy = llvm::dyn_cast<RankedTensorType>(inputHlo.getType());
+      assert(inputTy && "hlfir.sum input must be a ranked tensor in StableHLO");
+      auto eleTy = inputTy.getElementType();
+
+      auto zeroAttr = opBuilder.getZeroAttr(eleTy);
+      // accum of the sum result
+      auto initValOp = stablehlo::ConstantOp::create(
+          opBuilder, 
+          op->getLoc(),
+          DenseElementsAttr::get(RankedTensorType::get({}, eleTy), zeroAttr)
+      );
+      Value initVal = initValOp.getResult();
+
+      llvm::SmallVector<int64_t> reduceDims;
+      if (sumOp.getDim()) { // %2
+        auto constOp = llvm::dyn_cast_or_null<arith::ConstantOp>(sumOp.getDim().getDefiningOp());
+        assert(constOp && "the dim must be known!");
+        int64_t fortranDimVal = llvm::cast<IntegerAttr>(constOp.getValue()).getInt();
+        int64_t stableHloDim = inputTy.getRank() - fortranDimVal;
+        reduceDims.push_back(stableHloDim);
+      } else {
+        for (int64_t i = 0; i < inputTy.getRank(); ++i) {
+          reduceDims.push_back(i);
+        }
+      }
+      auto resultFirTy = sumOp.getResult().getType();
+      auto resultHloTy = toCorrespondingTensorTy(resultFirTy);
+      auto reduceOp = stablehlo::ReduceOp::create(
+          opBuilder, 
+          op->getLoc(), 
+          TypeRange{resultHloTy},
+          ValueRange{inputHlo}, 
+          ValueRange{initVal},
+          opBuilder.getDenseI64ArrayAttr(reduceDims)
+      );
+      Region &region = reduceOp.getBody();
+      Block *block = opBuilder.createBlock(&region);
+      auto scalarTy = RankedTensorType::get({}, eleTy);
+      block->addArguments({scalarTy, scalarTy}, {op->getLoc(), op->getLoc()});
+
+      OpBuilder::InsertionGuard reduceBlockGuard(opBuilder);
+      opBuilder.setInsertionPointToStart(block);
+      auto addOp = stablehlo::AddOp::create(
+        opBuilder, 
+        op->getLoc(),
+        scalarTy, 
+        block->getArgument(0),
+        block->getArgument(1)
+      );
+      stablehlo::ReturnOp::create(
+        opBuilder, 
+        op->getLoc(),
+        ValueRange{addOp.getResult()}
+      );
+      state.valueMap[sumOp.getResult()] = reduceOp.getResult(0);
+    })
+    .Case([&](hlfir::DotProductOp dpOp){
+      // example: %151 = hlfir.dot_product %148#0 %150#0
+      // TODO: only support 1d arrays dot product
+      assert(dpOp.getNumOperands() == 2 && "Failure of expecting dot product op has 2 operands!\n");
+      auto lhs = state.getTensorValue(opBuilder, dpOp.getOperand(0));
+      auto rhs = state.getTensorValue(opBuilder, dpOp.getOperand(1));
+     
+      auto lhsTy = llvm::dyn_cast<RankedTensorType>(lhs.getType());
+      auto scalarType = RankedTensorType::get({}, lhsTy.getElementType());
+      stablehlo::DotDimensionNumbersAttr attr =
+          stablehlo::DotDimensionNumbersAttr::get(opBuilder.getContext(), {}, {}, {0}, {0});
+      ArrayAttr precisionConfig = {};
+      stablehlo::DotAlgorithmAttr algoAttr = {};
+      auto stablehloDotProductOp = stablehlo::DotGeneralOp::create(
+        opBuilder, 
+        op->getLoc(), 
+        scalarType, 
+        lhs, 
+        rhs, 
+        attr,
+        precisionConfig, 
+        algoAttr
+      );
+      state.valueMap[dpOp.getResult()] = stablehloDotProductOp.getResult();
+    })
+    // INFO: support especially for scalar operation
+    .Case([&](fir::ZeroOp zeroOp){
+      mlir::Type resType = zeroOp.getType();
+      mlir::Attribute zeroAttr;
+      if (resType.isIndex()) {
+        zeroAttr = IntegerAttr::get(IntegerType::get(opBuilder.getContext(), 64), 0);
+      } else if (llvm::isa<mlir::IntegerType>(resType)) {
+        zeroAttr = IntegerAttr::get(resType, 0);
+      } else if (llvm::isa<mlir::FloatType>(resType)) {
+        zeroAttr = FloatAttr::get(resType, 0.0);
+      } else {
+        zeroAttr = opBuilder.getZeroAttr(resType);
+      }
+      auto stablehloZeroOp = stablehlo::ConstantOp::create(opBuilder, zeroOp->getLoc(), zeroAttr);
+      state.valueMap[zeroOp.getResult()] = stablehloZeroOp.getResult();
+    })
+    .Case([&](fir::DeclareOp declareOp){
+      assert(declareOp.getNumOperands() == 1);
+      assert(state.referenceMap.contains(declareOp.getMemref()));
+      state.referenceMap[declareOp.getResult()] = state.referenceMap.at(declareOp.getMemref()); 
+    })
+    .Case([&](fir::ConvertOp convertOp){
+      // If input element type and output element type is the same, should not generate any stablehlo convert.
+      // For example:
+      // - %10 = fir.convert %4 : (!fir.ref<!fir.array<4xf64>>) -> memref<4xf64>
+      auto convertFrom = convertOp.getOperand();
+      auto convertTo = convertOp.getResult();
+      auto convertFromTypeInfo = inspectTypeInfo(convertFrom.getType());
+      auto convertToTypeInfo = inspectTypeInfo(convertTo.getType());
+      // both from and to are mems
+      if (convertFromTypeInfo.elementTy == convertToTypeInfo.elementTy) {
+        assert(state.referenceMap.contains(convertFrom));
+        state.referenceMap[convertTo] = state.referenceMap.at(convertFrom);
+      } else {
+        auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, op->getLoc(), convertFrom, convertTo.getType());
+        state.valueMap[convertTo] = stableHLOConvertOp.getResult();
+      }
+    })
+    .Case([&](::mlir::affine::AffineLoadOp loadOp){
+      // TODO: loadOp's mem can have indices? should create a slice?
+      assert(loadOp.getNumOperands() == 1);
+      assert(loadOp.getIndices().empty());
+      state.valueMap[loadOp.getResult()] = state.getTensorValue(opBuilder, loadOp.getMemref());
+    })
+    .Case([&](::mlir::bufferization::ToTensorOp toTensorOp){
+      state.valueMap[toTensorOp.getResult()] = state.getTensorValue(opBuilder, toTensorOp.getOperand());
+    })
+    .Case<affine::AffineStoreOp>([&](affine::AffineStoreOp storeOp){
+      // TODO: can have indices      
+      assert(storeOp.getIndices().empty());
+      auto storeFrom = storeOp.getValueToStore(); 
+      auto storeTo = storeOp.getMemRef();
+      assert(state.valueMap.contains(storeFrom));
+      state.memoryMap[storeTo] = state.getTensorValue(opBuilder, storeFrom);
+    })
+    .Case<memref::StoreOp>([&](memref::StoreOp storeOp){
+      // TODO: can have indices      
+      assert(storeOp.getIndices().empty());
+      auto storeFrom = storeOp.getValueToStore(); 
+      auto storeTo = storeOp.getMemRef();
+      assert(state.valueMap.contains(storeFrom));
+      state.memoryMap[storeTo] = state.getTensorValue(opBuilder, storeFrom);
+    })
+    .Case([&](bufferization::MaterializeInDestinationOp mop){
+      state.memoryMap[mop.getDest()] = state.getTensorValue(opBuilder, mop.getSource());
+    })
+    .Case([&](bufferization::ToBufferOp toBufferOp){
+      state.memoryMap[toBufferOp.getResult()] = state.getTensorValue(opBuilder, toBufferOp.getOperand());
+    })
+    .Case([&](func::CallOp callOp){
+      auto paramsCount = callOp.getNumOperands();
+      auto originalArgs = callOp.getArgOperands();
+      llvm::SmallVector<Value> translatedArgs(paramsCount);
+      for (int i = 0; i < paramsCount; i++) {
+        Value originalArg = originalArgs[i];
+        translatedArgs[i] = state.getTensorValue(opBuilder, originalArg);
+      }
+      auto moduleOp = callOp->getParentOfType<ModuleOp>();
+      assert(moduleOp);
+      func::FuncOp calleeFunc = moduleOp.lookupSymbol<func::FuncOp>(callOp.getCallee());
+      assert(calleeFunc);
+      auto translatedCallOp = func::CallOp::create(opBuilder, callOp.getLoc(), calleeFunc, translatedArgs);
+      assert(callOp.getNumResults() == translatedCallOp.getNumResults());
+      for (int i = 0; i < callOp.getNumOperands(); i++) {
+        state.valueMap[callOp.getResult(i)] = translatedCallOp.getResult(i);
+      }
+    })
+    // INFO: ignored results, instead of print out
     .Case<fir::ShapeOp, fir::ShapeShiftOp, hlfir::DestroyOp,
       func::ReturnOp, omp::WorkdistributeOp, omp::TeamsOp, omp::TerminatorOp>([](auto) {
         // No runtime tensor semantics.
     })
-    // INFO: support especially for scalar operation
     .Default([&](auto unsupportedOp){
       unsupportedOp->dump();
       llvm_unreachable("Unsupported operation in TranslatePass");
