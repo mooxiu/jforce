@@ -1,4 +1,4 @@
-# XLA_GLUE
+# SETUP
 
 ## Preparation 1: XLA Related
 ### Copy PJRT API 

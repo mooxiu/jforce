@@ -1,3 +1,5 @@
+//FIXME:  SmallVector<Value> mlir::makeRegionIsolatedFromAbove from RegionUtils.cpp seems do similar things, maybe I can use that instead!
+
 #include "Utils.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
