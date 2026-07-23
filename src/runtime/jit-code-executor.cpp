@@ -290,7 +290,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase3.addPass(xla_jit::createArithRaisingPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(xla_jit::createRemergePass());
-  pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
+  // pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
+  pm.addPass(xla_jit::createTranslatePass());
   pm.addPass(createInlinerPass());
   auto& nestedPMPhase4 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase4.addPass(stablehlo::createStablehloAggressiveSimplificationPass());

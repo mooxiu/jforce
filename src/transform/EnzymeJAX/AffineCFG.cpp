@@ -1379,6 +1379,8 @@ void fully2ComposeIntegerSetAndOperands(
 
 namespace {
 struct AffineCFGPass : public PassWrapper<AffineCFGPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AffineCFGPass)
+
   void getDependentDialects(mlir::DialectRegistry & registry) const override;
   StringRef getArgument() const override;
   void runOnOperation() override;

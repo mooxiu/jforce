@@ -5,6 +5,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/TypeID.h"
 #include "llvm/Support/Casting.h"
 
 using namespace mlir;
@@ -31,6 +32,8 @@ static bool foldLoadOpWithConstant(OpBuilder &opBuilder, fir::LoadOp loadOp,
 struct PropagateConstantsPass
     : public mlir::PassWrapper<PropagateConstantsPass,
                                mlir::OperationPass<func::FuncOp>> {
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PropagateConstantsPass)
 
   StringRef getArgument() const override {
     return "jforce-propagate-constants";

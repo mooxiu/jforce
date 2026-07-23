@@ -337,6 +337,9 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
 struct OutlineAffinePass
     : public mlir::PassWrapper<OutlineAffinePass,
                                mlir::OperationPass<mlir::ModuleOp>> {
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(OutlineAffinePass)
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect>();
     registry.insert<memref::MemRefDialect>();

@@ -18,8 +18,11 @@ llvm::SmallVector<mlir::MemoryEffects::EffectInstance> getMemoryEffects(Operatio
 bool mayAccessMemory(Value val, Operation* op, fir::AliasAnalysis& aa) {
   auto effects = getMemoryEffects(op);
   for (const auto& effect: effects) {
+    if (!effect.getValue()) {
+      return true;
+    }
     if (effect.getValue()) {
-      if (aa.alias(effect.getValue(), val).isMay()) return true;
+      if (!aa.alias(effect.getValue(), val).isNo()) return true;
     }
   }
   return false;

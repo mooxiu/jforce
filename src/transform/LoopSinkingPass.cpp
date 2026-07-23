@@ -102,6 +102,9 @@ struct SinkToInnerLoop : OpRewritePattern<affine::AffineForOp> {
 struct LoopSinkingPass
     : public mlir::PassWrapper<LoopSinkingPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LoopSinkingPass)
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect>();
     registry.insert<memref::MemRefDialect>();

@@ -300,6 +300,14 @@ static Value handleBinaryArithOp(
   auto hloO0 = opPair.first;
   auto hloO1 = opPair.second;
   Operation* createdHLOOp = llvm::TypeSwitch<Operation*, Operation*>(op)
+    .Case<arith::MaxNumFOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::MaxOp::create(opBuilder, loc, resTy, hloO0, hloO1);
+    })
+    .Case<arith::MinNumFOp>([&](auto){
+      auto resTy = hloO0.getType();
+      return stablehlo::MinOp::create(opBuilder, loc, resTy, hloO0, hloO1);
+    })
     .Case<arith::AddFOp, arith::AddIOp>([&](auto){
       auto resTy = hloO0.getType();
       return stablehlo::AddOp::create(opBuilder, loc, resTy, hloO0, hloO1);
@@ -437,7 +445,7 @@ static Value handleArithOp(
   return llvm::TypeSwitch<Operation*, Value>(arithOp)
     .Case<arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
           arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
-          arith::CmpFOp, arith::CmpIOp
+          arith::CmpFOp, arith::CmpIOp, arith::MaxNumFOp, arith::MinNumFOp
     >([&](Operation* binaryArithOp) {
       assert(tensorArgs.size() == 2);
       return handleBinaryArithOp(opBuilder, state, binaryArithOp, tensorArgs); 
@@ -495,7 +503,7 @@ static void translateElementalOp(
       arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
       arith::CmpFOp, arith::CmpIOp,
       math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp,
-      arith::SelectOp
+      arith::SelectOp, arith::MaxNumFOp, arith::MinNumFOp
     >(
       [&](Operation* arithOp){
       // Reuse the handleArithOp
@@ -741,7 +749,7 @@ static void translateOperation(
       arith::MulFOp, arith::MulIOp, arith::DivFOp, arith::DivSIOp,
       arith::CmpFOp, arith::CmpIOp,
       math::SinOp, math::ExpOp, math::SqrtOp, arith::NegFOp,
-      arith::SelectOp
+      arith::SelectOp, arith::MaxNumFOp, arith::MinNumFOp
     >(
       [&](Operation* arithOp){
       // Reuse the handleArithOp

@@ -271,6 +271,9 @@ public:
 struct MemOpsFoldingPass
     : public mlir::PassWrapper<MemOpsFoldingPass,
                                mlir::OperationPass<func::FuncOp>> {
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MemOpsFoldingPass)
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
     return;

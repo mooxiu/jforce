@@ -71,6 +71,9 @@ struct SelectCmpFToMinMax : public OpRewritePattern<arith::SelectOp> {
 struct RecognizeMinMaxPass
     : public mlir::PassWrapper<RecognizeMinMaxPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RecognizeMinMaxPass)
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<affine::AffineDialect>();
     registry.insert<memref::MemRefDialect>();

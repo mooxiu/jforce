@@ -222,6 +222,9 @@ namespace {
 struct PolygeistMem2Reg : PassWrapper<PolygeistMem2Reg, OperationPass<func::FuncOp>>{
     // : public enzyme::impl::PolygeistMem2RegBase<PolygeistMem2Reg> {
   // using PolygeistMem2RegBase::PolygeistMem2RegBase;
+  
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PolygeistMem2Reg)
+
   void runOnOperation() override;
 
   StringRef getArgument() const override { return "enzyme-mem2reg"; }

@@ -34,7 +34,10 @@ struct HositFIRConvertOps: OpRewritePattern<fir::ConvertOp> {
 
   LogicalResult matchAndRewrite(fir::ConvertOp convertOp,
                                 PatternRewriter &rewriter) const final {
-    auto definedOp = convertOp.getOperand().getDefiningOp();
+    auto* definedOp = convertOp.getOperand().getDefiningOp();
+    if (!definedOp) {
+      return failure();
+    }
     if (definedOp->getParentOp() != convertOp->getParentOp()) {
       rewriter.moveOpBefore(convertOp, convertOp->getParentOp());
       return success();
@@ -150,6 +153,9 @@ struct ReplaceFIRConvertOps : OpRewritePattern<fir::ConvertOp> {
 struct CleanFIROpsPass
     : public mlir::PassWrapper<CleanFIROpsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CleanFIROpsPass)
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
     return;

@@ -29,6 +29,8 @@ namespace {
 struct ArithRaisingPass
     : public mlir::PassWrapper<ArithRaisingPass, mlir::OperationPass<mlir::func::FuncOp>> {
 
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ArithRaisingPass)
+
   void getDependentDialects(mlir::DialectRegistry & registry) const override {
     return registry.insert<stablehlo::StablehloDialect>(); 
   }

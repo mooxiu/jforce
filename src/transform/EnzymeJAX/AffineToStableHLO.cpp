@@ -3325,6 +3325,9 @@ struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
 struct AffineToStableHLORaisingPass
     : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>> {
 
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AffineToStableHLORaisingPass)
+
     Option<bool> err_if_not_fully_raised{
       *this,
       "err_if_not_fully_raised",

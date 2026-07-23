@@ -135,6 +135,8 @@ static void replaceLoopSignature(OpBuilder& opBuilder, fir::DoLoopOp doLoop){
 struct CleanFIRLoopPass
     : public PassWrapper<CleanFIRLoopPass, OperationPass<func::FuncOp>> {
 
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CleanFIRLoopPass)
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
     return;

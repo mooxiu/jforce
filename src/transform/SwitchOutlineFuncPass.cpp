@@ -132,6 +132,9 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
 
 
 struct SwitchOutlineFuncPass: public mlir::PassWrapper<SwitchOutlineFuncPass, OperationPass<ModuleOp>> {
+  
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SwitchOutlineFuncPass)
+
   void getDependentDialects(mlir::DialectRegistry & registry) const override {
     registry.insert<
         bufferization::BufferizationDialect,
