@@ -18,8 +18,8 @@ target_link_libraries(JitTransforms
   PUBLIC
     JitSupport
     MLIRPass
-  PRIVATE
     -Wl,--start-group ${stablehlo_all_libs}  -Wl,--end-group
+  PRIVATE
     FIRDialect
     HLFIRDialect
     MLIRShapeDialect

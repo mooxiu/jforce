@@ -189,7 +189,7 @@ struct ShapeInferPass
                   dop.getDummyScope(), dop.getStorage(),
                   dop.getStorageOffsetAttr(), dop.getUniqNameAttr(),
                   dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), 
-                  dop.getSkipReboxAttr(), nullptr
+                  dop.getSkipReboxAttr()
               );
               dop.replaceAllUsesWith(ndop.getResults());
               dop.erase();

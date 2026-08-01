@@ -15,15 +15,15 @@
 #include <dlfcn.h>
 #include <iostream>
 
-
 std::string getPluginPath() {
-// DEFAULT_PJRT_PLUGIN_PATH should be defined in CMake
-#ifdef DEFAULT_PJRT_PLUGIN_PATH
-  return DEFAULT_PJRT_PLUGIN_PATH;
-#else
-  throw std::runtime_error(
-      "PJRT plugin path not found. Please set PJRT_PLUGIN_PATH.");
-#endif
+  const char *path = std::getenv("PJRT_PLUGIN_PATH");
+
+  if (!path || *path == '\0') {
+    llvm::report_fatal_error(
+        "PJRT_PLUGIN_PATH is not set or is empty.");
+  }
+
+  return path;
 }
 
 static PJRT_Client *getPJRTClient(const PJRT_Api *api) {

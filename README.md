@@ -3,3 +3,100 @@
 JForce accepting intercepted `workdistribute` OpenMP target and translate it into StableHLO,
 offloading it to different backends via compiling with XLA.
 
+## Setup
+
+```sh
+mkdir workspace && cd workspace
+```
+
+### Setup dependencies
+
+#### LLVM-Project
+
+- Experiment:
+```sh
+# in workspace
+git clone https://github.com/mooxiu/llvm-project llvm-project
+cd llvm-project
+git checkout jforce-v1.0
+```
+
+- Comparison (snapshot with necessary fixes):
+```sh
+# in workspace
+git clone https://github.com/mooxiu/llvm-project llvm-project-ref
+cd llvm-project-ref
+git checkout stablehlo-snapshot-20251209
+```
+
+#### StableHLO
+
+```sh
+# in workspace
+git clone https://github.com/mooxiu/stablehlo stablehlo
+cd stablehlo
+git checkout snapshot-20251209
+```
+
+#### PJRT Plugins
+
+```sh
+# in workspace
+git clone https://github.com/mooxiu/xla xla
+cd xla
+git checkout snapshot-20251206
+```
+
+### Setup JForce
+
+```sh
+# in workspace
+git clone 
+```
+
+
+
+
+---
+
+
+
+---
+
+## Note for WACCPD workshop submission
+
+homepath="/home/muyao/projects/waccpd"
+
+CPU: 
+
+```sh
+cmake -G Ninja \
+    -DTARGET_DEVICE_NAME="CPU" \
+    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
+    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
+    -DDEFAULT_PJRT_PLUGIN_PATH="/home/muyao/projects/waccpd/pjrt-plugins/pjrt_c_api_cpu_plugin.memkf04-20260325.so" \
+    -DENABLE_PROFILING=OFF \
+    -DCMAKE_BUILD_TYPE="RELEASE" \
+    ./..
+```
+
+```sh
+cmake -G Ninja \
+    -DTARGET_DEVICE_NAME="CUDA" \
+    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
+    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
+    -DDEFAULT_PJRT_PLUGIN_PATH="/home/muyao/projects/waccpd/pjrt-plugins/pjrt_c_api_gpu_plugin.so" \
+    -DENABLE_PROFILING=OFF \
+    -DCMAKE_BUILD_TYPE="RELEASE" \
+    ./..
+```
+
+Pass in run:
+```sh
+cmake -G Ninja \
+    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
+    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
+    -DENABLE_PROFILING=OFF \
+    -DCMAKE_BUILD_TYPE="RELEASE" \
+    ./..
+```
