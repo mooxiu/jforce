@@ -1,5 +1,4 @@
 // WARNING: this is not used anymore, use TranslatePass instead
-// UNSUPPORTED: true
 // RUN: split-file %s %t
 // RUN: %jforce-opt %t/dummy.mlir --jforce-translate | FileCheck %s --check-prefix=DUMMY
 // RUN: %jforce-opt %t/attention.mlir --jforce-translate | FileCheck %s --check-prefix=ATTENTION

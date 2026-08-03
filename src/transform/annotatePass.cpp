@@ -5,13 +5,21 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "../support/profiler.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include <cstddef>
 
 using namespace mlir; 
 
 #define JIT_COMPUTE_ARG_ATTR_NAME "jit.compute_arg"
+#define JIT_SHAPE_META_ATTR_NAME "jit.shape_meta"
 
 namespace {
+
+
 struct AnnotatePass: 
   public PassWrapper<AnnotatePass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AnnotatePass)
@@ -20,16 +28,52 @@ struct AnnotatePass:
     return "jforce-annotate"; 
   }
 
+  static void markShapeArgs(func::FuncOp funcOp, OpBuilder& opBuilder) {
+    llvm::DenseMap<Value, int> argsToIndex;
+    for (int i = 0; i < funcOp.getNumArguments(); i++) {
+      argsToIndex[funcOp.getArgument(i)] = i;
+    }
+
+    llvm::DenseSet<Value> visited;
+    llvm::SmallVector<Value> shapesOperands;
+    funcOp.walk([&](Operation* op){
+      if (llvm::isa<fir::ShapeOp, fir::ShapeShiftOp>(op)){
+        llvm::for_each(op->getOperands(), [&](Value operand){
+          if (!visited.contains(operand)) {
+            shapesOperands.push_back(operand);
+            visited.insert(operand);
+          }
+        });
+      }
+    });
+    size_t next = 0;
+    while (next < shapesOperands.size()) {
+      auto val = shapesOperands[next];
+      for (Value operand: val.getDefiningOp()->getOperands()) {
+        if (!visited.contains(operand)) {
+          shapesOperands.push_back(operand);
+          visited.insert(operand);
+        }
+      }
+      if (argsToIndex.contains(val)){
+        int idx = argsToIndex.at(val);
+        funcOp.setArgAttr(idx, JIT_SHAPE_META_ATTR_NAME, opBuilder.getUnitAttr());
+      }
+      next+=1;
+    }
+  }
 
   void runOnOperation() override {
     PROFILE_SCOPE("annotate compute args", Phase::LOWERING_EXTRA);
     auto funcOp = getOperation();
     OpBuilder opBuilder(funcOp.getContext());
 
+    markShapeArgs(funcOp, opBuilder);
+
     for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
       auto arg = funcOp.getArgument(i);
       bool isCompute = false;
-      
+
       for (auto* user: arg.getUsers()) {
         if (llvm::isa<hlfir::DeclareOp>(user) || llvm::isa<fir::DeclareOp>(user)) {
           isCompute = true;

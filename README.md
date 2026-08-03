@@ -100,3 +100,14 @@ cmake -G Ninja \
     -DCMAKE_BUILD_TYPE="RELEASE" \
     ./..
 ```
+
+Build For Debugging
+```sh
+cmake -G Ninja \
+    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
+    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
+    -DENABLE_PROFILING=OFF \
+    -DCMAKE_BUILD_TYPE="DEBUG" \
+    ./..
+```
+

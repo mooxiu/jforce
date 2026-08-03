@@ -24,6 +24,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
@@ -32,6 +33,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -140,6 +142,21 @@ struct TranslationState {
   }
 };
 
+/// For index type, replace with i64
+static Type toStableHLOElementType(Type type) {
+  if (type.isIndex()) {
+    return IntegerType::get(type.getContext(), 64);
+  }
+  return type;
+}
+
+static RankedTensorType makeStableHLOTensorType(
+  ArrayRef<int64_t> shape,
+  Type elementType
+) {
+  return RankedTensorType::get(shape, toStableHLOElementType(elementType)); 
+}
+
 ///  Example of source type:
 ///  "!fir.ref<!fir.array<10xf32>>": convert to "tensor<10xf32>"
 ///  "!fir.ref<!fir.array<10x20xf32>>": convert to "tensor<20x10xf32>", notice
@@ -155,7 +172,8 @@ static RankedTensorType toCorrespondingTensorTy(mlir::Type srcTy) {
       .Case<hlfir::ExprType>([](hlfir::ExprType expTy) {
         auto shape = llvm::to_vector(expTy.getShape());
         std::reverse(shape.begin(), shape.end());
-        return RankedTensorType::get(shape, expTy.getEleTy());
+        // return RankedTensorType::get(shape, expTy.getEleTy());
+        return makeStableHLOTensorType(shape, expTy.getEleTy());
       })
       .Case<fir::BoxType>([](fir::BoxType bTy) {
         return toCorrespondingTensorTy(bTy.getEleTy());
@@ -166,16 +184,19 @@ static RankedTensorType toCorrespondingTensorTy(mlir::Type srcTy) {
       .Case<fir::SequenceType>([](fir::SequenceType seqTy) {
         auto shape = llvm::to_vector(seqTy.getShape());
         std::reverse(shape.begin(), shape.end());
-        return RankedTensorType::get(shape, seqTy.getEleTy());
+        // return RankedTensorType::get(shape, seqTy.getEleTy());
+        return makeStableHLOTensorType(shape, seqTy.getEleTy());
       })
       .Case<mlir::MemRefType>([](MemRefType memTy){
         auto shape = llvm::to_vector(memTy.getShape());
         std::reverse(shape.begin(), shape.end());
-        return RankedTensorType::get(shape, memTy.getElementType());
+        // return RankedTensorType::get(shape, memTy.getElementType());
+        return makeStableHLOTensorType(shape, memTy.getElementType());
       })
       .Default([&](auto scTy) {
         // Suppose this is a scalar type
-        return RankedTensorType::get({}, scTy);
+        // return RankedTensorType::get({}, scTy);
+        return makeStableHLOTensorType({}, toStableHLOElementType(scTy));
       });
 }
 
@@ -869,10 +890,19 @@ static void translateOperation(
       } else {
         assert(!isReferenceLike(convertFrom.getType()));
         assert(!isReferenceLike(convertTo.getType()));
+
         auto input = state.getTensorValue(opBuilder, convertFrom);
-        assert(llvm::isa<RankedTensorType>(input.getType()));
-        Type outputType = convertTo.getType();
-        auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, op->getLoc(), input, outputType);
+        auto inputTy = cast<RankedTensorType>(input.getType());
+        Type outputElementType = toStableHLOElementType(convertTo.getType());
+        auto outputTensorType = RankedTensorType::get(inputTy.getShape(), outputElementType);
+        if (input.getType() == outputTensorType) {
+          // For example:
+          //   i64 -> index
+          // Both are represented as tensor<i64> in StableHLO.
+          state.valueMap[convertTo] = input;
+          return;
+        }
+        auto stableHLOConvertOp = stablehlo::ConvertOp::create(opBuilder, op->getLoc(), input, outputElementType);
         state.valueMap[convertTo] = stableHLOConvertOp.getResult();
       }
     })

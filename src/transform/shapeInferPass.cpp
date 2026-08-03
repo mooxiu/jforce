@@ -27,6 +27,7 @@ using namespace mlir;
 #define JIT_COMPUTE_ARG_ATTR_NAME "jit.compute_arg"
 #define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
 #define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
+#define JIT_SHAPE_META_ATTR_NAME "jit.shape_meta"
 
 namespace {
 struct ShapeInferPass
@@ -372,8 +373,7 @@ struct ShapeInferPass
 
     // some parameters containing the shape info are passed as pointer like
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      auto isComputeArg = funcOp.getArgAttr(i, JIT_COMPUTE_ARG_ATTR_NAME);
-      if (!isComputeArg) {
+      if (funcOp.getArgAttr(i, JIT_SHAPE_META_ATTR_NAME)) {
         auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
         if (intAttr) {
           // `intAttr` is the literal address, need to recover to specific number.

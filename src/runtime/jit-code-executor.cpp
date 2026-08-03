@@ -233,6 +233,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
   nestedPMPhase1.addPass(xla_jit::createShapeInferPass());
   pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
+  // pm.addPass(xla_jit::createTranslatePass());
   auto& nestedPMPhase2 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase2.addPass(xla_jit::createAliasingPass());
   nestedPMPhase2.addPass(xla_jit::createTrimArgsPass());

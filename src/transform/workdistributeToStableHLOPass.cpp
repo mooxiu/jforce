@@ -211,7 +211,7 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
         stablehloRes = stablehloMulOp.getResult();
       })
       // Can not exchange
-      .Case<arith::SubFOp>([&](arith::SubFOp subOp) {
+      .Case<arith::SubFOp, arith::SubIOp>([&](Operation* subOp) {
         if (o1Type.getRank() >= o2Type.getRank()) {
           stablehloRes = stablehlo::SubtractOp::create(
                              opBuilder, funcOp.getLoc(), targetType,
@@ -282,8 +282,10 @@ static void handleArithBinaryOp(TrackingInfo &tracking, OpBuilder &opBuilder,
                   .getResult();
         }
       })
-      .Default([](auto) {
-        llvm::errs() << "Unknown arith operation! \n";
+      .Default([](auto op) {
+        llvm::errs() << "\nUnknown arith operation: \n";
+        op->print(llvm::errs(), {});
+        llvm::errs() << "\n";
         return;
       });
 
