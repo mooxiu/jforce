@@ -1,5 +1,8 @@
+// TODO: add check
 // RUN: split-file %s %t
-// RUN: %jforce-opt %t/clover.mlir --jforce-shape-infer | FileCheck %s --check-prefix=CLOVER
+// RUN: %jforce-opt %t/clover.mlir \
+// RUN:   --pass-pipeline="builtin.module(func.func(jforce-annotate,jforce-shape-infer))" \
+// RUN:   | FileCheck %s --check-prefix=CLOVER
 
 //--- clover.mlir
 // CLOVER-LABEL: func.func @kernel

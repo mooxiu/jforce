@@ -367,6 +367,8 @@ struct ShapeInferPass
 
   void runOnOperation() override {
     PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
+    valueMap.clear();
+    sliceShiftMap.clear();
     func::FuncOp funcOp = getOperation();
     MLIRContext* ctx = funcOp.getContext();
     OpBuilder opBuilder(ctx);

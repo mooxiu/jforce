@@ -29,11 +29,6 @@ struct AnnotatePass:
   }
 
   static void markShapeArgs(func::FuncOp funcOp, OpBuilder& opBuilder) {
-    llvm::DenseMap<Value, int> argsToIndex;
-    for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      argsToIndex[funcOp.getArgument(i)] = i;
-    }
-
     llvm::DenseSet<Value> visited;
     llvm::SmallVector<Value> shapesOperands;
     funcOp.walk([&](Operation* op){
@@ -48,18 +43,26 @@ struct AnnotatePass:
     });
     size_t next = 0;
     while (next < shapesOperands.size()) {
-      auto val = shapesOperands[next];
-      for (Value operand: val.getDefiningOp()->getOperands()) {
-        if (!visited.contains(operand)) {
+      Value val = shapesOperands[next++];
+      if (auto blockArg = llvm::dyn_cast<BlockArgument>(val)) {
+        if (blockArg.getOwner() == &funcOp.front()) {
+          funcOp.setArgAttr(
+            blockArg.getArgNumber(),
+            JIT_SHAPE_META_ATTR_NAME,
+            opBuilder.getUnitAttr()
+          );
+        }
+        continue;
+      }
+
+      Operation *definingOp = val.getDefiningOp();
+      if (!definingOp) continue;
+
+      for (Value operand : definingOp->getOperands()) {
+        if (visited.insert(operand).second) {
           shapesOperands.push_back(operand);
-          visited.insert(operand);
         }
       }
-      if (argsToIndex.contains(val)){
-        int idx = argsToIndex.at(val);
-        funcOp.setArgAttr(idx, JIT_SHAPE_META_ATTR_NAME, opBuilder.getUnitAttr());
-      }
-      next+=1;
     }
   }
 
