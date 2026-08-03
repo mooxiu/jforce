@@ -27,18 +27,35 @@ using namespace mlir;
 
 
 static TargetDevice getTargetDevice() {
-#ifdef TARGET_DEVICE
-  if constexpr (std::string_view(TARGET_DEVICE) == "CUDA") {
-    return TargetDevice::CUDA;
-  } else if constexpr (std::string_view(TARGET_DEVICE) == "ROCM") {
-    return TargetDevice::ROCM;
-  } else if constexpr (std::string_view(TARGET_DEVICE) == "TPU") {
-    return TargetDevice::TPU;
-  }
-  return TargetDevice::CPU;
-#else
-  return TargetDevice::CPU;
-#endif
+  static const TargetDevice device = [] {
+    const char *value = std::getenv("JFORCE_TARGET_DEVICE");
+
+    if (!value || *value == '\0') {
+      llvm::report_fatal_error(
+          "JFORCE_TARGET_DEVICE is not set; "
+          "expected CPU, CUDA, ROCM, or TPU.");
+    }
+
+    std::string name(value);
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) {
+                     return static_cast<char>(std::toupper(c));
+                   });
+
+    if (name == "CPU")
+      return TargetDevice::CPU;
+    if (name == "CUDA")
+      return TargetDevice::CUDA;
+    if (name == "ROCM")
+      return TargetDevice::ROCM;
+    if (name == "TPU")
+      return TargetDevice::TPU;
+
+    llvm::errs() << "Unsupported device!\n";
+    exit(EXIT_FAILURE);
+  }();
+
+  return device;
 }
 
 #ifdef ENABLE_XLA_DEBUG
