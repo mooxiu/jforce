@@ -42,7 +42,6 @@ struct TrimArgsPass:
 
 
   void runOnOperation() override {
-      PROFILE_SCOPE("trim shape args", Phase::LOWERING_EXTRA);
     auto funcOp = getOperation();
     auto context = funcOp.getContext();
     OpBuilder opBuilder(context);

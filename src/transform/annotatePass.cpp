@@ -67,7 +67,6 @@ struct AnnotatePass:
   }
 
   void runOnOperation() override {
-    PROFILE_SCOPE("annotate compute args", Phase::LOWERING_EXTRA);
     auto funcOp = getOperation();
     OpBuilder opBuilder(funcOp.getContext());
 

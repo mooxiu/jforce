@@ -23,7 +23,6 @@ struct AliasingPass :
   // XLA code: `xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.cc`,
   // function: `ConvertToHloModule::RunOnFunction`
   void runOnOperation() override {
-    PROFILE_SCOPE("memory donate", Phase::LOWERING_EXTRA);
     auto funcOp = getOperation();
     auto context = funcOp.getContext();
     OpBuilder opBuilder(context);

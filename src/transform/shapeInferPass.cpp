@@ -366,7 +366,6 @@ struct ShapeInferPass
   }
 
   void runOnOperation() override {
-    PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
     valueMap.clear();
     sliceShiftMap.clear();
     func::FuncOp funcOp = getOperation();
@@ -388,6 +387,16 @@ struct ShapeInferPass
         }
       }
     };
+
+    // function argument -> hlfir.declare results
+    funcOp.walk([&](hlfir::DeclareOp declareOp) {
+      auto it = valueMap.find(declareOp.getMemref());
+      if (it == valueMap.end())
+        return;
+
+      for (Value result : declareOp.getResults())
+        valueMap.try_emplace(result, it->second);
+    });
 
     preprocWithExistingPasses(opBuilder, funcOp);
     shapeInferenceInternal(opBuilder, funcOp);

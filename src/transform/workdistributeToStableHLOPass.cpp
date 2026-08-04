@@ -1002,7 +1002,6 @@ struct WorkdistributeToStableHLOPass
   }
 
   void runOnOperation() override {
-    PROFILE_SCOPE("workdistributeToStableHLO", Phase::LOWERING_TO_STABLEHLO);
     auto moduleOp = getOperation(); 
     auto context = moduleOp.getContext();
     OpBuilder opBuilder(context);

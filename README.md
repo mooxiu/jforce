@@ -111,3 +111,12 @@ cmake -G Ninja \
     ./..
 ```
 
+Build For Profiling
+```sh
+cmake -G Ninja \
+    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
+    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
+    -DENABLE_PROFILING=ON \
+    -DCMAKE_BUILD_TYPE="DEBUG" \
+    ./..
+```
