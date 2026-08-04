@@ -5,11 +5,12 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "../support/profiler.h"
-#include "llvm/ADT/DenseMap.h"
+#include "mlir/Support/WalkResult.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include <cassert>
 #include <cstddef>
 
 using namespace mlir; 
@@ -28,9 +29,12 @@ struct AnnotatePass:
     return "jforce-annotate"; 
   }
 
-  static void markShapeArgs(func::FuncOp funcOp, OpBuilder& opBuilder) {
+  static void annotateArgs(func::FuncOp funcOp, OpBuilder& opBuilder) {
     llvm::DenseSet<Value> visited;
     llvm::SmallVector<Value> shapesOperands;
+    llvm::SmallVector<bool> computeArgs(funcOp.getNumArguments(), false);
+    UnitAttr unitAttr = opBuilder.getUnitAttr();
+
     funcOp.walk([&](Operation* op){
       if (llvm::isa<fir::ShapeOp, fir::ShapeShiftOp>(op)){
         llvm::for_each(op->getOperands(), [&](Value operand){
@@ -40,6 +44,14 @@ struct AnnotatePass:
           }
         });
       }
+      if (auto declareOp = llvm::dyn_cast<hlfir::DeclareOp>(op)) {
+        Value mem = declareOp.getMemref();
+        if (auto blockArg = llvm::dyn_cast<BlockArgument>(mem);
+          blockArg && blockArg.getOwner() == &funcOp.front()) {
+          computeArgs[blockArg.getArgNumber()] = true;
+        }
+      }
+      assert(!llvm::isa<fir::DeclareOp>(op));
     });
     size_t next = 0;
     while (next < shapesOperands.size()) {
@@ -49,7 +61,7 @@ struct AnnotatePass:
           funcOp.setArgAttr(
             blockArg.getArgNumber(),
             JIT_SHAPE_META_ATTR_NAME,
-            opBuilder.getUnitAttr()
+            unitAttr 
           );
         }
         continue;
@@ -64,6 +76,12 @@ struct AnnotatePass:
         }
       }
     }
+
+    for (unsigned i = 0; i < computeArgs.size(); i++) {
+      if (computeArgs[i]) {
+        funcOp.setArgAttr(i, JIT_COMPUTE_ARG_ATTR_NAME, unitAttr);
+      }
+    }
   }
 
   void runOnOperation() override {
@@ -71,22 +89,7 @@ struct AnnotatePass:
     auto funcOp = getOperation();
     OpBuilder opBuilder(funcOp.getContext());
 
-    markShapeArgs(funcOp, opBuilder);
-
-    for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
-      auto arg = funcOp.getArgument(i);
-      bool isCompute = false;
-
-      for (auto* user: arg.getUsers()) {
-        if (llvm::isa<hlfir::DeclareOp>(user) || llvm::isa<fir::DeclareOp>(user)) {
-          isCompute = true;
-        } 
-      }
-
-      if (isCompute) {
-        funcOp.setArgAttr(i, JIT_COMPUTE_ARG_ATTR_NAME, opBuilder.getUnitAttr());
-      }
-    }
+    annotateArgs(funcOp, opBuilder);
   }
 };
 } // namespace
