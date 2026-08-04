@@ -226,9 +226,9 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   insertJitInfo(builder, kernel, args);
 
   mlir::PassManager pm(ctx);
-  PRINT_PASS();
-  pm.enableCrashReproducerGeneration("./crash_repro.mlir");
-  pm.enableTiming();
+  // PRINT_PASS();
+  // pm.enableCrashReproducerGeneration("./crash_repro.mlir");
+  // pm.enableTiming();
 
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());

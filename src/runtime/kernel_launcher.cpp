@@ -188,7 +188,7 @@ static void manageInputBuffers(const PJRT_Api *api, PJRT_Client *client,
                                const TensorDesc *inputArgs,
                                const int32_t inputArgCount,
                                std::vector<PJRT_Buffer *> &buffers) {
-  PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE);
+  // PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE);
   assert(buffers.size() == inputArgCount &&
          "Buffer size should be the same with arg counts");
   if (targetDevice == TargetDevice::CPU) {
@@ -226,7 +226,7 @@ static void manageInputBuffers(const PJRT_Api *api, PJRT_Client *client,
 static void executeLoadedKernelExecutable(
     const PJRT_Api *api, PJRT_LoadedExecutable *exe, PJRT_Device *device,
     PJRT_Buffer ***argLists, PJRT_Buffer ***outLists, const int in_args_count) {
-  PROFILE_SCOPE("executeExecutable", Phase::EXECUTION_RUN);
+    PROFILE_SCOPE("executeExecutable", Phase::EXECUTION_RUN);
 
   PJRT_ExecuteOptions execute_options = {
       .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
@@ -278,7 +278,7 @@ static void manageOutputBuffers(const PJRT_Api *api,
                                 PJRT_Buffer ***outsBuffersList,
                                 TensorDesc *inputArgs, TensorDesc *outputArgs,
                                 TargetDevice targetDeviceTy) {
-  PROFILE_SCOPE("manageOutputBuffers", Phase::EXECUTION_BUFFER_CLEARUP);
+  // PROFILE_SCOPE("manageOutputBuffers", Phase::EXECUTION_BUFFER_CLEARUP);
   for (int i = 0; i < argsBuffers.size(); i++) {
     auto inputArg = inputArgs[i];
     if (inputArg.isLiteral) {

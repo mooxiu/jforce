@@ -20,3 +20,7 @@ target_link_libraries(JitSupport
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   target_compile_definitions(JitSupport PRIVATE ENABLE_XLA_DEBUG)
 endif()
+
+if(ENABLE_PROFILING)
+  target_compile_definitions(JitSupport PUBLIC ENABLE_PROFILING)
+endif()
