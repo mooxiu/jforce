@@ -1,7 +1,7 @@
 .vscode
 *.venv
-build
-build_*
+build/
+build[-]*/
 third_party/pjrt_plugins/*.so
 third_party/pjrt_plugins/*.so_bk*
 third_party/libs
