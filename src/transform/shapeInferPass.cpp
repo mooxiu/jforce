@@ -74,6 +74,10 @@ struct ShapeInferPass
       }
     });
 
+    if (opsToDelete.empty()) {
+      return;
+    }
+
     for (auto *op : opsToDelete) {
       op->erase();
     }
