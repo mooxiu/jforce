@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <utility>
+#include "support/profiler.h"
 #include "transform/Utils.h"
 
 using namespace mlir;
@@ -60,7 +61,7 @@ struct RefValue {
   Value root;
   llvm::SmallVector<Triplet> triplets;
 
-  llvm::SmallVector<llvm::SmallVector<int64_t>, 3> getZipTriplets() {
+  llvm::SmallVector<llvm::SmallVector<int64_t>, 3> getZipTriplets() const {
     llvm::SmallVector<llvm::SmallVector<int64_t>, 3> res;
     if (this->triplets.empty()) {
       return res;
@@ -119,9 +120,10 @@ struct TranslationState {
     OpBuilder& opBuilder,
     Value ref
   ) {
-    assert(this->referenceMap.contains(ref) && "This is not a ref!");
-    RefValue refVal = referenceMap.at(ref); 
-    assert(memoryMap.contains(refVal.root));
+    auto it = referenceMap.find(ref);
+    assert(it != referenceMap.end());
+    const RefValue& refVal = it->getSecond();
+
     auto rootVal = memoryMap.at(refVal.root);
     if (refVal.triplets.empty()) {
       return rootVal;
@@ -504,6 +506,9 @@ static void translateElementalOp(
       }
       eleState.localValueMap[op->getResult(0)] = handleArithOp(opBuilder, eleState.globalState, arithOp, tensorArgs);
     })
+    .Case([&](hlfir::NoReassocOp nop){
+      eleState.localValueMap[nop.getResult()] = eleState.getTensorValue(opBuilder, nop.getOperand());
+    })
     .Default([](Operation* unsupported){
       unsupported->dump();
       llvm_unreachable("unsupported");
@@ -647,7 +652,17 @@ static void translateOperation(
       
       // assignTo can be a slice of a memory, so we have to only update some of the memory.
       auto assignToRefVal = state.referenceMap.at(assignTo);
-      if (assignToRefVal.triplets.empty()) {
+      auto rootTy = toCorrespondingTensorTy(assignToRefVal.root.getType());
+      bool isFullSlice = 
+        assignToRefVal.triplets.size() == rootTy.getRank() 
+        && llvm::all_of(
+          llvm::enumerate(assignToRefVal.triplets),
+          [&](auto indexedTriplet) {
+            auto [dim, triplet] = indexedTriplet;
+            return triplet.lb == 0 && triplet.step == 1 && triplet.ub == rootTy.getDimSize(dim);
+          });
+
+      if (assignToRefVal.triplets.empty() || isFullSlice) {
         state.memoryMap[assignToRefVal.root] = assignFromVal;
       } else {
         auto LHSZipTriplets = assignToRefVal.getZipTriplets(); 
@@ -667,6 +682,7 @@ static void translateOperation(
             startIndices.push_back(constOp.getResult());
           });
 
+          assert(state.memoryMap.contains(assignToRefVal.root));
           auto assignedToRootVal = state.memoryMap.at(assignToRefVal.root);
           auto updateOp = stablehlo::DynamicUpdateSliceOp::create(
             opBuilder, 
@@ -705,7 +721,16 @@ static void translateOperation(
       };
     })
     .Case<fir::AllocaOp, memref::AllocaOp>([&](auto allocaOp){
-      state.referenceMap[allocaOp.getResult()] = {allocaOp.getResult(), {}};
+      Value root = allocaOp.getResult();
+      state.referenceMap[root] = {root, {}};
+
+      auto rootTy = toCorrespondingTensorTy(root.getType());
+      assert(rootTy.hasStaticShape());
+
+      auto zeroAttr = llvm::cast<DenseElementsAttr>(opBuilder.getZeroAttr(rootTy));
+      auto zeroOp = stablehlo::ConstantOp::create(opBuilder, allocaOp.getLoc(), zeroAttr);
+
+      state.memoryMap[root] = zeroOp.getResult();
     })
     .Case([&](hlfir::NoReassocOp nop){
       assert(state.valueMap.contains(nop.getOperand()));
@@ -1032,6 +1057,7 @@ struct TranslatePass
   }
 
   void runOnOperation() override {
+    PROFILE_SCOPE("Translate", Phase::LOWERING_TO_STABLEHLO);
     auto moduleOp = getOperation(); 
     auto context = moduleOp.getContext();
     OpBuilder opBuilder(context);
