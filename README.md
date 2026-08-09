@@ -62,13 +62,10 @@ git checkout snapshot-20251206
 ```sh
 # in workspace
 git clone 
-```
-
 
 
 
 ---
-
 
 
 ---
@@ -126,7 +123,9 @@ Build For Profiling
 cmake -G Ninja \
     -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
     -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
+    -DISL_INCLUDE_DIR="" \
+    -DISL_LIBRARY="" \
     -DENABLE_PROFILING=ON \
     -DCMAKE_BUILD_TYPE="DEBUG" \
-    ./..
+     ./..
 ```

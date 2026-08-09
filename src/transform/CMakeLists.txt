@@ -1,5 +1,5 @@
-find_path(ISL_INCLUDE_DIR NAMES isl/aff.h)
-find_library(ISL_LIBRARY NAMES isl)
+set(ISL_INCLUDE_DIR CACHE STRING "path to isl headers")
+set(ISL_LIBRARY CACHE STRING "path to isl libraries")
 
 if(NOT ISL_INCLUDE_DIR OR NOT ISL_LIBRARY)
   message(FATAL_ERROR "ISL library or headers not found. Please specify -DCMAKE_PREFIX_PATH.")

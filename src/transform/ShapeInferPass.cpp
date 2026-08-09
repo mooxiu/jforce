@@ -33,67 +33,6 @@ struct ShapeInferPass
 
   llvm::DenseMap<Value, llvm::SmallVector<int64_t>> sliceShiftMap;
 
-  /// Fill some known values to the mlir and use existing passes to do constant
-  /// propagation. Including:
-  /// - CSE: Common Subexpression Elimination
-  /// - Canonlicalize
-  /// - SCCP: Sparse Conditional Constant Propagation
-  /// Ref: https://mlir.llvm.org/docs/Passes/
-  void preprocWithExistingPasses(OpBuilder opBuilder, func::FuncOp funcOp) {
-    auto getSolidVal = [&](Value v) -> std::pair<int, bool> {
-      auto it = valueMap.find(v);
-      if (it != valueMap.end()) {
-        return std::pair(it->getSecond(), true);
-      }
-      return std::pair(-1, false);
-    };
-
-    // Replace some known values with constant values, then lifiting the
-    // propagation task to existing mlir passes.
-    llvm::SmallVector<Operation *> opsToDelete;
-    funcOp.walk([&](fir::LoadOp lop) {
-      opBuilder.setInsertionPoint(lop);
-      auto lopVal = getSolidVal(lop.getOperand());
-      if (lopVal.second) {
-        auto resValue = lop.getResult();
-        auto resType = resValue.getType();
-        if (!llvm::isa<mlir::IntegerType>(resType) &&
-            !llvm::isa<mlir::IndexType>(resType)) {
-          return;
-        }
-
-        arith::ConstantIntOp cop = arith::ConstantIntOp::create(
-            opBuilder, funcOp.getLoc(), resValue.getType(), lopVal.first);
-        lop.replaceAllUsesWith(cop.getResult());
-        assert(lop.use_empty() && "Still been used!");
-        opsToDelete.push_back(lop);
-      }
-    });
-
-    if (opsToDelete.empty()) {
-      return;
-    }
-
-    for (auto *op : opsToDelete) {
-      op->erase();
-    }
-
-    // llvm::dbgs() << "\n ## after replace known values\n";
-
-    // Run passes
-    mlir::PassManager pm(funcOp.getContext());
-    pm.addPass(mlir::createCanonicalizerPass());
-    pm.addPass(mlir::createSCCPPass());
-    pm.addPass(mlir::createCSEPass());
-    pm.addPass(mlir::createCanonicalizerPass());
-
-    if (mlir::failed(pm.run(funcOp))) {
-      llvm::errs() << "[Fail] Fail to run passes on funcOp!\n";
-      std::exit(EXIT_FAILURE);
-    }
-    return;
-  }
-
   // Not a roboust transformation but works for now.
   void shapeInferenceInternal(OpBuilder opBuilder, func::FuncOp funcOp) {
     // mapping from value to shape (a vector of each dimension)
@@ -190,7 +129,7 @@ struct ShapeInferPass
                   dop.getDummyScope(), dop.getStorage(),
                   dop.getStorageOffsetAttr(), dop.getUniqNameAttr(),
                   dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), 
-                  dop.getSkipReboxAttr()
+                  dop.getSkipReboxAttr(), nullptr
               );
               dop.replaceAllUsesWith(ndop.getResults());
               dop.erase();
@@ -367,41 +306,11 @@ struct ShapeInferPass
 
   void runOnOperation() override {
     PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
-    valueMap.clear();
     sliceShiftMap.clear();
     func::FuncOp funcOp = getOperation();
     MLIRContext* ctx = funcOp.getContext();
     OpBuilder opBuilder(ctx);
 
-    // some parameters containing the shape info are passed as pointer like
-    for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      // if (funcOp.getArgAttr(i, JIT_SHAPE_META_ATTR_NAME)) {
-      auto argType = funcOp.getArgAttrOfType<IntegerAttr>(i, JIT_ARG_TYPE_NAME_ATTR);
-      if (argType && (argType.getValue() == ArgType::SHAPE_OR_BOUND)) {
-        auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
-        if (intAttr) {
-          // `intAttr` is the literal address, need to recover to specific number.
-          auto argTy = funcOp.getArgumentTypes()[i];
-          auto eleTy = getDTypeFromValueType(argTy);
-          assert(eleTy == DType::I32 && "Supposed to be shape size!\n");
-          auto eleVal = extractLiteralPtr(intAttr.getInt(), eleTy);
-          assert(eleVal.returnedType == DType::I32);
-          valueMap.insert(std::pair<Value, int>(funcOp.getArgument(i), eleVal.valI32));
-        }
-      }
-    };
-
-    // function argument -> hlfir.declare results
-    funcOp.walk([&](hlfir::DeclareOp declareOp) {
-      auto it = valueMap.find(declareOp.getMemref());
-      if (it == valueMap.end())
-        return;
-
-      for (Value result : declareOp.getResults())
-        valueMap.try_emplace(result, it->second);
-    });
-
-    preprocWithExistingPasses(opBuilder, funcOp);
     shapeInferenceInternal(opBuilder, funcOp);
     setSliceShiftAsAttr(opBuilder, funcOp); 
   }
