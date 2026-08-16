@@ -120,13 +120,19 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
       return WalkResult::advance();
     });
 
+
+    if (callToOutlineFuncMap.empty()) {
+      return failure();
+    }
+
     for (const auto& entry: callToOutlineFuncMap) {
       auto callOp = entry.getFirst();     
       auto outlinedFuncName = entry.getSecond();
       replaceMemrefFuncCall(moduleOp, rewritter, callOp, outlinedFuncName);
     };
 
-    return failure();
+    llvm::dbgs() << "\nSwitchOutlineFuncPass: swicth one!\n";
+    return success();
   }
 };
 
@@ -160,11 +166,12 @@ struct SwitchOutlineFuncPass: public mlir::PassWrapper<SwitchOutlineFuncPass, Op
     patterns.add<ReplaceOutlineFuncCall>(ctx);
     FrozenRewritePatternSet frozenSet(std::move(patterns));
     GreedyRewriteConfig config;
-    config.isFoldingEnabled();
+    config.enableFolding();
 
     if (failed(applyOpPatternsGreedily(maternalFunctions, frozenSet, config))) {
       signalPassFailure();
     }
+    return;
   }
 };
 };

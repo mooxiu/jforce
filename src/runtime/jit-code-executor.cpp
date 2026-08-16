@@ -66,6 +66,9 @@ static TargetDevice getTargetDevice() {
 
 #ifdef ENABLE_XLA_DEBUG
 #define PRINT_PASS() \
+  llvm::errs() << "Pass pipeline: "; \
+  pm.printAsTextualPipeline(llvm::errs()); \
+  llvm::errs() << "\n"; \
   ctx->disableMultithreading(); pm.enableIRPrinting()
 #else
 #define PRINT_PASS()
@@ -232,8 +235,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   insertJitInfo(builder, kernel, args);
 
   mlir::PassManager pm(ctx);
-  // PRINT_PASS();
-  // pm.enableCrashReproducerGeneration("./crash_repro.mlir");
+  PRINT_PASS();
+  pm.enableCrashReproducerGeneration("./crash_repro.mlir");
   // pm.enableTiming();
 
   // 1. AOT -> Shape Inference

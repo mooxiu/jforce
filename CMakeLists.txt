@@ -42,14 +42,6 @@ include(AddMLIR)
 
 # StableHLO does not have *Config.cmake, so we cannot do in that way
 
-list(APPEND CMAKE_MODULE_PATH
-  "${MLIR_CMAKE_DIR}"
-  "${LLVM_CMAKE_DIR}"
-)
-
-include(AddLLVM)
-include(AddMLIR)
-
 set(LLVM_LIT_ARGS "-sv" CACHE STRING "Default options for lit")
 
 set(JFORCE_SOURCE_DIR "${PROJECT_SOURCE_DIR}")

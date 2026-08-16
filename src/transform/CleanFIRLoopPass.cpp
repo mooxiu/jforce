@@ -23,7 +23,7 @@ enum StoreOpType {
 };
 
 struct IterArgsBuffer {
-  StoreOpType StoreInst;
+  std::optional<StoreOpType> StoreInst;
   Value Mem;
 };
 
@@ -109,24 +109,28 @@ static void replaceLoopSignature(OpBuilder& opBuilder, fir::DoLoopOp doLoop){
   auto oldTerminator = cast<fir::ResultOp>(doLoop.getBody()->getTerminator());
   assert(oldTerminator.getNumOperands() == 1);
   assert(doLoop.getNumResults() == 1);
-  Value newResult;
-  switch (buffer.StoreInst) {
-    case StoreOpType::FIR_STORE:
-      opBuilder.setInsertionPoint(existingTerminator);
-      fir::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.Mem);
-      opBuilder.setInsertionPointAfter(newDoLoop);
-      newResult = fir::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.Mem).getResult();
-      break;
-    case StoreOpType::MEMREF_STORE:
-      opBuilder.setInsertionPoint(existingTerminator);
-      memref::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.Mem, {});
-      opBuilder.setInsertionPointAfter(newDoLoop);
-      newResult = memref::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.Mem, {}).getResult();
-      break;
-    default:
-      break;
+  if (!doLoop.getResult(0).use_empty()) {
+    assert(buffer.StoreInst.has_value() &&
+         "Loop result is used, but no backing store was found");
+    assert(buffer.Mem &&
+         "Loop result is used, but no backing memory was found"); 
+    Value newResult;
+    switch (*buffer.StoreInst) {
+      case StoreOpType::FIR_STORE:
+        opBuilder.setInsertionPoint(existingTerminator);
+        fir::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.Mem);
+        opBuilder.setInsertionPointAfter(newDoLoop);
+        newResult = fir::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.Mem).getResult();
+        break;
+      case StoreOpType::MEMREF_STORE:
+        opBuilder.setInsertionPoint(existingTerminator);
+        memref::StoreOp::create(opBuilder, oldTerminator.getLoc(), oldTerminator.getOperand(0), buffer.Mem, {});
+        opBuilder.setInsertionPointAfter(newDoLoop);
+        newResult = memref::LoadOp::create(opBuilder, newDoLoop.getLoc(), buffer.Mem, {}).getResult();
+        break;
+    }
+    doLoop.getResult(0).replaceAllUsesWith(newResult);
   }
-  doLoop.getResult(0).replaceAllUsesWith(newResult);
   oldTerminator.erase();
   assert(doLoop.use_empty());
   doLoop.erase();
@@ -153,6 +157,7 @@ struct CleanFIRLoopPass
     for (auto doLoop: doLoops) {
       if (doLoop.getNumRegionIterArgs() > 0) {
         assert(doLoop.getNumRegionIterArgs() == 1 && "Currently only deal with one iterarg");
+        buffer = {};
         replaceIterArgs(opBuilder, doLoop);
         replaceLoopSignature(opBuilder, doLoop);
       }
