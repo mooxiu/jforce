@@ -240,7 +240,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
 
   // 1. AOT -> Shape Inference
   auto& nestedPMPhase1 = pm.nest<mlir::func::FuncOp>();
-  nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
+  // nestedPMPhase1.addPass(xla_jit::createCleanTempsPass());
   nestedPMPhase1.addPass(createCanonicalizerPass());
   nestedPMPhase1.addPass(xla_jit::createAnnotatePass());
   nestedPMPhase1.addPass(xla_jit::createPropagateConstantsPass());

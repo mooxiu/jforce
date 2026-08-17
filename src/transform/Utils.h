@@ -16,10 +16,12 @@
 /// INFO: Jforce helper functions and types
 #define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
 #define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
-#define ALIASING_ATTRIBUTE "tf.aliasing_output"
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
-#define JIT_OUTLINE_AFFINE_FUNC_PREFIX "outlined_affinefor_"
 #define JIT_SHAPE_ARG_ATTR_NAME "jit.shape_arg"
+
+#define JIT_OUTLINE_AFFINE_FUNC_PREFIX "outlined_affinefor_"
+
+#define ALIASING_ATTRIBUTE "tf.aliasing_output"
 
 using namespace mlir;
 

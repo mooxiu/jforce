@@ -1,5 +1,5 @@
-// TODO: maybe should do this in AOT
-
+// WARNING: I forget why I wrote this, but it seems not necessary
+//
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
