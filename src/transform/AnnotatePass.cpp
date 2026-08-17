@@ -122,10 +122,6 @@ struct AnnotatePass
     OpBuilder opBuilder(funcOp.getContext());
 
     auto shapeOperands = markShapeOperands(funcOp);
-    for (auto op: shapeOperands) {
-      llvm::dbgs() << "\n[DEBUG]: the op: ";
-      op.printAsOperand(llvm::dbgs(), {});
-    }
     annotateArgs(funcOp, opBuilder, shapeOperands);
   }
 };

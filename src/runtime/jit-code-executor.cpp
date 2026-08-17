@@ -137,6 +137,7 @@ void insertJitInfo(mlir::OpBuilder& builder, func::FuncOp kernelFunc, llvm::Smal
   return;
 }
 
+// FIXME: rewrite the logic of building keys! Shape indices should be based on `jit.shape_arg`!
 llvm::DenseMap<uint32_t, uint32_t> rebuildIndicesMapping(func::FuncOp funcOp) {
   llvm::DenseMap<uint32_t, uint32_t> indicesMap;
   auto arrayAttr = funcOp->getAttrOfType<ArrayAttr>(JIT_ARGS_MAPPING_ATTR_NAME);
@@ -298,7 +299,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   auto& nestedPMPhase4 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase4.addPass(stablehlo::createStablehloAggressiveSimplificationPass());
   nestedPMPhase4.addPass(xla_jit::createAliasingPass());
-  nestedPMPhase4.addPass(xla_jit::createTrimArgsPass());
+  // nestedPMPhase4.addPass(xla_jit::createTrimArgsPass());
   if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);
