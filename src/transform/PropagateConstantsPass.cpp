@@ -4,9 +4,12 @@
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Support/TypeID.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include <cassert>
 
 using namespace mlir;
 
@@ -29,87 +32,78 @@ static bool foldLoadOpWithConstant(OpBuilder &opBuilder, fir::LoadOp loadOp,
   return true;
 }
 
+static int retrieveConstVal(Type argType, IntegerAttr intAttr) {
+  auto eleTy = getDTypeFromValueType(argType);
+  assert((eleTy == DType::I32 || eleTy == DType::I64) &&
+         "Supposed to be shape size!\n");
+  auto eleVal = extractLiteralPtr(intAttr.getInt(), eleTy);
+  assert(eleVal.valI32 == 0 || eleVal.valI64 == 0);
+  assert(eleVal.valI32 > 0 || eleVal.valI32 > 0);
+  int constVal; 
+  if (eleVal.valI32 > 0) {
+    constVal = eleVal.valI32;
+  } else if (eleVal.valI64 > 0) {
+    constVal = eleVal.valI64;
+  }
+  return constVal;
+}
+
+static llvm::SmallVector<fir::LoadOp> collectLoadFromShapeVal(
+  Value arg
+) {
+  llvm::SmallVector<fir::LoadOp> loadOpsToMaterialize;
+  for (Operation *user : arg.getUsers()) {
+    if (!llvm::isa<fir::LoadOp, hlfir::DeclareOp>(user)) {
+      continue;
+    }
+    if (auto lop = llvm::dyn_cast<fir::LoadOp>(user)) {
+      loadOpsToMaterialize.push_back(lop);
+    }
+    if (auto declareOp = llvm::dyn_cast<hlfir::DeclareOp>(user)) {
+      for (auto user : declareOp.getResult(0).getUsers()) {
+        if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(user)) {
+          loadOpsToMaterialize.push_back(loadOp);
+        }
+      }
+    }
+  }
+  return loadOpsToMaterialize;
+}
+
+
+static void materializeShapeArgs(func::FuncOp funcOp, OpBuilder &opBuilder) {
+  for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+    if (funcOp.getArgAttrOfType<UnitAttr>(i, JIT_SHAPE_ARG_ATTR_NAME)) {
+      auto intAttr =
+          funcOp.getArgAttrOfType<IntegerAttr>(i, JIT_LITERAL_VAL_ATTR_NAME);
+      if (!intAttr) {
+        llvm::dbgs() << "\n[DEBUG] Include dynamic shape!\n";
+        continue;
+      }
+      int constVal = retrieveConstVal(funcOp.getArgumentTypes()[i], intAttr);
+      auto loadOpsToMaterialize = collectLoadFromShapeVal(funcOp.getArgument(i));
+      if (loadOpsToMaterialize.empty()) continue;
+      
+      // Start to materialize
+      for (auto loadOp: loadOpsToMaterialize) {
+        foldLoadOpWithConstant(opBuilder, loadOp, constVal);
+        loadOp.erase();
+      }
+    }
+  }
+}
+
 struct PropagateConstantsPass
     : public mlir::PassWrapper<PropagateConstantsPass,
                                mlir::OperationPass<func::FuncOp>> {
-
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PropagateConstantsPass)
-
   StringRef getArgument() const override {
     return "jforce-propagate-constants";
   }
 
-  /// Fill some known values to the mlir and use existing passes to do constant
-  /// propagation. Including:
-  /// - CSE: Common Subexpression Elimination
-  /// - Canonlicalize
-  /// - SCCP: Sparse Conditional Constant Propagation
-  /// Ref: https://mlir.llvm.org/docs/Passes/
-
   void runOnOperation() override {
     auto funcOp = getOperation();
     OpBuilder opBuilder(funcOp.getContext());
-    llvm::DenseMap<Value, int> valueMap;
-
-    // some parameters containing the shape info are passed as pointer like
-    for (int i = 0; i < funcOp.getNumArguments(); i++) {
-      auto argType =
-          funcOp.getArgAttrOfType<IntegerAttr>(i, JIT_ARG_TYPE_NAME_ATTR);
-      if (argType && (argType.getValue() == ArgType::SHAPE_OR_BOUND)) {
-        auto intAttr = funcOp.getArgAttrOfType<mlir::IntegerAttr>(
-            i, JIT_LITERAL_VAL_ATTR_NAME);
-        if (intAttr) {
-          // `intAttr` is the literal address, need to recover to specific
-          // number.
-          auto argTy = funcOp.getArgumentTypes()[i];
-          auto eleTy = getDTypeFromValueType(argTy);
-          assert(eleTy == DType::I32 && "Supposed to be shape size!\n");
-          auto eleVal = extractLiteralPtr(intAttr.getInt(), eleTy);
-          assert(eleVal.returnedType == DType::I32);
-          valueMap.insert(
-              std::pair<Value, int>(funcOp.getArgument(i), eleVal.valI32));
-        }
-      }
-    };
-
-    auto getSolidVal = [&](Value v) -> std::pair<int, bool> {
-      auto it = valueMap.find(v);
-      if (it != valueMap.end()) {
-        return std::pair(it->getSecond(), true);
-      }
-      return std::pair(-1, false);
-    };
-
-    // Replace some known values with constant values, then lifiting the
-    // propagation task to existing mlir passes.
-    llvm::SmallVector<Operation *> opsToDelete;
-    funcOp.walk([&](fir::LoadOp lop) {
-      auto lopVal = getSolidVal(lop.getOperand());
-      if (lopVal.second) {
-        if (foldLoadOpWithConstant(opBuilder, lop, lopVal.first)) {
-          opsToDelete.push_back(lop);
-        }
-      }
-    });
-    funcOp.walk([&](hlfir::DeclareOp declareOp) {
-      auto declaredVal = getSolidVal(declareOp.getMemref());
-      if (declaredVal.second) {
-        // This declareOp declares a constant value, and it will be used as
-        // shape or bound. I should find the usages of it and change to the
-        // value.
-        for (auto user : declareOp.getResult(0).getUsers()) {
-          if (auto loadOp = llvm::dyn_cast<fir::LoadOp>(user)) {
-            if (foldLoadOpWithConstant(opBuilder, loadOp, declaredVal.first)) {
-              opsToDelete.push_back(loadOp);
-            }
-          }
-        }
-      }
-    });
-
-    for (auto *op : opsToDelete) {
-      op->erase();
-    }
+    materializeShapeArgs(funcOp, opBuilder);
   }
 };
 } // namespace

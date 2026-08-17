@@ -14,7 +14,6 @@
 #include "flang/Optimizer/HLFIR/Passes.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "stablehlo/transforms/optimization/Passes.h"
-#include "transform/Utils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
