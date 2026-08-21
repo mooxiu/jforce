@@ -1,7 +1,9 @@
 #ifndef JITMANAGER_H
 #define JITMANAGER_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include <cstdint>
 #include <shared_mutex>
 #include "../../third_party/headers/pjrt_c_api.h"
 #include "../support/utilities.h"
@@ -11,14 +13,13 @@
 #include "mlir/IR/Types.h"
 
 struct L1JitMetas {
-  llvm::DenseSet<int> argsIndices;
+  llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
 };
 
 struct L2JitMetas {
   PJRT_LoadedExecutable *exe;
   std::vector<mlir::Type> kernelFuncTypes;
   std::string kernelFuncStr;
-  llvm::DenseMap<unsigned, unsigned> argsIndicesMapping;
 };
 
 class JitManager {
@@ -40,8 +41,7 @@ private:
 
   PJRT_Device *getPJRTDevice(TargetDevice td);
 
-  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code,
-                                               TargetDevice td);
+  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code, TargetDevice td);
   void destroyLoadedExecutable(PJRT_LoadedExecutable *exe);
 
 public:
@@ -60,16 +60,18 @@ public:
   mlir::ModuleOp getModuleOp(uintptr_t JitCodePtr, const char *JitCodeC);
 
   L1JitMetas *tryGetL1JitMetas(uintptr_t JitCodePtr);
-  void saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseSet<int> argsIndices);
+  void saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseMap<uint32_t, bool> shapeArgInfoMap);
 
   llvm::SmallVector<uint64_t, 128>
   getL2JitMetasKey(int64_t NumArgs, int64_t *ArgTypes, void **TgtArgs,
                    int64_t *ArgSizes, uintptr_t JitCodePtr,
-                   llvm::DenseSet<int> argsIndices);
+                   const llvm::DenseMap<uint32_t, bool>& shapeArgInfoMap);
   L2JitMetas *tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key);
   L2JitMetas *createL2JitMetas(
-      llvm::SmallVector<uint64_t, 128> &key, mlir::func::FuncOp kernelFunc,
-      llvm::DenseMap<unsigned, unsigned> argsIndicesMapping, TargetDevice td);
+    llvm::SmallVector<uint64_t, 128> &key, 
+    mlir::func::FuncOp kernelFunc,
+    TargetDevice td
+  );
 
   void launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                     const uintptr_t JitCodePtr,

@@ -16,6 +16,7 @@
 /// INFO: Jforce helper functions and types
 #define JIT_SLICE_SHIFT_ATTR_NAME "jit.slice_shift"
 #define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
+[[deprecated("avoid use this")]]
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
 #define JIT_SHAPE_ARG_ATTR_NAME "jit.shape_arg"
 

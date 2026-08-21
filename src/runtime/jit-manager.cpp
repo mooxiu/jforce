@@ -17,6 +17,8 @@
 #include "xla/pjrt/proto/compile_options.pb.h"
 #include "../support/utilities.h"
 #include "../support/profiler.h"
+#include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <dlfcn.h>
 #include <iostream>
@@ -212,6 +214,9 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr,
   return this->moduleOpMap[JitCodePtr]->clone();
 }
 
+// The cache key to the compiled kernel function.
+// To uniquely identify a kernel function cache, we need to compare all the arguments which represents the shape.
+//
 // Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs
 //
 // JitCodePtr is the pointer to this JIT string captured.
@@ -219,15 +224,21 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr,
 // ArgSizes[i]:
 // TgtArgs[i]:
 llvm::SmallVector<uint64_t, 128>
-JitManager::getL2JitMetasKey(int64_t NumArgs, int64_t *ArgTypes, void **TgtArgs,
-                             int64_t *ArgSizes, uintptr_t JitCodePtr,
-                             llvm::DenseSet<int> argsIndices) {
+JitManager::getL2JitMetasKey(
+  int64_t NumArgs, 
+  int64_t *ArgTypes, 
+  void **TgtArgs,
+  int64_t *ArgSizes, 
+  uintptr_t JitCodePtr,
+  const llvm::DenseMap<uint32_t, bool>& shapeArgInfoMap
+) {
   llvm::SmallVector<uint64_t, 128> key;
 
   key.push_back(JitCodePtr);
   for (int i = 0; i < NumArgs; i++) {
     key.push_back(ArgSizes[i]);
-    if (argsIndices.contains(i) && isLiteralTy(ArgTypes[i])) {
+    assert(shapeArgInfoMap.contains(i));
+    if (shapeArgInfoMap.at(i)) {
       key.push_back(reinterpret_cast<uintptr_t>(TgtArgs[i]));
     }
   }
@@ -315,12 +326,18 @@ L1JitMetas *JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr) {
   return nullptr;
 }
 
-void JitManager::saveL1JitMetas(uintptr_t JitCodePtr,
-                                llvm::DenseSet<int> argsIndicesToSave) {
+void JitManager::saveL1JitMetas(
+  uintptr_t JitCodePtr,
+  llvm::DenseMap<uint32_t, bool> shapeArgInfoMap 
+) {
   std::unique_lock<std::shared_mutex> wLock(this->l1JitMetaRWMtx);
   if (!this->l1JitMetasMap.contains(JitCodePtr)) {
     this->l1JitMetasMap.try_emplace(
-        JitCodePtr, L1JitMetas{.argsIndices = std::move(argsIndicesToSave)});
+      JitCodePtr, 
+      L1JitMetas{
+        .shapeArgInfoMap = std::move(shapeArgInfoMap)
+      }
+    );
   }
   return;
 }
@@ -336,8 +353,10 @@ JitManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key) {
 }
 
 L2JitMetas *JitManager::createL2JitMetas(
-    llvm::SmallVector<uint64_t, 128> &key, mlir::func::FuncOp kernelFunc,
-    llvm::DenseMap<unsigned, unsigned> argsIndicesMapping, TargetDevice td) {
+  llvm::SmallVector<uint64_t, 128> &key, 
+  mlir::func::FuncOp kernelFunc,
+  TargetDevice td
+) {
   PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE);
 
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
@@ -354,10 +373,13 @@ L2JitMetas *JitManager::createL2JitMetas(
   std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
 
   auto insertedPair = this->l2JitMetasMap.try_emplace(
-      key, (L2JitMetas){.exe = exec,
-                        .kernelFuncTypes = std::move(argTypesVec),
-                        .kernelFuncStr = std::move(kernelFuncStr),
-                        .argsIndicesMapping = std::move(argsIndicesMapping)});
+    key, 
+    (L2JitMetas){
+      .exe = exec,
+      .kernelFuncTypes = std::move(argTypesVec),
+      .kernelFuncStr = std::move(kernelFuncStr),
+    }
+  );
   return &(insertedPair.first->getSecond());
 };
 
