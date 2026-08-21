@@ -200,7 +200,9 @@ public:
 //
 // After:
 //  <NOTHING>
-
+//
+// Should check both %mem and all its possible aliases will not be used.
+// BUG: something wrong
 struct FoldOrphanAllocaStore: public OpRewritePattern<fir::StoreOp> {
 private:
   fir::AliasAnalysis& aliasAnalysis;
@@ -243,6 +245,7 @@ public:
 
     auto loopOp = storeOp->getParentOfType<fir::DoLoopOp>();
     if (!loopOp) return failure();
+
     for (Operation& op : loopOp.getRegion().front().getOperations()) {
       if (&op == storeOp || llvm::isa<fir::DeclareOp, fir::AllocaOp>(&op)) {
         continue;
@@ -304,7 +307,7 @@ struct MemOpsFoldingPass
     patterns.add<ReduceWriteAndReadSameAddr>(ctx, aliasAnalysis);
     patterns.add<ReduceReadAndWriteSameAddr>(ctx, aliasAnalysis);
     patterns.add<FoldRepeatStoreOps>(ctx, aliasAnalysis);
-    patterns.add<FoldOrphanAllocaStore>(ctx, aliasAnalysis);
+    // patterns.add<FoldOrphanAllocaStore>(ctx, aliasAnalysis);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
