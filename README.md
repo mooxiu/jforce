@@ -1,4 +1,4 @@
-# Jforce2
+# Jforce3-SpeedDaemon
 
 JForce2 extends from JForce, instead of `workdistribute` OpenMP target, it can accept general forms of Fortran OpenMP code.
 It should be used with corresponding LLVM branch.
@@ -48,6 +48,27 @@ cd stablehlo
 git checkout snapshot-20251209
 ```
 
+#### ISL (Integer Set Library)
+
+Follow: https://libisl.sourceforge.io/manual.pdf
+
+- Download and configure
+```sh
+git clone git://repo.or.cz/isl.git   
+git pull
+git submodule init
+git submodule update
+./autogen.sh
+```
+
+- Compile
+```sh
+./configure
+make
+make check
+make instal # I think not needed in our case
+```
+
 #### PJRT Plugins
 
 ```sh
@@ -60,72 +81,13 @@ git checkout snapshot-20251206
 ### Setup JForce
 
 ```sh
-# in workspace
-git clone 
-
-
-
----
-
-
----
-
-## Note for WACCPD workshop submission
-
-homepath="/home/muyao/projects/waccpd"
-
-CPU: 
-
-```sh
 cmake -G Ninja \
-    -DTARGET_DEVICE_NAME="CPU" \
-    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
-    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
-    -DDEFAULT_PJRT_PLUGIN_PATH="/home/muyao/projects/waccpd/pjrt-plugins/pjrt_c_api_cpu_plugin.memkf04-20260325.so" \
+    -DLLVM_INSTALL_PATH="${prjroot}/deps/llvm-project/build" \
+    -DSTABLEHLO_PROJECT="${prjroot}/deps/stablehlo" \
+    -DISL_INCLUDE_DIR="${prjroot}/deps/isl/include" \
+    -DISL_LIBRARY="${prjroot}/deps/isl/.libs" \
     -DENABLE_PROFILING=OFF \
-    -DCMAKE_BUILD_TYPE="RELEASE" \
-    ./..
-```
-
-```sh
-cmake -G Ninja \
-    -DTARGET_DEVICE_NAME="CUDA" \
-    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
-    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
-    -DDEFAULT_PJRT_PLUGIN_PATH="/home/muyao/projects/waccpd/pjrt-plugins/pjrt_c_api_gpu_plugin.so" \
-    -DENABLE_PROFILING=OFF \
-    -DCMAKE_BUILD_TYPE="RELEASE" \
-    ./..
-```
-
-Pass in run:
-```sh
-cmake -G Ninja \
-    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
-    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
-    -DENABLE_PROFILING=OFF \
-    -DCMAKE_BUILD_TYPE="RELEASE" \
-    ./..
-```
-
-Build For Debugging
-```sh
-cmake -G Ninja \
-    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
-    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
-    -DENABLE_PROFILING=OFF \
-    -DCMAKE_BUILD_TYPE="DEBUG" \
-    ./..
-```
-
-Build For Profiling
-```sh
-cmake -G Ninja \
-    -DLLVM_INSTALL_PATH="/home/muyao/projects/waccpd/llvm-project/build" \
-    -DSTABLEHLO_PROJECT="/home/muyao/projects/waccpd/stablehlo" \
-    -DISL_INCLUDE_DIR="" \
-    -DISL_LIBRARY="" \
-    -DENABLE_PROFILING=ON \
     -DCMAKE_BUILD_TYPE="DEBUG" \
      ./..
 ```
+
