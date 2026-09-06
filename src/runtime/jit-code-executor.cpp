@@ -1,6 +1,5 @@
 #include "../support/profiler.h"
 #include "../support/utilities.h"
-#include "pipelines.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "jit-manager.h"
 #include "mlir/Dialect/Affine/Transforms/Passes.h"
@@ -8,9 +7,11 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "pipelines.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -69,25 +70,6 @@ static TargetDevice getTargetDevice() {
 #define PRINT_PASS()
 #endif
 
-// FIXME: remove this function after test
-[[deprecated("Use assembleXLAFuncArgs instead")]]
-void fillKernelFuncArgs(TensorDesc *newArgs, ArrayRef<Type> kernelFuncTypes,
-                        int64_t argCount, int64_t *ArgTypes, void **TgtArgs) {
-  for (int i = 0; i < argCount; i++) {
-    auto thisTy = kernelFuncTypes[i];
-    assert(llvm::isa<RankedTensorType>(thisTy) && "Suppose all args are ");
-    auto rtType = llvm::dyn_cast<RankedTensorType>(thisTy);
-
-    newArgs[i] = TensorDesc{
-        .data = TgtArgs[i],
-        .shape = rtType.getShape().data(),
-        .rank = (int32_t)rtType.getRank(),
-        .dtype = getDTypeFromRankedTensorType(rtType),
-        .isLiteral = isLiteralTy(ArgTypes[i]),
-    };
-  }
-}
-
 llvm::SmallVector<TensorDesc>
 assembleXLAFuncArgs(ArrayRef<Type> kernelFuncTypes, int64_t argCount,
                     int64_t *ArgTypes, void **TgtArgs) {
@@ -117,23 +99,6 @@ struct jitArg {
   bool isLiteral;
 };
 
-llvm::SmallVector<jitArg> packJitArg(int64_t NumArgs, void **TgtArgs,
-                                     void **ArgPtrs, int64_t *ArgSizes,
-                                     int64_t *ArgTypes) {
-  llvm::SmallVector<jitArg> args;
-  args.resize(NumArgs);
-
-  for (int i = 0; i < NumArgs; i++) {
-    args[i] = jitArg{
-        .hostPtr = ArgPtrs[i],
-        .tgtPtr = TgtArgs[i],
-        .size = ArgSizes[i],
-        .isLiteral = isLiteralTy(ArgTypes[i]),
-    };
-  };
-  return args;
-}
-
 void insertJitInfo(mlir::OpBuilder &builder, func::FuncOp kernelFunc,
                    llvm::SmallVector<jitArg> args) {
   auto ctx = builder.getContext();
@@ -150,23 +115,6 @@ void insertJitInfo(mlir::OpBuilder &builder, func::FuncOp kernelFunc,
   return;
 }
 
-// FIXME: rewrite the logic of building keys! Shape indices should be based on
-// `jit.shape_arg`!
-[[deprecated("Not used anymore")]]
-llvm::DenseMap<uint32_t, uint32_t> rebuildIndicesMapping(func::FuncOp funcOp) {
-  llvm::DenseMap<uint32_t, uint32_t> indicesMap;
-  auto arrayAttr = funcOp->getAttrOfType<ArrayAttr>(JIT_ARGS_MAPPING_ATTR_NAME);
-  assert(arrayAttr &&
-         "Jit args map after trimming should be stored as attribute!");
-  auto attrs = arrayAttr.getValue();
-  for (int i = 0; i < attrs.size(); i += 2) {
-    uint32_t key = llvm::cast<IntegerAttr>(attrs[i]).getUInt();
-    uint32_t val = llvm::cast<IntegerAttr>(attrs[i + 1]).getUInt();
-    indicesMap[key] = val;
-  }
-  return indicesMap;
-}
-
 // Store pair of <arg index, is shape arg>
 llvm::DenseMap<uint32_t, bool> getShapeArgInfoMap(func::FuncOp funcOp) {
   llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
@@ -178,6 +126,37 @@ llvm::DenseMap<uint32_t, bool> getShapeArgInfoMap(func::FuncOp funcOp) {
     }
   }
   return shapeArgInfoMap;
+}
+
+ModuleOp preprocessModuleOp(MLIRContext *ctx, uintptr_t JitCodePtrUint,
+                            char *JitCodeC, int64_t NumArgs, void **TgtArgs,
+                            void **ArgPtrs, int64_t *ArgSizes,
+                            int64_t *ArgTypes) {
+  auto packJitArg = [&]() {
+    llvm::SmallVector<jitArg> args;
+    args.resize(NumArgs);
+
+    for (int i = 0; i < NumArgs; i++) {
+      args[i] = jitArg{
+          .hostPtr = ArgPtrs[i],
+          .tgtPtr = TgtArgs[i],
+          .size = ArgSizes[i],
+          .isLiteral = isLiteralTy(ArgTypes[i]),
+      };
+    };
+    return args;
+  };
+
+  mlir::OpBuilder builder(ctx);
+  // Use OweningOpRef so RAII can help to destroy the tree
+  mlir::OwningOpRef<mlir::ModuleOp> moduleOpRef =
+      JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
+  auto jitArgs = packJitArg();
+  auto moduleOp = moduleOpRef.get();
+  auto kernel = moduleOp.lookupSymbol<func::FuncOp>("kernel");
+  assert(kernel && "FuncOp with name kernel should exist!");
+  insertJitInfo(builder, kernel, jitArgs);
+  return moduleOp;
 }
 
 // ------------------------------ Init ------------------------------
@@ -237,7 +216,6 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     auto l2JitMetas = JitManager::getInstance().tryGetL2JitMetas(l2Key);
 
     if (l2JitMetas != nullptr) {
-      // auto kernelFunc = jitMeta->kernelFunc;
       auto newArgs = assembleXLAFuncArgs(l2JitMetas->kernelFuncTypes,
                                          NumHostArgs, ArgTypes, TgtArgs);
       auto kArgs = (KernelArgs){.inputArgCount = unsigned(NumArgs),
@@ -251,33 +229,25 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
     }
   }
 
-  // Parse JitCode to ModuleOp
   MLIRContext *ctx = JitManager::getInstance().getContext();
-  // Use OweningOpRef so RAII can help to destroy the tree
-  mlir::OwningOpRef<mlir::ModuleOp> moduleOpRef =
-      JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
-  mlir::OpBuilder builder(ctx);
-  auto jitArgs = packJitArg(NumArgs, TgtArgs, ArgPtrs, ArgSizes, ArgTypes);
-  auto moduleOp = moduleOpRef.get();
-  auto kernel = moduleOp.lookupSymbol<func::FuncOp>("kernel");
-  assert(kernel && "FuncOp with name kernel should exist!");
-  insertJitInfo(builder, kernel, jitArgs);
 
+  // Parse JitCode to ModuleOp, etc.
+  auto moduleOp = preprocessModuleOp(ctx, JitCodePtrUint, JitCodeC, NumArgs,
+                                     TgtArgs, ArgPtrs, ArgSizes, ArgTypes);
+
+  // Lower JItCode to StableHLO
   mlir::PassManager pm(ctx);
   PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
   // pm.enableTiming();
   createLowerToStableHLOPassPipeline(pm);
-
   if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);
   }
 
-  // kernel function needs to be named as `main` to be compiled by XLA
   auto kernelFunc = moduleOp.lookupSymbol<func::FuncOp>("main");
   assert(kernelFunc && "Kernel Func should be renamed as main!\n");
-  // auto argsIndicesMapping = rebuildIndicesMapping(kernelFunc);
 
   if (l1JitMetas == nullptr) {
     auto shapeInfoMap = getShapeArgInfoMap(kernelFunc);
