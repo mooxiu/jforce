@@ -12,6 +12,9 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 
+
+static std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
+
 struct L1JitMetas {
   llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
 };

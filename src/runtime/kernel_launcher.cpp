@@ -3,29 +3,7 @@
 #include "../support/utilities.h"
 #include <iostream>
 
-static std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
 
-extern "C" {
-__attribute__((visibility("default"))) PJRT_Buffer *
-GetPjrtBuffer(void *cpu_ptr) {
-  auto it = InternalBufferMap.find(cpu_ptr);
-  if (it != InternalBufferMap.end()) {
-    return it->second;
-  }
-  return nullptr;
-}
-
-__attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
-                                                              PJRT_Api *api) {
-  auto it = InternalBufferMap.find(cpu_ptr);
-  if (it != InternalBufferMap.end()) {
-    PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-                                     nullptr, it->second};
-    api->PJRT_Buffer_Destroy(&args);
-    InternalBufferMap.erase(it);
-  }
-}
-}
 
 /**
 -------------------- Tool Functions --------------------
@@ -54,6 +32,7 @@ std::string JitManager::getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
 /**
 -------------------- End Tool Functions --------------------
  */
+
 static bool destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr) {
   PJRT_Buffer_Destroy_Args args = {
       .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = dataPtr};
@@ -346,79 +325,3 @@ void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
   return;
 }
 
-/// ---------------------------------------------------------------------
-//
-// [[deprecated("Memory Allocation is done by OpenMP RT")]]
-// static size_t getSizeOf(PJRT_Buffer_Type type) {
-//   switch (type) {
-//   case PJRT_Buffer_Type_F32:
-//   case PJRT_Buffer_Type_S32:
-//     return size_t(4);
-//   case PJRT_Buffer_Type_F64:
-//   case PJRT_Buffer_Type_S64:
-//     return size_t(8);
-//   default:
-//     logger::Log("Unknown Type", logLevel::ERROR);
-//     exit(1);
-//   }
-// }
-//
-// // TODO: This work should later be done by OpenMP runtime.
-// [[deprecated("Handled by OpenMP runtime, don't need to assign the buffer by "
-//              "ourseleves")]]
-// static PJRT_Buffer *getBufferFromHost(const PJRT_Api *api, PJRT_Client *client,
-//                                       PJRT_Device *device, void *ptr,
-//                                       std::vector<int64_t> shape) {
-//   PJRT_Client_BufferFromHostBuffer_Args buffer_args = {
-//       .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
-//       .client = client,
-//       .data = ptr,
-//       .type = PJRT_Buffer_Type_F32,
-//       .num_dims = shape.size(), // Should reconsider how to set the size and
-//                                 // dimmension for general
-//       .device = device,
-//   };
-//
-//   int64_t dims_arr[shape.size()];
-//   for (int i = 0; i < shape.size(); i++) {
-//     dims_arr[i] = shape[i];
-//   }
-//   buffer_args.dims = dims_arr;
-//   auto err = api->PJRT_Client_BufferFromHostBuffer(&buffer_args);
-//   if (!JitManager::checkPJRTError(api, err, "Create Buffer From Host")) {
-//     return nullptr;
-//   }
-//   return buffer_args.buffer;
-// }
-//
-// // TODO: need to fix because OpenMP will manage the memory location of the host
-// // and device
-// [[deprecated("OpenMP will in charge of the memory")]]
-// static void saveBufferToHostBuffer(const PJRT_Api *api, PJRT_Buffer *source,
-//                                    void *dst, std::vector<int64_t> shape) {
-//   PJRT_Buffer_ToHostBuffer_Args buffer_args = {};
-//   buffer_args.struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE;
-//   buffer_args.src = source;
-//   buffer_args.dst = dst;
-//   buffer_args.dst_size = getSizeOf(PJRT_Buffer_Type_F32) *
-//                          std::accumulate(shape.begin(), shape.end(), 1,
-//                                          std::multiplies<int64_t>());
-//   buffer_args.event = nullptr;
-//
-//   auto err = api->PJRT_Buffer_ToHostBuffer(&buffer_args);
-//   if (!JitManager::checkPJRTError(api, err, "Save buffer to host")) {
-//     return;
-//   }
-//   if (buffer_args.event != nullptr) {
-//     PJRT_Event_Await_Args await_args = {};
-//     await_args.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE;
-//     await_args.event = buffer_args.event;
-//     JitManager::checkPJRTError(api, api->PJRT_Event_Await(&await_args),
-//                                "Waiting for host buffer copy");
-//
-//     PJRT_Event_Destroy_Args destroy_args = {};
-//     destroy_args.struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE;
-//     destroy_args.event = buffer_args.event;
-//     api->PJRT_Event_Destroy(&destroy_args);
-//   }
-// }

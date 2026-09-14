@@ -160,6 +160,31 @@ ModuleOp preprocessModuleOp(MLIRContext *ctx, uintptr_t JitCodePtrUint,
 }
 
 // ------------------------------ Init ------------------------------
+//
+
+extern "C" {
+  __attribute__((visibility("default"))) PJRT_Buffer *
+  GetPjrtBuffer(void *cpu_ptr) {
+    auto it = InternalBufferMap.find(cpu_ptr);
+    if (it != InternalBufferMap.end()) {
+      return it->second;
+    }
+    return nullptr;
+  }
+
+  __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
+                                                                PJRT_Api *api) {
+    auto it = InternalBufferMap.find(cpu_ptr);
+    if (it != InternalBufferMap.end()) {
+      PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+                                       nullptr, it->second};
+      api->PJRT_Buffer_Destroy(&args);
+      InternalBufferMap.erase(it);
+    }
+  }
+}
+
+
 /**
  * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp
  * inside.
