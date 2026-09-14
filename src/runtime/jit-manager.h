@@ -8,7 +8,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <shared_mutex>
 
@@ -29,7 +29,9 @@ private:
   mlir::MLIRContext context;
   const PJRT_Api *pjrtApi;
   PJRT_Client *pjrtClient;
-  PJRT_Device *pjrtDevice;
+  // Should not lazily load, it can cause some latency.
+  llvm::SmallVector<PJRT_Device *> pjrtDevices = {};
+  TargetDeviceType targetDeviceTy;
 
   std::shared_mutex l1JitMetaRWMtx;
   llvm::DenseMap<uintptr_t, L1JitMetas> l1JitMetasMap;
@@ -41,10 +43,9 @@ private:
   std::shared_mutex moduleOpRWMtx;
   llvm::DenseMap<uintptr_t, mlir::OwningOpRef<mlir::ModuleOp>> moduleOpMap;
 
-  PJRT_Device *getPJRTDevice(TargetDevice td);
+  // PJRT_Device *getPJRTDevice(TargetDevice td);
 
-  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code,
-                                               TargetDevice td);
+  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code);
   void destroyLoadedExecutable(PJRT_LoadedExecutable *exe);
 
 public:
@@ -72,7 +73,7 @@ public:
                    const llvm::DenseMap<uint32_t, bool> &shapeArgInfoMap);
   L2JitMetas *tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key);
   L2JitMetas *createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
-                               mlir::func::FuncOp kernelFunc, TargetDevice td);
+                               mlir::func::FuncOp kernelFunc);
 
   void launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                     const std::string &kernelFuncStr);

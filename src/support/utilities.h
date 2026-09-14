@@ -1,28 +1,33 @@
 #ifndef UTILITIES_H
 #define UTILITIES_H
 
-#include "mlir/IR/Types.h"
-#include <cmath>
-#include <cstdint>
 #include "../../third_party/headers/pjrt_c_api.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Value.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/Types.h"
+#include "mlir/IR/Value.h"
 #include "llvm/Support/Debug.h"
+#include <cmath>
+#include <cstdint>
 
 #ifdef ENABLE_XLA_DEBUG
 #define SET_XLA_FLAG()                                                         \
   setenv("XLA_FLAGS", "--xla_dump_to=/tmp/xla_dump --xla_dump_hlo_as_text", 1)
 #define DEBUG_PRINT(str) llvm::dbgs() << "[DEBUG]" << str << "\n"
-#define DEBUG_PRINT_VAL(val) llvm::dbgs() << "[DEBUG] "; val.printAsOperand(llvm::dbgs(), {}); llvm::dbgs() << " \n";
-#define DEBUG_PRINT_OP(op) llvm::dbgs() << "[DEBUG] "; op->print(llvm::dbgs()); llvm::dbgs() << " \n"
+#define DEBUG_PRINT_VAL(val)                                                   \
+  llvm::dbgs() << "[DEBUG] ";                                                  \
+  val.printAsOperand(llvm::dbgs(), {});                                        \
+  llvm::dbgs() << " \n";
+#define DEBUG_PRINT_OP(op)                                                     \
+  llvm::dbgs() << "[DEBUG] ";                                                  \
+  op->print(llvm::dbgs());                                                     \
+  llvm::dbgs() << " \n"
 #else
 #define SET_XLA_FLAG()
 #define DEBUG_PRINT(str)
 #define DEBUG_PRINT_VAL(val)
 #define DEBUG_PRINT_OP(op)
 #endif
-
 
 bool isLiteralTy(int64_t argType);
 
@@ -47,7 +52,8 @@ DType getDTypeFromRankedTensorType(mlir::RankedTensorType tensorTy);
 
 DType getDTypeFromValueType(mlir::Type arg);
 
-// This could be achieved by elegant sum type std::variant<> in Cpp, but it requires C++17 and pattern matching part is pretty ugly in Cpp.
+// This could be achieved by elegant sum type std::variant<> in Cpp, but it
+// requires C++17 and pattern matching part is pretty ugly in Cpp.
 struct DTypeVal {
   float_t valF32;
   double_t valF64;
@@ -58,7 +64,8 @@ struct DTypeVal {
 
 DTypeVal extractLiteralPtr(uint64_t rawPtr, DType dType);
 
-enum class TargetDevice : int32_t {
+enum class TargetDeviceType : int32_t {
+  INVALID = -1,
   CPU = 0,
   CUDA = 1,
   ROCM = 2,
@@ -107,11 +114,9 @@ struct KernelArgs {
   TensorDesc *inputArgs;
   unsigned int outputArgCount;
   TensorDesc *outputArgs;
-  TargetDevice targetDevice;
 
   void formatPrint() {
-    llvm::dbgs() << "The Target Device is: " << (int32_t)targetDevice << "\n"
-                 << "We have " << inputArgCount << " inputs: \n";
+    llvm::dbgs() << "We have " << inputArgCount << " inputs: \n";
     for (int i = 0; i < inputArgCount; i++) {
       inputArgs[i].formatPrint();
     }

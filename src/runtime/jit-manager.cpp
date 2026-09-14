@@ -13,10 +13,12 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/InitAllExtensions.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
+#include "llvm/ADT/SmallVector.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -71,9 +73,33 @@ static std::string getDeviceDescription(const PJRT_Api *api,
   return ts_args.to_string;
 }
 
+static TargetDeviceType getTargetDeviceFromEnv() {
+  const char *value = std::getenv("JFORCE_TARGET_DEVICE");
+  if (!value || *value == '\0') {
+    llvm::report_fatal_error("JFORCE_TARGET_DEVICE is not set; "
+                             "expected CPU, CUDA, ROCM, or TPU.");
+  }
+  std::string name(value);
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+    return static_cast<char>(std::toupper(c));
+  });
+  if (name == "CPU")
+    return TargetDeviceType::CPU;
+  if (name == "CUDA")
+    return TargetDeviceType::CUDA;
+  if (name == "ROCM")
+    return TargetDeviceType::ROCM;
+  if (name == "TPU")
+    return TargetDeviceType::TPU;
+  llvm::errs() << "Unsupported device!\n";
+  exit(EXIT_FAILURE);
+  return TargetDeviceType::INVALID;
+}
+
 // Get the target device handle
-static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
-                               const std::string &deviceDescKeyword) {
+static llvm::SmallVector<PJRT_Device *>
+findDevices(const PJRT_Api *api, PJRT_Client *client,
+            const std::string &deviceDescKeyword) {
   PJRT_Client_AddressableDevices_Args device_args = {
       .struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
       .client = client,
@@ -89,49 +115,20 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
     std::exit(EXIT_FAILURE);
   }
 
-  int chosen_device_idx = -1;
-  std::string desc = ""; // for logging purpose
+  llvm::SmallVector<PJRT_Device *> matched_devices;
   for (int i = 0; i < device_args.num_addressable_devices; i++) {
-    std::string tmp =
-        getDeviceDescription(api, device_args.addressable_devices[i]);
+    auto device = device_args.addressable_devices[i];
+    std::string tmp = getDeviceDescription(api, device);
     DEBUG_PRINT("Read device description: " + tmp +
                 ", and trying to find device: " + deviceDescKeyword);
     std::transform(tmp.begin(), tmp.end(), tmp.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     DEBUG_PRINT("After lower: " + tmp);
     if (tmp.find(deviceDescKeyword) != std::string::npos) {
-      chosen_device_idx = i;
-      desc = tmp;
-      break;
+      matched_devices.push_back(device);
     }
   }
-  if (chosen_device_idx == -1) {
-    std::cerr << "[Error] Fail to find " + deviceDescKeyword + " device!\n";
-    std::exit(EXIT_FAILURE);
-  }
-  return device_args.addressable_devices[chosen_device_idx];
-}
-
-PJRT_Device *JitManager::getPJRTDevice(TargetDevice td) {
-  if (this->pjrtDevice) {
-    return this->pjrtDevice;
-  }
-
-  DEBUG_PRINT("Trying to get device: " + std::to_string((int32_t)td));
-  if (td == TargetDevice::CPU) {
-    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cpu");
-  } else if (td == TargetDevice::CUDA) {
-    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "cuda");
-  } else if (td == TargetDevice::ROCM) {
-    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "rocm");
-  } else if (td == TargetDevice::TPU) {
-    this->pjrtDevice = findDevice(this->pjrtApi, this->pjrtClient, "tpu");
-  } else {
-    std::cerr << "Fail to find device!\n";
-    std::exit(EXIT_FAILURE);
-  }
-  DEBUG_PRINT("Succeed in getting device!\n");
-  return this->pjrtDevice;
+  return matched_devices;
 }
 
 JitManager::JitManager() {
@@ -171,6 +168,27 @@ JitManager::JitManager() {
   // be destroyed when exiting the program so intentionally leave it.
   this->pjrtApi = api;
   this->pjrtClient = getPJRTClient(api);
+  this->targetDeviceTy = getTargetDeviceFromEnv();
+  // Find all the available devices in the environment.
+  DEBUG_PRINT("Trying to get device: " + std::to_string((int32_t)td));
+  switch (this->targetDeviceTy) {
+  case TargetDeviceType::CPU:
+    this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "cpu");
+    break;
+  case TargetDeviceType::CUDA:
+    this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "cuda");
+    break;
+  case TargetDeviceType::ROCM:
+    this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "rocm");
+    break;
+  case TargetDeviceType::TPU:
+    this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "tpu");
+    break;
+  default:
+    std::cerr << "Fail to find device!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return;
 }
 
 JitManager &JitManager::getInstance() {
@@ -249,8 +267,7 @@ void JitManager::destroyLoadedExecutable(PJRT_LoadedExecutable *exe) {
 }
 
 PJRT_LoadedExecutable *
-JitManager::compilePJRTExecutable(const std::string &func_code,
-                                  TargetDevice td) {
+JitManager::compilePJRTExecutable(const std::string &func_code) {
   PJRT_Program program = (struct PJRT_Program){
       .struct_size = PJRT_Program_STRUCT_SIZE,
       .code = (char *)func_code.c_str(),
@@ -272,7 +289,7 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
     build_opts->set_device_memory_size(40LL << 30); // 40 GB
 
     // Special option for CUDA
-    if (td == TargetDevice::CUDA) {
+    if (this->targetDeviceTy == TargetDeviceType::CUDA) {
       // TODO: this might make compiled code slower!!!
       auto debugOptions = build_opts->mutable_debug_options();
       debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(
@@ -344,12 +361,11 @@ JitManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key) {
 }
 
 L2JitMetas *JitManager::createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
-                                         mlir::func::FuncOp kernelFunc,
-                                         TargetDevice td) {
+                                         mlir::func::FuncOp kernelFunc) {
   PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE);
 
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
-  auto exec = this->compilePJRTExecutable(kernelFuncStr, td);
+  auto exec = this->compilePJRTExecutable(kernelFuncStr);
 
   std::unique_lock<std::shared_mutex> wLock(this->l2JitMetaRWMtx);
   auto it = this->l2JitMetasMap.find(key);

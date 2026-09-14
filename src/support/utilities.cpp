@@ -2,9 +2,9 @@
 #include "flang/Optimizer/Dialect/FIRType.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "mlir/IR/OperationSupport.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstddef>
 #include <cstdlib>
@@ -51,7 +51,8 @@ mlir::Type convertToStaticShape(mlir::Type type,
       .Case<fir::BoxType>([&](fir::BoxType bType) {
         // If the type is static, verifier won't accept box type anymore!
         // We need to replace it with a static ref.
-        return fir::ReferenceType::get(convertToStaticShape(bType.getEleTy(), shape));
+        return fir::ReferenceType::get(
+            convertToStaticShape(bType.getEleTy(), shape));
       })
       .Case<fir::SequenceType>([&](fir::SequenceType sType) {
         return fir::SequenceType::get(shape, sType.getEleTy());
@@ -103,20 +104,18 @@ DTypeVal extractLiteralPtr(uint64_t rawPtr, DType dType) {
   }
   }
 
-  return DTypeVal {
-    .valF32 = val_f32,
-    .valF64 = val_f64,
-    .valI32 = val_i32,
-    .valI64 = val_i64,
-    .returnedType = dType
-  };
+  return DTypeVal{.valF32 = val_f32,
+                  .valF64 = val_f64,
+                  .valI32 = val_i32,
+                  .valI64 = val_i64,
+                  .returnedType = dType};
 }
 
 DType getDTypeFromRankedTensorType(mlir::RankedTensorType tensorTy) {
   auto eleType = tensorTy.getElementType();
-  if (eleType.isF32()){
+  if (eleType.isF32()) {
     return DType::F32;
-  } else if (eleType.isF64()){
+  } else if (eleType.isF64()) {
     return DType::F64;
   } else if (eleType.isInteger(32)) {
     return DType::I32;
@@ -142,7 +141,7 @@ DType getDTypeFromValueType(mlir::Type type) {
       .Case<hlfir::ExprType>([&](hlfir::ExprType eType) {
         return getDTypeFromValueType(eType.getEleTy());
       })
-      .Default([&](mlir::Type t) { 
+      .Default([&](mlir::Type t) {
         if (t.isF32()) {
           return DType::F32;
         } else if (t.isF64()) {
@@ -152,8 +151,8 @@ DType getDTypeFromValueType(mlir::Type type) {
         } else if (t.isInteger(64)) {
           return DType::I64;
         }
-          llvm::errs() << "Unexpected Type!\n";
-          std::exit(EXIT_FAILURE);
+        llvm::errs() << "Unexpected Type!\n";
+        std::exit(EXIT_FAILURE);
       });
 }
 
@@ -186,4 +185,3 @@ size_t getDTypeSizeInByte(DType dtype) {
     std::exit(EXIT_FAILURE);
   }
 }
-

@@ -30,36 +30,6 @@ using namespace mlir;
 #define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
 #define JIT_SHAPE_ARG_ATTR_NAME "jit.shape_arg"
 
-static TargetDevice getTargetDevice() {
-  static const TargetDevice device = [] {
-    const char *value = std::getenv("JFORCE_TARGET_DEVICE");
-
-    if (!value || *value == '\0') {
-      llvm::report_fatal_error("JFORCE_TARGET_DEVICE is not set; "
-                               "expected CPU, CUDA, ROCM, or TPU.");
-    }
-
-    std::string name(value);
-    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
-      return static_cast<char>(std::toupper(c));
-    });
-
-    if (name == "CPU")
-      return TargetDevice::CPU;
-    if (name == "CUDA")
-      return TargetDevice::CUDA;
-    if (name == "ROCM")
-      return TargetDevice::ROCM;
-    if (name == "TPU")
-      return TargetDevice::TPU;
-
-    llvm::errs() << "Unsupported device!\n";
-    exit(EXIT_FAILURE);
-  }();
-
-  return device;
-}
-
 #ifdef ENABLE_XLA_DEBUG
 #define PRINT_PASS()                                                           \
   llvm::errs() << "Pass pipeline: ";                                           \
@@ -255,8 +225,7 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
       auto kArgs = (KernelArgs){.inputArgCount = unsigned(NumArgs),
                                 .inputArgs = newArgs.data(),
                                 .outputArgCount = unsigned(NumArgs),
-                                .outputArgs = newArgs.data(),
-                                .targetDevice = getTargetDevice()};
+                                .outputArgs = newArgs.data()};
       JitManager::getInstance().launchKernel(l2JitMetas->exe, &kArgs,
                                              l2JitMetas->kernelFuncStr);
       return 0;
@@ -290,18 +259,15 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
     JitManager::getInstance().saveL1JitMetas(JitCode, std::move(shapeInfoMap));
   }
 
-  auto createdL2JitMetas = JitManager::getInstance().createL2JitMetas(
-      l2Key, kernelFunc, getTargetDevice());
+  auto createdL2JitMetas =
+      JitManager::getInstance().createL2JitMetas(l2Key, kernelFunc);
 
   auto newArgs = assembleXLAFuncArgs(createdL2JitMetas->kernelFuncTypes,
                                      NumHostArgs, ArgTypes, TgtArgs);
-  auto launchArgs = (struct KernelArgs){
-      .inputArgCount = unsigned(NumArgs),
-      .inputArgs = newArgs.data(),
-      .outputArgCount = unsigned(NumArgs),
-      .outputArgs = newArgs.data(),
-      .targetDevice = getTargetDevice(),
-  };
+  auto launchArgs = (struct KernelArgs){.inputArgCount = unsigned(NumArgs),
+                                        .inputArgs = newArgs.data(),
+                                        .outputArgCount = unsigned(NumArgs),
+                                        .outputArgs = newArgs.data()};
   JitManager::getInstance().launchKernel(createdL2JitMetas->exe, &launchArgs,
                                          createdL2JitMetas->kernelFuncStr);
   return 0;
