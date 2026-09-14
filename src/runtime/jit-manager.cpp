@@ -1,4 +1,6 @@
 #include "jit-manager.h"
+#include "../support/profiler.h"
+#include "../support/utilities.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -15,8 +17,6 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
-#include "../support/utilities.h"
-#include "../support/profiler.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -27,8 +27,7 @@ std::string getPluginPath() {
   const char *path = std::getenv("PJRT_PLUGIN_PATH");
 
   if (!path || *path == '\0') {
-    llvm::report_fatal_error(
-        "PJRT_PLUGIN_PATH is not set or is empty.");
+    llvm::report_fatal_error("PJRT_PLUGIN_PATH is not set or is empty.");
   }
 
   return path;
@@ -55,7 +54,8 @@ static std::string getDeviceDescription(const PJRT_Api *api,
   };
   auto err1 = api->PJRT_Device_GetDescription(&args);
   if (err1) {
-    std::cerr << "[Error] Fail to get description of the device: " << JitManager::getErrMsg(api, err1) << "\n";
+    std::cerr << "[Error] Fail to get description of the device: "
+              << JitManager::getErrMsg(api, err1) << "\n";
     return nullptr;
   }
   PJRT_DeviceDescription_ToString_Args ts_args = {
@@ -64,7 +64,8 @@ static std::string getDeviceDescription(const PJRT_Api *api,
   };
   auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
   if (err2) {
-    std::cerr << "[Error] Fail to get device description to string: " << JitManager::getErrMsg(api, err2) << "\n";
+    std::cerr << "[Error] Fail to get device description to string: "
+              << JitManager::getErrMsg(api, err2) << "\n";
     return nullptr;
   }
   return ts_args.to_string;
@@ -79,7 +80,8 @@ static PJRT_Device *findDevice(const PJRT_Api *api, PJRT_Client *client,
   };
   auto err = api->PJRT_Client_AddressableDevices(&device_args);
   if (err) {
-    std::cerr << "[Error] Cannot get addressable device: " << JitManager::getInstance().getErrMsg(api, err) << "\n";
+    std::cerr << "[Error] Cannot get addressable device: "
+              << JitManager::getInstance().getErrMsg(api, err) << "\n";
     std::exit(EXIT_FAILURE);
   }
   if (device_args.num_addressable_devices < 1) {
@@ -135,18 +137,13 @@ PJRT_Device *JitManager::getPJRTDevice(TargetDevice td) {
 JitManager::JitManager() {
   // Initialize context
   mlir::DialectRegistry registry;
-  registry.insert<
-    mlir::func::FuncDialect, 
-    mlir::arith::ArithDialect,
-    mlir::math::MathDialect,
-    fir::FIROpsDialect,
-    hlfir::hlfirDialect,
-    mlir::omp::OpenMPDialect,
-    mlir::scf::SCFDialect,
-    mlir::affine::AffineDialect,
-    mlir::memref::MemRefDialect,
-    mlir::bufferization::BufferizationDialect,
-    mlir::stablehlo::StablehloDialect>();
+  registry
+      .insert<mlir::func::FuncDialect, mlir::arith::ArithDialect,
+              mlir::math::MathDialect, fir::FIROpsDialect, hlfir::hlfirDialect,
+              mlir::omp::OpenMPDialect, mlir::scf::SCFDialect,
+              mlir::affine::AffineDialect, mlir::memref::MemRefDialect,
+              mlir::bufferization::BufferizationDialect,
+              mlir::stablehlo::StablehloDialect>();
   mlir::registerAllExtensions(registry);
   mlir::LLVM::registerInlinerInterface(registry);
   this->context.appendDialectRegistry(registry);
@@ -167,8 +164,7 @@ JitManager::JitManager() {
   }
   PJRT_Api *api = get_api_fn();
   PJRT_Plugin_Initialize_Args initArgs = {
-    .struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE
-  };
+      .struct_size = PJRT_Plugin_Initialize_Args_STRUCT_SIZE};
   auto initErr = api->PJRT_Plugin_Initialize(&initArgs);
   assert(!initErr && "Error when plugin initializing!");
   // Theoretically need to close handle_ when exiting, but it will automatically
@@ -186,8 +182,9 @@ const PJRT_Api *JitManager::getPJRTApi() { return this->pjrtApi; }
 
 mlir::MLIRContext *JitManager::getContext() { return &this->context; }
 
-mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr,
-                                       const char *JitCodeC) {
+mlir::ModuleOp JitManager::getModuleOp(void *JitCode) {
+  auto JitCodePtr = reinterpret_cast<uintptr_t>(JitCode);
+  char *JitCodeC = reinterpret_cast<char *>(JitCode);
   // If can found in map, just return a cloned moduleOP
   std::shared_lock<std::shared_mutex> rLock(moduleOpRWMtx);
   auto it = this->moduleOpMap.find(JitCodePtr);
@@ -215,7 +212,8 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr,
 }
 
 // The cache key to the compiled kernel function.
-// To uniquely identify a kernel function cache, we need to compare all the arguments which represents the shape.
+// To uniquely identify a kernel function cache, we need to compare all the
+// arguments which represents the shape.
 //
 // Key= JitCodePtr + [ArgSizes[i] + TgtArgs[i]] for i in NumAgrs
 //
@@ -223,15 +221,10 @@ mlir::ModuleOp JitManager::getModuleOp(uintptr_t JitCodePtr,
 //
 // ArgSizes[i]:
 // TgtArgs[i]:
-llvm::SmallVector<uint64_t, 128>
-JitManager::getL2JitMetasKey(
-  int64_t NumArgs, 
-  int64_t *ArgTypes, 
-  void **TgtArgs,
-  int64_t *ArgSizes, 
-  uintptr_t JitCodePtr,
-  const llvm::DenseMap<uint32_t, bool>& shapeArgInfoMap
-) {
+llvm::SmallVector<uint64_t, 128> JitManager::getL2JitMetasKey(
+    int64_t NumArgs, int64_t *ArgTypes, void **TgtArgs, int64_t *ArgSizes,
+    void *JitCode, const llvm::DenseMap<uint32_t, bool> &shapeArgInfoMap) {
+  uintptr_t JitCodePtr = reinterpret_cast<std::uintptr_t>(JitCode);
   llvm::SmallVector<uint64_t, 128> key;
 
   key.push_back(JitCodePtr);
@@ -282,7 +275,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
     if (td == TargetDevice::CUDA) {
       // TODO: this might make compiled code slower!!!
       auto debugOptions = build_opts->mutable_debug_options();
-      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(true);
+      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(
+          true);
       if (const char *cuda_path_env = std::getenv("MY_CUDA_PATH")) {
         debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
       } else {
@@ -291,7 +285,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
     }
 
     std::string buf;
-    // SerializeToString(): This is protobuf's method inherited by `CompileOptionProto`.
+    // SerializeToString(): This is protobuf's method inherited by
+    // `CompileOptionProto`.
     if (!opts.SerializeToString(&buf)) {
       llvm::errs() << "Fail to serialize CompileOptionsProto\n";
       return "";
@@ -310,14 +305,15 @@ JitManager::compilePJRTExecutable(const std::string &func_code,
 
   auto error = this->pjrtApi->PJRT_Client_Compile(&compile_args);
   if (error) {
-    llvm::errs() << "Fail to compile XLA Executable: " 
-      << getErrMsg(this->pjrtApi, error) << "\n";
+    llvm::errs() << "Fail to compile XLA Executable: "
+                 << getErrMsg(this->pjrtApi, error) << "\n";
     std::exit(EXIT_FAILURE);
   }
   return compile_args.executable;
 }
 
-L1JitMetas *JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr) {
+L1JitMetas *JitManager::tryGetL1JitMetas(void *JitCode) {
+  auto JitCodePtr = reinterpret_cast<uintptr_t>(JitCode);
   std::shared_lock<std::shared_mutex> rLock(this->l1JitMetaRWMtx);
   auto it = this->l1JitMetasMap.find(JitCodePtr);
   if (it != this->l1JitMetasMap.end()) {
@@ -327,17 +323,12 @@ L1JitMetas *JitManager::tryGetL1JitMetas(uintptr_t JitCodePtr) {
 }
 
 void JitManager::saveL1JitMetas(
-  uintptr_t JitCodePtr,
-  llvm::DenseMap<uint32_t, bool> shapeArgInfoMap 
-) {
+    void *JitCode, llvm::DenseMap<uint32_t, bool> shapeArgInfoMap) {
+  uintptr_t JitCodePtr = reinterpret_cast<uintptr_t>(JitCode);
   std::unique_lock<std::shared_mutex> wLock(this->l1JitMetaRWMtx);
   if (!this->l1JitMetasMap.contains(JitCodePtr)) {
     this->l1JitMetasMap.try_emplace(
-      JitCodePtr, 
-      L1JitMetas{
-        .shapeArgInfoMap = std::move(shapeArgInfoMap)
-      }
-    );
+        JitCodePtr, L1JitMetas{.shapeArgInfoMap = std::move(shapeArgInfoMap)});
   }
   return;
 }
@@ -352,11 +343,9 @@ JitManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key) {
   return nullptr;
 }
 
-L2JitMetas *JitManager::createL2JitMetas(
-  llvm::SmallVector<uint64_t, 128> &key, 
-  mlir::func::FuncOp kernelFunc,
-  TargetDevice td
-) {
+L2JitMetas *JitManager::createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
+                                         mlir::func::FuncOp kernelFunc,
+                                         TargetDevice td) {
   PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE);
 
   auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
@@ -373,20 +362,12 @@ L2JitMetas *JitManager::createL2JitMetas(
   std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
 
   auto insertedPair = this->l2JitMetasMap.try_emplace(
-    key, 
-    (L2JitMetas){
-      .exe = exec,
-      .kernelFuncTypes = std::move(argTypesVec),
-      .kernelFuncStr = std::move(kernelFuncStr),
-    }
-  );
+      key, (L2JitMetas){
+               .exe = exec,
+               .kernelFuncTypes = std::move(argTypesVec),
+               .kernelFuncStr = std::move(kernelFuncStr),
+           });
   return &(insertedPair.first->getSecond());
 };
 
 PJRT_Client *JitManager::getPJRTClientPointer() { return this->pjrtClient; }
-
-extern "C" {
-__attribute__((visibility("default"))) PJRT_Client *GetExecutorPJRTClient() {
-  return JitManager::getInstance().getPJRTClientPointer();
-}
-}

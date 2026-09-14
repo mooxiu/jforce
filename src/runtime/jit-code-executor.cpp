@@ -15,6 +15,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -128,9 +129,8 @@ llvm::DenseMap<uint32_t, bool> getShapeArgInfoMap(func::FuncOp funcOp) {
   return shapeArgInfoMap;
 }
 
-ModuleOp preprocessModuleOp(MLIRContext *ctx, uintptr_t JitCodePtrUint,
-                            char *JitCodeC, int64_t NumArgs, void **TgtArgs,
-                            void **ArgPtrs, int64_t *ArgSizes,
+ModuleOp preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs,
+                            void **TgtArgs, void **ArgPtrs, int64_t *ArgSizes,
                             int64_t *ArgTypes) {
   auto packJitArg = [&]() {
     llvm::SmallVector<jitArg> args;
@@ -150,7 +150,7 @@ ModuleOp preprocessModuleOp(MLIRContext *ctx, uintptr_t JitCodePtrUint,
   mlir::OpBuilder builder(ctx);
   // Use OweningOpRef so RAII can help to destroy the tree
   mlir::OwningOpRef<mlir::ModuleOp> moduleOpRef =
-      JitManager::getInstance().getModuleOp(JitCodePtrUint, JitCodeC);
+      JitManager::getInstance().getModuleOp(JitCode);
   auto jitArgs = packJitArg();
   auto moduleOp = moduleOpRef.get();
   auto kernel = moduleOp.lookupSymbol<func::FuncOp>("kernel");
@@ -159,49 +159,14 @@ ModuleOp preprocessModuleOp(MLIRContext *ctx, uintptr_t JitCodePtrUint,
   return moduleOp;
 }
 
-// ------------------------------ Init ------------------------------
-//
-
-extern "C" {
-  __attribute__((visibility("default"))) PJRT_Buffer *
-  GetPjrtBuffer(void *cpu_ptr) {
-    auto it = InternalBufferMap.find(cpu_ptr);
-    if (it != InternalBufferMap.end()) {
-      return it->second;
-    }
-    return nullptr;
-  }
-
-  __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
-                                                                PJRT_Api *api) {
-    auto it = InternalBufferMap.find(cpu_ptr);
-    if (it != InternalBufferMap.end()) {
-      PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-                                       nullptr, it->second};
-      api->PJRT_Buffer_Destroy(&args);
-      InternalBufferMap.erase(it);
-    }
-  }
-}
-
-
-/**
- * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp
- * inside.
- *
- */
-extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
-                                   void **TgtArgs, ptrdiff_t *TgtOffsets,
-                                   void *DeviceArgs, int64_t NumHostArgs,
-                                   void **ArgBasePtrs, void **ArgPtrs,
-                                   int64_t *ArgSizes, int64_t *ArgTypes,
-                                   void **ArgNames) {
-  PROFILE_SCOPE("total", Phase::TOTAL);
+static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
+                                        void **TgtArgs, ptrdiff_t *TgtOffsets,
+                                        int64_t NumHostArgs, void **ArgBasePtrs,
+                                        void **ArgPtrs, int64_t *ArgSizes,
+                                        int64_t *ArgTypes, void **ArgNames) {
   char *JitCodeC = reinterpret_cast<char *>(JitCode);
-  std::cerr << "Got a jit call with " << NumArgs << " args into:\n"
-            << JitCodeC << "\n";
-  llvm::dbgs() << "\nreceive a jit call\n";
-
+  llvm::dbgs() << "Got a jit call with " << NumArgs << " args into:\n"
+               << JitCodeC << "\n";
 #define p(A) std::cerr << " " << #A << ": " << A[I] << "\n"
 #define h(A)                                                                   \
   std::cerr << " " << #A << std::hex << ": 0x" << A[I] << std::dec << "\n"
@@ -220,23 +185,67 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   }
 #undef p
 #undef h
-
   assert(NumArgs == NumHostArgs);
-  // there is an extra pointer added...
-  // TODO: Temporary only
+}
+
+// ------------------------------ Init ------------------------------
+//
+
+extern "C" {
+__attribute__((visibility("default"))) PJRT_Buffer *
+GetPjrtBuffer(void *cpu_ptr) {
+  auto it = InternalBufferMap.find(cpu_ptr);
+  if (it != InternalBufferMap.end()) {
+    return it->second;
+  }
+  return nullptr;
+}
+
+__attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
+                                                              PJRT_Api *api) {
+  auto it = InternalBufferMap.find(cpu_ptr);
+  if (it != InternalBufferMap.end()) {
+    PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+                                     nullptr, it->second};
+    api->PJRT_Buffer_Destroy(&args);
+    InternalBufferMap.erase(it);
+  }
+}
+
+__attribute__((visibility("default"))) PJRT_Client *GetExecutorPJRTClient() {
+  return JitManager::getInstance().getPJRTClientPointer();
+}
+
+/**
+ * JitCode: A function contains the omp::TargetOp with a omp::workdistributeOp
+ * inside.
+ *
+ */
+int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
+                        ptrdiff_t *TgtOffsets, void *DeviceArgs,
+                        int64_t NumHostArgs, void **ArgBasePtrs, void **ArgPtrs,
+                        int64_t *ArgSizes, int64_t *ArgTypes, void **ArgNames) {
+  PROFILE_SCOPE("total", Phase::TOTAL);
+
+#ifdef ENABLE_XLA_DEBUG
+  checkDeletgatedLaunchInputs(
+      void *JitCode, int64_t NumArgs, void **TgtArgs, ptrdiff_t *TgtOffsets,
+      int64_t NumHostArgs, void **ArgBasePtrs, void **ArgPtrs,
+      int64_t *ArgSizes, int64_t *ArgTypes, void **ArgNames);
+#endif
+
+  // There is an extra pointer added in 2026 Apr. version of LLVM project and it
+  // is irrelevant to our project.
   NumArgs -= 1;
   NumHostArgs -= 1;
   ArgSizes -= 1;
 
   // -----------------------------------------------
-
-  auto JitCodePtrUint = reinterpret_cast<uintptr_t>(JitCode);
-  auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCodePtrUint);
+  auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCode);
   llvm::SmallVector<uint64_t, 128> l2Key;
-
   if (l1JitMetas != nullptr) {
     l2Key = JitManager::getInstance().getL2JitMetasKey(
-        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint,
+        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCode,
         l1JitMetas->shapeArgInfoMap);
     auto l2JitMetas = JitManager::getInstance().tryGetL2JitMetas(l2Key);
 
@@ -248,8 +257,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
                                 .outputArgCount = unsigned(NumArgs),
                                 .outputArgs = newArgs.data(),
                                 .targetDevice = getTargetDevice()};
-      JitManager::getInstance().launchKernel(
-          l2JitMetas->exe, &kArgs, JitCodePtrUint, l2JitMetas->kernelFuncStr);
+      JitManager::getInstance().launchKernel(l2JitMetas->exe, &kArgs,
+                                             l2JitMetas->kernelFuncStr);
       return 0;
     }
   }
@@ -257,8 +266,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   MLIRContext *ctx = JitManager::getInstance().getContext();
 
   // Parse JitCode to ModuleOp, etc.
-  auto moduleOp = preprocessModuleOp(ctx, JitCodePtrUint, JitCodeC, NumArgs,
-                                     TgtArgs, ArgPtrs, ArgSizes, ArgTypes);
+  auto moduleOp = preprocessModuleOp(ctx, JitCode, NumArgs, TgtArgs, ArgPtrs,
+                                     ArgSizes, ArgTypes);
 
   // Lower JItCode to StableHLO
   mlir::PassManager pm(ctx);
@@ -277,9 +286,8 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
   if (l1JitMetas == nullptr) {
     auto shapeInfoMap = getShapeArgInfoMap(kernelFunc);
     l2Key = JitManager::getInstance().getL2JitMetasKey(
-        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCodePtrUint, shapeInfoMap);
-    JitManager::getInstance().saveL1JitMetas(JitCodePtrUint,
-                                             std::move(shapeInfoMap));
+        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCode, shapeInfoMap);
+    JitManager::getInstance().saveL1JitMetas(JitCode, std::move(shapeInfoMap));
   }
 
   auto createdL2JitMetas = JitManager::getInstance().createL2JitMetas(
@@ -295,7 +303,7 @@ extern "C" int64_t __botw_jit_code(void *JitCode, int64_t NumArgs,
       .targetDevice = getTargetDevice(),
   };
   JitManager::getInstance().launchKernel(createdL2JitMetas->exe, &launchArgs,
-                                         JitCodePtrUint,
                                          createdL2JitMetas->kernelFuncStr);
   return 0;
+}
 }

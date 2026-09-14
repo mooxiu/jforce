@@ -1,17 +1,16 @@
 #ifndef JITMANAGER_H
 #define JITMANAGER_H
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
-#include <cstdint>
-#include <shared_mutex>
 #include "../../third_party/headers/pjrt_c_api.h"
 #include "../support/utilities.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include <cstdint>
+#include <shared_mutex>
 
 static std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
 
@@ -44,7 +43,8 @@ private:
 
   PJRT_Device *getPJRTDevice(TargetDevice td);
 
-  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code, TargetDevice td);
+  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code,
+                                               TargetDevice td);
   void destroyLoadedExecutable(PJRT_LoadedExecutable *exe);
 
 public:
@@ -60,24 +60,21 @@ public:
   const PJRT_Api *getPJRTApi();
   PJRT_Client *getPJRTClientPointer();
 
-  mlir::ModuleOp getModuleOp(uintptr_t JitCodePtr, const char *JitCodeC);
+  mlir::ModuleOp getModuleOp(void *JitCode);
 
-  L1JitMetas *tryGetL1JitMetas(uintptr_t JitCodePtr);
-  void saveL1JitMetas(uintptr_t JitCodePtr, llvm::DenseMap<uint32_t, bool> shapeArgInfoMap);
+  L1JitMetas *tryGetL1JitMetas(void *JitCode);
+  void saveL1JitMetas(void *JitCode,
+                      llvm::DenseMap<uint32_t, bool> shapeArgInfoMap);
 
   llvm::SmallVector<uint64_t, 128>
   getL2JitMetasKey(int64_t NumArgs, int64_t *ArgTypes, void **TgtArgs,
-                   int64_t *ArgSizes, uintptr_t JitCodePtr,
-                   const llvm::DenseMap<uint32_t, bool>& shapeArgInfoMap);
+                   int64_t *ArgSizes, void *JitCode,
+                   const llvm::DenseMap<uint32_t, bool> &shapeArgInfoMap);
   L2JitMetas *tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key);
-  L2JitMetas *createL2JitMetas(
-    llvm::SmallVector<uint64_t, 128> &key, 
-    mlir::func::FuncOp kernelFunc,
-    TargetDevice td
-  );
+  L2JitMetas *createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
+                               mlir::func::FuncOp kernelFunc, TargetDevice td);
 
   void launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-                    const uintptr_t JitCodePtr,
                     const std::string &kernelFuncStr);
 
   static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err);

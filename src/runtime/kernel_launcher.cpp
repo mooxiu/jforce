@@ -299,7 +299,6 @@ static void manageOutputBuffers(const PJRT_Api *api,
 
 void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
                               KernelArgs *offloadingArgs,
-                              const uintptr_t JitCodePtr,
                               const std::string &kernelFuncStr) {
   auto device = this->getPJRTDevice(offloadingArgs->targetDevice);
 
