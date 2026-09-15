@@ -6,6 +6,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/TypeID.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -96,6 +97,8 @@ static void materializeShapeArgs(func::FuncOp funcOp, OpBuilder &opBuilder) {
 struct PropagateConstantsPass
     : public mlir::PassWrapper<PropagateConstantsPass,
                                mlir::OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PropagateConstantsPass)
+
   StringRef getArgument() const override {
     return "jforce-propagate-constants";
   }

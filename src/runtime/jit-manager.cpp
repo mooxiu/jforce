@@ -25,6 +25,12 @@
 #include <dlfcn.h>
 #include <iostream>
 
+
+std::unordered_map<void *, PJRT_Buffer *> &getInternalBufferMap() {
+  static std::unordered_map<void *, PJRT_Buffer *> map;
+  return map;
+}
+
 std::string getPluginPath() {
   const char *path = std::getenv("PJRT_PLUGIN_PATH");
 
@@ -128,6 +134,7 @@ findDevices(const PJRT_Api *api, PJRT_Client *client,
       matched_devices.push_back(device);
     }
   }
+  DEBUG_PRINT(llvm::formatv("Found {0} matched PJRT devices.", matched_devices.size()));
   return matched_devices;
 }
 
@@ -170,21 +177,25 @@ JitManager::JitManager() {
   this->pjrtClient = getPJRTClient(api);
   this->targetDeviceTy = getTargetDeviceFromEnv();
   // Find all the available devices in the environment.
-  DEBUG_PRINT("Trying to get device: " + std::to_string((int32_t)td));
   switch (this->targetDeviceTy) {
   case TargetDeviceType::CPU:
+    DEBUG_PRINT("Trying to get device type: CPU.");
     this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "cpu");
     break;
   case TargetDeviceType::CUDA:
+    DEBUG_PRINT("Trying to get device type: CUDA.");
     this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "cuda");
     break;
   case TargetDeviceType::ROCM:
+    DEBUG_PRINT("Trying to get device type: ROCM.");
     this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "rocm");
     break;
   case TargetDeviceType::TPU:
+    DEBUG_PRINT("Trying to get device type: TPU.");
     this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "tpu");
     break;
   default:
+    DEBUG_PRINT("Trying to get unknown type device, device type is: " + std::to_string((int32_t)td));
     std::cerr << "Fail to find device!\n";
     std::exit(EXIT_FAILURE);
   }
@@ -311,7 +322,7 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
     return buf;
   };
 
-  // It seems PJRT_Client_Compile will also help to load the execute
+  // PJRT_Client_Compile will return a LoadedExecutable which can directly be executed. 
   auto buf = getCompileOptionsProto();
   PJRT_Client_Compile_Args compile_args = (struct PJRT_Client_Compile_Args){
       .struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,

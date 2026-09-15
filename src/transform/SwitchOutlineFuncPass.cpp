@@ -34,12 +34,19 @@ static bool isNotOutlineFunc(::mlir::StringRef funcName) {
   return !funcName.starts_with(JIT_OUTLINE_AFFINE_FUNC_PREFIX);
 }
 
+// The kernel function outlined a non-stablehlo function named `outlined_affinefor_[0-9]+`,
+// which is the `outlinedFuncName`.
+// It is supposed to be transformed by EnzymeJAX's passes to become `outlined_affinefor_[0-9]+_raised`.
+//
+// @retval: empty if current function we are checking is not the outlined function.
+// @retval: Some(name) if current function is outlined function, we return the corresponding StableHLO function's name.
 static std::string getCorrespondingStableHLOFuncName(::mlir::StringRef outlinedFuncName) {
   std::regex re(llvm::formatv("{0}[0-9]+$", JIT_OUTLINE_AFFINE_FUNC_PREFIX).str());
   if (!std::regex_match(outlinedFuncName.str(), re)) {
     llvm::dbgs() << "The outlinedFuncName is: " << outlinedFuncName << ", which does not match the pattern. Skip this callee.\n";
     return "";
   }
+  llvm::dbgs() << "The outlinedFuncName is: " << outlinedFuncName << ", which matches the pattern. Return the corresponding raised func name.\n";
   return llvm::formatv("{0}_raised", outlinedFuncName);
 }
 
@@ -131,7 +138,8 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
       replaceMemrefFuncCall(moduleOp, rewritter, callOp, outlinedFuncName);
     };
 
-    llvm::dbgs() << "\nSwitchOutlineFuncPass: swicth one!\n";
+    // INFO: if there is a do loop inside of OpenMP offloading region, we're supposed to see this.
+    llvm::dbgs() << "\nSwitchOutlineFuncPass: applied to one function!\n";
     return success();
   }
 };

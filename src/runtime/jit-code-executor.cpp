@@ -99,9 +99,8 @@ llvm::DenseMap<uint32_t, bool> getShapeArgInfoMap(func::FuncOp funcOp) {
   return shapeArgInfoMap;
 }
 
-ModuleOp preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs,
-                            void **TgtArgs, void **ArgPtrs, int64_t *ArgSizes,
-                            int64_t *ArgTypes) {
+// Return OwningOpRef instead of a raw mlir::ModuleOp to keep the onwership
+mlir::OwningOpRef<mlir::ModuleOp> preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs, void **TgtArgs, void **ArgPtrs, int64_t *ArgSizes, int64_t *ArgTypes) {
   auto packJitArg = [&]() {
     llvm::SmallVector<jitArg> args;
     args.resize(NumArgs);
@@ -121,12 +120,13 @@ ModuleOp preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs,
   // Use OweningOpRef so RAII can help to destroy the tree
   mlir::OwningOpRef<mlir::ModuleOp> moduleOpRef =
       JitManager::getInstance().getModuleOp(JitCode);
-  auto jitArgs = packJitArg();
-  auto moduleOp = moduleOpRef.get();
-  auto kernel = moduleOp.lookupSymbol<func::FuncOp>("kernel");
+
+  auto kernel = moduleOpRef->lookupSymbol<func::FuncOp>("kernel");
   assert(kernel && "FuncOp with name kernel should exist!");
+
+  auto jitArgs = packJitArg();
   insertJitInfo(builder, kernel, jitArgs);
-  return moduleOp;
+  return moduleOpRef;
 }
 
 static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
@@ -164,6 +164,7 @@ static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
 extern "C" {
 __attribute__((visibility("default"))) PJRT_Buffer *
 GetPjrtBuffer(void *cpu_ptr) {
+  auto& InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
     return it->second;
@@ -173,6 +174,7 @@ GetPjrtBuffer(void *cpu_ptr) {
 
 __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
                                                               PJRT_Api *api) {
+  auto& InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
     PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
@@ -182,6 +184,8 @@ __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
   }
 }
 
+// NOTE: I suspect this might not be necessary.
+// Why the plugin has to have a PJRTClient pointer?
 __attribute__((visibility("default"))) PJRT_Client *GetExecutorPJRTClient() {
   return JitManager::getInstance().getPJRTClientPointer();
 }
@@ -235,8 +239,9 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
   MLIRContext *ctx = JitManager::getInstance().getContext();
 
   // Parse JitCode to ModuleOp, etc.
-  auto moduleOp = preprocessModuleOp(ctx, JitCode, NumArgs, TgtArgs, ArgPtrs,
+  auto moduleOpRef = preprocessModuleOp(ctx, JitCode, NumArgs, TgtArgs, ArgPtrs,
                                      ArgSizes, ArgTypes);
+  auto moduleOp = moduleOpRef.get();
 
   // Lower JItCode to StableHLO
   mlir::PassManager pm(ctx);

@@ -98,6 +98,7 @@ add_library(jit-code-executor SHARED
   src/runtime/jit-code-executor.cpp
   src/runtime/kernel_launcher.cpp
   src/runtime/jit-manager.cpp
+  src/runtime/pipelines.cpp
 )
 
 # already public in transforms

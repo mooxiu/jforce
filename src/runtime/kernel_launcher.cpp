@@ -1,7 +1,9 @@
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "jit-manager.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 
 /**
@@ -139,6 +141,7 @@ createBufferFromForgedTgtPointers(const PJRT_Api *api, PJRT_Client *client,
   // pointing to a memory on host, host does not know the size
   // To make it work on TPU, we have to do it here
   auto forgedPointer = inputArg.data;
+  auto& InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(forgedPointer);
   if (it == InternalBufferMap.end()) {
     int64_t dims_arr[inputArg.rank];
@@ -163,6 +166,11 @@ createBufferFromForgedTgtPointers(const PJRT_Api *api, PJRT_Client *client,
   }
 }
 
+// Creating PJRT Buffers for inputs.
+// For normal tensor input value, creating view buffer to achieve zero copy.
+// For literal value, we have to create buffer and move.
+// For CPU, we need special setting to avoid XLA do extra copy, see `createCPUBuffer`.
+// For TPU, buffer is already created.
 static void manageInputBuffers(const PJRT_Api *api, PJRT_Client *client,
                                PJRT_Device *device,
                                TargetDeviceType targetDevice,
@@ -289,7 +297,7 @@ static void manageOutputBuffers(const PJRT_Api *api,
         // This is supposed to be happen, because the inputArg.data is not a
         // real pointer on the device, but a pointer we forged on OpenMP side to
         // the buffer.
-        extern std::unordered_map<void *, PJRT_Buffer *> InternalBufferMap;
+        auto& InternalBufferMap = getInternalBufferMap();
         InternalBufferMap[inputArg.data] = outsBuffersList[0][i];
         continue;
       } else {
@@ -303,6 +311,7 @@ static void manageOutputBuffers(const PJRT_Api *api,
   }
 }
 
+// TODO: currently, launching the whole kernel in a single device.
 void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
                               KernelArgs *offloadingArgs,
                               const std::string &kernelFuncStr) {
@@ -331,3 +340,22 @@ void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
                       targetDevice);
   return;
 }
+
+
+void JitManager::launchKernelOnMultiDevices(
+    PJRT_LoadedExecutable *exe,
+    KernelArgs *offloadingArgs,
+    const std::string &kernelFuncStr) {
+  PJRT_LoadedExecutable_Execute_Args args = PJRT_LoadedExecutable_Execute_Args{
+  };
+  auto* err = this->pjrtApi->PJRT_LoadedExecutable_Execute(&args);
+  if (err) {
+    llvm::errs() << "Fail to launch kernel on multi-devices, error message: " 
+      << getErrMsg(this->pjrtApi, err) << "\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return;
+}
+
+
+
