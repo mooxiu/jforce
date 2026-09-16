@@ -19,12 +19,12 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/FormatVariadic.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <dlfcn.h>
 #include <iostream>
-
 
 std::unordered_map<void *, PJRT_Buffer *> &getInternalBufferMap() {
   static std::unordered_map<void *, PJRT_Buffer *> map;
@@ -134,7 +134,8 @@ findDevices(const PJRT_Api *api, PJRT_Client *client,
       matched_devices.push_back(device);
     }
   }
-  DEBUG_PRINT(llvm::formatv("Found {0} matched PJRT devices.", matched_devices.size()));
+  DEBUG_PRINT(
+      llvm::formatv("Found {0} matched PJRT devices.", matched_devices.size()));
   return matched_devices;
 }
 
@@ -195,7 +196,8 @@ JitManager::JitManager() {
     this->pjrtDevices = findDevices(this->pjrtApi, this->pjrtClient, "tpu");
     break;
   default:
-    DEBUG_PRINT("Trying to get unknown type device, device type is: " + std::to_string((int32_t)td));
+    DEBUG_PRINT("Trying to get unknown type device, device type is: " +
+                std::to_string((int32_t)this->targetDeviceTy));
     std::cerr << "Fail to find device!\n";
     std::exit(EXIT_FAILURE);
   }
@@ -296,7 +298,9 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
     xla::ExecutableBuildOptionsProto *build_opts =
         opts.mutable_executable_build_options();
     build_opts->set_num_replicas(1);
-    build_opts->set_num_partitions(1);
+    build_opts->set_num_partitions(2000);
+    build_opts->set_use_spmd_partitioning(true);
+    build_opts->set_use_shardy_partitioner(true);
     build_opts->set_device_memory_size(40LL << 30); // 40 GB
 
     // Special option for CUDA
@@ -322,7 +326,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
     return buf;
   };
 
-  // PJRT_Client_Compile will return a LoadedExecutable which can directly be executed. 
+  // PJRT_Client_Compile will return a LoadedExecutable which can directly be
+  // executed.
   auto buf = getCompileOptionsProto();
   PJRT_Client_Compile_Args compile_args = (struct PJRT_Client_Compile_Args){
       .struct_size = PJRT_Client_Compile_Args_STRUCT_SIZE,

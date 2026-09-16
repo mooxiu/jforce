@@ -81,13 +81,15 @@ git checkout snapshot-20251206
 ### Setup JForce
 
 ```sh
+prjroot = ""
+
 cmake -G Ninja \
     -DLLVM_INSTALL_PATH="${prjroot}/deps/llvm-project/build" \
     -DSTABLEHLO_PROJECT="${prjroot}/deps/stablehlo" \
     -DISL_INCLUDE_DIR="${prjroot}/deps/isl/include" \
     -DISL_LIBRARY="${prjroot}/deps/isl/.libs" \
     -DENABLE_PROFILING=OFF \
-    -DCMAKE_BUILD_TYPE="DEBUG" \
+    -DCMAKE_BUILD_TYPE="Debug" \
      ./..
 ```
 

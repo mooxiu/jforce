@@ -1067,7 +1067,6 @@ struct TranslatePass
   }
 
   void runOnOperation() override {
-    llvm::dbgs() << "[DEBUG] This is the translate message!\n";
     PROFILE_SCOPE("Translate", Phase::LOWERING_TO_STABLEHLO);
     auto moduleOp = getOperation(); 
     auto context = moduleOp.getContext();

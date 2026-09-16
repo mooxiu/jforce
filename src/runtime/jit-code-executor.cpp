@@ -100,7 +100,10 @@ llvm::DenseMap<uint32_t, bool> getShapeArgInfoMap(func::FuncOp funcOp) {
 }
 
 // Return OwningOpRef instead of a raw mlir::ModuleOp to keep the onwership
-mlir::OwningOpRef<mlir::ModuleOp> preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs, void **TgtArgs, void **ArgPtrs, int64_t *ArgSizes, int64_t *ArgTypes) {
+mlir::OwningOpRef<mlir::ModuleOp>
+preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs,
+                   void **TgtArgs, void **ArgPtrs, int64_t *ArgSizes,
+                   int64_t *ArgTypes) {
   auto packJitArg = [&]() {
     llvm::SmallVector<jitArg> args;
     args.resize(NumArgs);
@@ -164,7 +167,7 @@ static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
 extern "C" {
 __attribute__((visibility("default"))) PJRT_Buffer *
 GetPjrtBuffer(void *cpu_ptr) {
-  auto& InternalBufferMap = getInternalBufferMap();
+  auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
     return it->second;
@@ -174,7 +177,7 @@ GetPjrtBuffer(void *cpu_ptr) {
 
 __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
                                                               PJRT_Api *api) {
-  auto& InternalBufferMap = getInternalBufferMap();
+  auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
     PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
@@ -202,10 +205,9 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
   PROFILE_SCOPE("total", Phase::TOTAL);
 
 #ifdef ENABLE_XLA_DEBUG
-  checkDeletgatedLaunchInputs(
-      void *JitCode, int64_t NumArgs, void **TgtArgs, ptrdiff_t *TgtOffsets,
-      int64_t NumHostArgs, void **ArgBasePtrs, void **ArgPtrs,
-      int64_t *ArgSizes, int64_t *ArgTypes, void **ArgNames);
+  checkDeletgatedLaunchInputs(JitCode, NumArgs, TgtArgs, TgtOffsets,
+                              NumHostArgs, ArgBasePtrs, ArgPtrs, ArgSizes,
+                              ArgTypes, ArgNames);
 #endif
 
   // There is an extra pointer added in 2026 Apr. version of LLVM project and it
@@ -240,7 +242,7 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
 
   // Parse JitCode to ModuleOp, etc.
   auto moduleOpRef = preprocessModuleOp(ctx, JitCode, NumArgs, TgtArgs, ArgPtrs,
-                                     ArgSizes, ArgTypes);
+                                        ArgSizes, ArgTypes);
   auto moduleOp = moduleOpRef.get();
 
   // Lower JItCode to StableHLO
