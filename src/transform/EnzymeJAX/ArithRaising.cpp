@@ -17,7 +17,6 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
-#include "Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "../Passes.h"
 

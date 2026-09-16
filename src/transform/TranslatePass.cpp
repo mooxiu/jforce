@@ -32,6 +32,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -40,6 +41,7 @@
 #include <cstdio>
 #include <utility>
 #include "support/profiler.h"
+#include "support/utilities.h"
 #include "transform/Utils.h"
 
 using namespace mlir;
@@ -1065,6 +1067,7 @@ struct TranslatePass
   }
 
   void runOnOperation() override {
+    llvm::dbgs() << "[DEBUG] This is the translate message!\n";
     PROFILE_SCOPE("Translate", Phase::LOWERING_TO_STABLEHLO);
     auto moduleOp = getOperation(); 
     auto context = moduleOp.getContext();

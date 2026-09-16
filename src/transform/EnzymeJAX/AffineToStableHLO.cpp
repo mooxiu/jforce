@@ -17,7 +17,6 @@
 
 #include "AffineUtils.h"
 // #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "Utils.h"
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -33,6 +32,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
@@ -3323,7 +3323,7 @@ struct PushReductionsDown : public OpRewritePattern<arith::AddFOp> {
 };
 
 struct AffineToStableHLORaisingPass
-    : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>> {
+    : public mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<ModuleOp>> {
 
 
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AffineToStableHLORaisingPass)
@@ -3366,7 +3366,7 @@ struct AffineToStableHLORaisingPass
   AffineToStableHLORaisingPass() = default;
 
   AffineToStableHLORaisingPass(const AffineToStableHLORaisingPass &other)
-      : mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<func::FuncOp>>(other) {}
+      : mlir::PassWrapper<AffineToStableHLORaisingPass, OperationPass<ModuleOp>>(other) {}
 
   AffineToStableHLORaisingPass(bool errIfNotFullyRaised, bool enableLockstep,
                                bool dumpFailed, bool stripDebug, bool preferWhile) {

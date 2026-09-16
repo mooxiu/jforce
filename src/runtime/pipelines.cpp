@@ -59,10 +59,12 @@ void createTranslateToStableHLOPipeline(PassManager& pm) {
   // 4. Outline Affine loops, Tensorize, mergeback
   pm.addPass(xla_jit::createOutlineAffinePass());
   pm.addPass(xla_jit::createAffineCFGPass());
+  pm.addPass(xla_jit::createAffineToStableHLORaisingPass());
   auto &nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
-  nestedPMPhase3.addPass(xla_jit::createAffineToStableHLORaisingPass());
   nestedPMPhase3.addPass(xla_jit::createArithRaisingPass());
   pm.addPass(createCanonicalizerPass());
+  // TODO: this name should be changed, because this pass only do switch, it does not really do remerge
+  // Remerge is done by InlinePass.
   pm.addPass(xla_jit::createRemergePass());
   // pm.addPass(xla_jit::createWorkdistributeToStableHLOPass());
   pm.addPass(xla_jit::createTranslatePass());
