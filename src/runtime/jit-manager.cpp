@@ -25,9 +25,12 @@
 #include <cstdio>
 #include <dlfcn.h>
 #include <iostream>
+#include <unordered_map>
+#include <vector>
 
-std::unordered_map<void *, PJRT_Buffer *> &getInternalBufferMap() {
-  static std::unordered_map<void *, PJRT_Buffer *> map;
+std::unordered_map<void *, std::vector<PJRT_Buffer *>> & getInternalBufferMap() {
+  // void* -> pointer in the target. In multi-devices case, the pointer is to a virtual device.
+  static std::unordered_map<void *, std::vector<PJRT_Buffer *>> map;
   return map;
 }
 
@@ -297,10 +300,13 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
 
     xla::ExecutableBuildOptionsProto *build_opts =
         opts.mutable_executable_build_options();
-    build_opts->set_num_replicas(1);
-    build_opts->set_num_partitions(2000);
+    build_opts->set_num_replicas(3);
+    // build_opts->set_num_partitions(1);
+
+    build_opts->set_num_partitions(1);
     build_opts->set_use_spmd_partitioning(true);
     build_opts->set_use_shardy_partitioner(true);
+
     build_opts->set_device_memory_size(40LL << 30); // 40 GB
 
     // Special option for CUDA

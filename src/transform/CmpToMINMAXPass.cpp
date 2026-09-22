@@ -92,10 +92,10 @@ struct RecognizeMinMaxPass
     config.enableFolding();
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
+      getOperation()->dump();
       signalPassFailure();
       return;
     }
-    getOperation()->dump();
     return;
   }
 };

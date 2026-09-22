@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -170,8 +171,12 @@ GetPjrtBuffer(void *cpu_ptr) {
   auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
-    return it->second;
+    std::vector<PJRT_Buffer*> buffers = it->second;
+    // FIXME: for test only
+    DEBUG_PRINT(llvm::formatv("Buffers size: {}", buffers.size()));
+    return buffers[1];
   }
+  DEBUG_PRINT("PJRT Buffer Not found!");
   return nullptr;
 }
 
@@ -180,9 +185,14 @@ __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
   auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
-    PJRT_Buffer_Destroy_Args args = {PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-                                     nullptr, it->second};
-    api->PJRT_Buffer_Destroy(&args);
+    for (auto bufferPtr: it->second) {
+      PJRT_Buffer_Destroy_Args args = {
+        .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+        .extension_start = nullptr, 
+        .buffer = bufferPtr
+      };
+      api->PJRT_Buffer_Destroy(&args);
+    }
     InternalBufferMap.erase(it);
   }
 }
@@ -205,9 +215,10 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
   PROFILE_SCOPE("total", Phase::TOTAL);
 
 #ifdef ENABLE_XLA_DEBUG
-  checkDeletgatedLaunchInputs(JitCode, NumArgs, TgtArgs, TgtOffsets,
-                              NumHostArgs, ArgBasePtrs, ArgPtrs, ArgSizes,
-                              ArgTypes, ArgNames);
+  // Uncomment if necessary
+  // checkDeletgatedLaunchInputs(JitCode, NumArgs, TgtArgs, TgtOffsets,
+  //                             NumHostArgs, ArgBasePtrs, ArgPtrs, ArgSizes,
+  //                             ArgTypes, ArgNames);
 #endif
 
   // There is an extra pointer added in 2026 Apr. version of LLVM project and it
@@ -247,7 +258,8 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
 
   // Lower JItCode to StableHLO
   mlir::PassManager pm(ctx);
-  PRINT_PASS();
+  // INFO: uncomment print pass when we need to debug the IR transformation
+  // PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
   // pm.enableTiming();
   createLowerToStableHLOPassPipeline(pm);
@@ -275,8 +287,10 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
                                         .inputArgs = newArgs.data(),
                                         .outputArgCount = unsigned(NumArgs),
                                         .outputArgs = newArgs.data()};
-  JitManager::getInstance().launchKernel(createdL2JitMetas->exe, &launchArgs,
+  JitManager::getInstance().launchKernelOnMultiDevices(createdL2JitMetas->exe, &launchArgs,
                                          createdL2JitMetas->kernelFuncStr);
+  // TODO: a lot of these cache fetching should be put in launchKernel function
+  // because, the compilation should better be together with data migration, etc.
   return 0;
 }
 }

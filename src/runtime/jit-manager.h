@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <shared_mutex>
 
-std::unordered_map<void *, PJRT_Buffer *> &getInternalBufferMap();
+std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap();
 
 struct L1JitMetas {
   llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;

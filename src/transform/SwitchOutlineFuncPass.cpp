@@ -48,13 +48,8 @@ getCorrespondingStableHLOFuncName(::mlir::StringRef outlinedFuncName) {
   std::regex re(
       llvm::formatv("{0}[0-9]+$", JIT_OUTLINE_AFFINE_FUNC_PREFIX).str());
   if (!std::regex_match(outlinedFuncName.str(), re)) {
-    llvm::dbgs() << "The outlinedFuncName is: " << outlinedFuncName
-                 << ", which does not match the pattern. Skip this callee.\n";
     return "";
   }
-  llvm::dbgs() << "The outlinedFuncName is: " << outlinedFuncName
-               << ", which matches the pattern. Return the corresponding "
-                  "raised func name.\n";
   return llvm::formatv("{0}_raised", outlinedFuncName);
 }
 
@@ -146,7 +141,7 @@ struct ReplaceOutlineFuncCall : public OpRewritePattern<func::FuncOp> {
 
     // INFO: if there is a do loop inside of OpenMP offloading region, we're
     // supposed to see this.
-    llvm::dbgs() << "\nSwitchOutlineFuncPass: applied to one function!\n";
+    // llvm::dbgs() << "\nSwitchOutlineFuncPass: applied to one function!\n";
     return success();
   }
 };
@@ -185,8 +180,6 @@ struct SwitchOutlineFuncPass
       signalPassFailure();
       return;
     }
-    
-    moduleOp->dump();
   }
 };
 }; // namespace

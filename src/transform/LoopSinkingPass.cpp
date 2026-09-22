@@ -126,7 +126,7 @@ struct LoopSinkingPass
       signalPassFailure();
       return;
     }
-    getOperation()->dump();
+    // getOperation()->dump();
     return;
   }
 };

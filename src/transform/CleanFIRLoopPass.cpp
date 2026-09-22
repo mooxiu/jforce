@@ -162,7 +162,7 @@ struct CleanFIRLoopPass
         replaceLoopSignature(opBuilder, doLoop);
       }
     } 
-    funcOp.dump();
+    // funcOp.dump();
   };
 };
 } // namespace
