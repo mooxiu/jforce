@@ -81,11 +81,14 @@ git checkout snapshot-20251206
 ### Setup JForce
 
 ```sh
-prjroot = ""
+prjroot="$(pwd)/.."
+
+mkdir build && cd build
 
 cmake -G Ninja \
     -DLLVM_INSTALL_PATH="${prjroot}/deps/llvm-project/build" \
     -DSTABLEHLO_PROJECT="${prjroot}/deps/stablehlo" \
+    -DSHARDY_PROJECT="${prjroot}/deps/shardy" \
     -DISL_INCLUDE_DIR="${prjroot}/deps/isl/include" \
     -DISL_LIBRARY="${prjroot}/deps/isl/.libs" \
     -DENABLE_PROFILING=OFF \

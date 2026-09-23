@@ -6,30 +6,40 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllExtensions.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <dlfcn.h>
 #include <iostream>
+#include <optional>
+#include <sstream>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
-std::unordered_map<void *, std::vector<PJRT_Buffer *>> & getInternalBufferMap() {
-  // void* -> pointer in the target. In multi-devices case, the pointer is to a virtual device.
+std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap() {
+  // void* -> pointer in the target. In multi-devices case, the pointer is to a
+  // virtual device.
   static std::unordered_map<void *, std::vector<PJRT_Buffer *>> map;
   return map;
 }
@@ -151,7 +161,7 @@ JitManager::JitManager() {
               mlir::omp::OpenMPDialect, mlir::scf::SCFDialect,
               mlir::affine::AffineDialect, mlir::memref::MemRefDialect,
               mlir::bufferization::BufferizationDialect,
-              mlir::stablehlo::StablehloDialect>();
+              mlir::stablehlo::StablehloDialect, mlir::sdy::SdyDialect>();
   mlir::registerAllExtensions(registry);
   mlir::LLVM::registerInlinerInterface(registry);
   this->context.appendDialectRegistry(registry);
@@ -382,11 +392,92 @@ JitManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key) {
   return nullptr;
 }
 
+// FIXME:  used for demo only
+mlir::func::FuncOp hardcodedShard(mlir::func::FuncOp kernelFunc,
+                                  mlir::OpBuilder &opBuilder) {
+  // add the gloabal constraint
+  auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
+  assert(moduleOp && "suppose module exists");
+  auto *ctx = opBuilder.getContext();
+  ctx->getOrLoadDialect<mlir::sdy::SdyDialect>();
+
+  mlir::OpBuilder::InsertionGuard lock(opBuilder);
+  opBuilder.setInsertionPointToStart(moduleOp.getBody(0));
+
+  auto meshName = "dummyMeshName";
+  mlir::sdy::MeshOp::create(
+      opBuilder, moduleOp.getLoc(), meshName,
+      mlir::sdy::MeshAttr::get(ctx,
+                               {mlir::sdy::MeshAxisAttr::get(ctx, "data", 3)}));
+
+  // add sharding or replica to each one
+  // for simplicity, we shard on all tensors, replicate on all scalars
+  auto displayAr = [](::llvm::ArrayRef<int64_t> arr) -> std::string {
+    std::stringstream ss;
+    for (int i = 0; i < arr.size(); i++) {
+      if (i != 0) {
+        ss << "x";
+      }
+      ss << arr[i];
+    }
+    return ss.str();
+  };
+
+  auto dataAxisAttr = mlir::sdy::AxisRefAttr::get(
+      /*context=*/ctx,
+      /*name=*/"data",
+      /*sub_axis_info=*/{});
+
+  for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {
+    auto arg = kernelFunc.getArgument(i);
+    auto argTy = llvm::cast<mlir::RankedTensorType>(arg.getType());
+    assert(argTy && "we're suppose to be dealing with StableHLO function");
+    DEBUG_PRINT(llvm::formatv("ArgIdx: {0}, the rank: {1}, the shape: {2}", i,
+                              argTy.getRank(), displayAr(argTy.getShape())));
+    if (argTy.getRank() > 0) {
+      // Sharding
+      kernelFunc.setArgAttr(
+          i,
+          mlir::sdy::TensorShardingAttr::name, // "sdy.sharding"
+          mlir::sdy::TensorShardingAttr::get(
+              /*context=*/ctx,
+              /*mesh_name=*/meshName,
+              /*dim_shardings=*/
+              {mlir::sdy::DimensionShardingAttr::get(
+                  /*context=*/ctx,
+                  /*axes=*/{dataAxisAttr},
+                  /*is_closed=*/true, // INFO: I think this means shardy can not
+                                      // add new things
+                  /*priority=*/std::nullopt)},
+              /*replicated_axes=*/{},
+              /*unreduced_axes=*/{}));
+    } else {
+      // Replicate
+      kernelFunc.setArgAttr(
+          i,
+          mlir::sdy::TensorShardingAttr::name, // "sdy.sharding"
+          mlir::sdy::TensorShardingAttr::get(
+              /*context=*/ctx,
+              /*mesh_name=*/meshName,
+              /*dim_shardings=*/{},
+              /*replicated_axes=*/{dataAxisAttr},
+              /*unreduced_axes=*/{}));
+    }
+  }
+  return kernelFunc;
+}
+
 L2JitMetas *JitManager::createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
                                          mlir::func::FuncOp kernelFunc) {
   PROFILE_SCOPE("createL2JitMetas", Phase::JITCOMPILE);
+  mlir::OpBuilder opBuilder(this->getContext());
 
-  auto kernelFuncStr = getMLIROperationAsString(kernelFunc);
+  // TODO: delete this after testing!
+  kernelFunc = hardcodedShard(kernelFunc, opBuilder);
+  DEBUG_PRINT_OP(kernelFunc);
+
+  auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
+  auto kernelFuncStr = getMLIROperationAsString(moduleOp);
   auto exec = this->compilePJRTExecutable(kernelFuncStr);
 
   std::unique_lock<std::shared_mutex> wLock(this->l2JitMetaRWMtx);

@@ -4,6 +4,7 @@
 #include "../../third_party/headers/pjrt_c_api.h"
 #include "../support/utilities.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
