@@ -33,6 +33,25 @@ std::string JitManager::getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   return s;
 }
 
+
+// FIXME: used for debugging only, delete this after usage
+static void printBufferShape(const PJRT_Api *api, PJRT_Buffer *buffer,
+                            const char *label, int device, int arg) {
+  PJRT_Buffer_Dimensions_Args q{};
+  q.struct_size = PJRT_Buffer_Dimensions_Args_STRUCT_SIZE;
+  q.buffer = buffer;
+  if (auto *err = api->PJRT_Buffer_Dimensions(&q)) {
+    llvm::errs() << JitManager::getErrMsg(api, err) << "\n";
+    return;
+  }
+  llvm::errs() << label << " device=" << device << " arg=" << arg << " [";
+  for (size_t d = 0; d < q.num_dims; ++d) {
+    llvm::errs() << (d ? "," : "") << q.dims[d];
+    llvm::errs() << "]\n";
+  }
+}
+
+
 /**
 -------------------- End Tool Functions --------------------
  */
@@ -376,6 +395,9 @@ static void manageMultiDevicesInputBuffers(
         buffers[devIdx][i] = createBufferFromForgedTgtPointers(
             api, client, devIdx, devices.size(), device, inputArgs[i]);
       }
+
+      // FIXME: delete after debugging
+      printBufferShape(api, buffers[devIdx][i], "[DEBUG IN]", devIdx, i);
     }
   }
   return;
@@ -450,6 +472,10 @@ static void manageMultiDevicesOutputBuffers(
       void *afterPtr = odmdpArgs.device_memory_ptr;
 
       internalBufferMap[inputArg.data][devIdx] = outsBuffersList[devIdx][i];
+
+      // FIXME: delete after debugging
+      printBufferShape(api, outsBuffersList[devIdx][i], "[DEBUG OUT]", devIdx, i);
+
     }
   }
 }

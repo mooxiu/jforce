@@ -13,6 +13,9 @@
 #include <cstdint>
 #include <shared_mutex>
 
+#define PARTITION_COUNT 3
+#define REPLICA_COUNT 1
+
 std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap();
 
 struct L1JitMetas {

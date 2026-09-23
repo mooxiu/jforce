@@ -27,6 +27,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <dlfcn.h>
@@ -310,14 +311,25 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
 
     xla::ExecutableBuildOptionsProto *build_opts =
         opts.mutable_executable_build_options();
-    build_opts->set_num_replicas(3);
+    build_opts->set_num_replicas(REPLICA_COUNT);
     // build_opts->set_num_partitions(1);
 
-    build_opts->set_num_partitions(1);
+    build_opts->set_num_partitions(PARTITION_COUNT);
     build_opts->set_use_spmd_partitioning(true);
     build_opts->set_use_shardy_partitioner(true);
 
     build_opts->set_device_memory_size(40LL << 30); // 40 GB
+
+    // ref: https://openxla.org/xla/hlo_dumps
+    auto *debug = build_opts->mutable_debug_options();
+    debug->set_xla_enable_dumping(true);
+    debug->set_xla_dump_hlo_as_text(true);
+    debug->set_xla_dump_to(
+        "./xla/jforce-sharding" +
+        std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count()));
+    debug->set_xla_dump_hlo_pass_re("spmd|propagation|sharding-remov|shardy");
 
     // Special option for CUDA
     if (this->targetDeviceTy == TargetDeviceType::CUDA) {
@@ -331,6 +343,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
         // DO NOTHING, this might cause warning
       }
     }
+
+    DEBUG_PRINT("Before compile check: " << opts.DebugString());
 
     std::string buf;
     // SerializeToString(): This is protobuf's method inherited by
@@ -358,6 +372,31 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
                  << getErrMsg(this->pjrtApi, error) << "\n";
     std::exit(EXIT_FAILURE);
   }
+
+  // Debugging the compiled executable
+  // FIXME: hide in if else condition
+  PJRT_LoadedExecutable_GetExecutable_Args legeArgs = {
+      .struct_size = PJRT_LoadedExecutable_GetExecutable_Args_STRUCT_SIZE,
+      .loaded_executable = compile_args.executable};
+  auto legeErr = this->pjrtApi->PJRT_LoadedExecutable_GetExecutable(&legeArgs);
+  assert(!legeErr && legeArgs.executable);
+
+  PJRT_Executable_NumPartitions_Args npArgs = {
+      .struct_size = PJRT_Executable_NumPartitions_Args_STRUCT_SIZE,
+      .executable = legeArgs.executable};
+  auto npErr = this->pjrtApi->PJRT_Executable_NumPartitions(&npArgs);
+  assert(!npErr);
+  DEBUG_PRINT(llvm::formatv("After compilation check: Num Partitions: {0}",
+                            npArgs.num_partitions));
+
+  PJRT_Executable_NumReplicas_Args nrArgs = {
+      .struct_size = PJRT_Executable_NumReplicas_Args_STRUCT_SIZE,
+      .executable = legeArgs.executable};
+  auto nrErr = this->pjrtApi->PJRT_Executable_NumReplicas(&nrArgs);
+  assert(!nrErr);
+  DEBUG_PRINT(llvm::formatv("After compilation check: Num Replicas: {0}",
+                            nrArgs.num_replicas));
+
   return compile_args.executable;
 }
 
