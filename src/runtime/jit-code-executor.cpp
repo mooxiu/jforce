@@ -55,7 +55,7 @@ assembleXLAFuncArgs(ArrayRef<Type> kernelFuncTypes, int64_t argCount,
 
     XLAFuncArgs[i] = TensorDesc{
         .data = TgtArgs[i],
-        .shape = rtType.getShape().data(),
+        .shape = rtType.getShape(),
         .rank = (int32_t)rtType.getRank(),
         .dtype = getDTypeFromRankedTensorType(rtType),
         .isLiteral = isLiteralTy(ArgTypes[i]),
@@ -166,12 +166,20 @@ static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
 //
 
 extern "C" {
-__attribute__((visibility("default"))) PJRT_Buffer *
-GetPjrtBuffer(void *cpu_ptr) {
+
+__attribute__((visibility("default"))) void RetrieveData(void *hostPtr,
+                                                         size_t size) {
+  DEBUG_PRINT(llvm::formatv("retrieve data of size: {0}", size));
+  JitManager::getInstance().moveDataToHostBuffer(hostPtr, size);
+}
+
+[[deprecated("Should not use this one, plugin should know less about PJRT")]]
+__attribute__((visibility("default")))
+PJRT_Buffer *GetPjrtBuffer(void *cpu_ptr) {
   auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
-    std::vector<PJRT_Buffer*> buffers = it->second;
+    std::vector<PJRT_Buffer *> buffers = it->second;
     // FIXME: for test only
     DEBUG_PRINT(llvm::formatv("Buffers size: {}", buffers.size()));
     return buffers[1];
@@ -185,12 +193,11 @@ __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
   auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
-    for (auto bufferPtr: it->second) {
-      PJRT_Buffer_Destroy_Args args = {
-        .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-        .extension_start = nullptr, 
-        .buffer = bufferPtr
-      };
+    for (auto bufferPtr : it->second) {
+      PJRT_Buffer_Destroy_Args args = {.struct_size =
+                                           PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+                                       .extension_start = nullptr,
+                                       .buffer = bufferPtr};
       api->PJRT_Buffer_Destroy(&args);
     }
     InternalBufferMap.erase(it);
@@ -287,10 +294,11 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
                                         .inputArgs = newArgs.data(),
                                         .outputArgCount = unsigned(NumArgs),
                                         .outputArgs = newArgs.data()};
-  JitManager::getInstance().launchKernelOnMultiDevices(createdL2JitMetas->exe, &launchArgs,
-                                         createdL2JitMetas->kernelFuncStr);
+  JitManager::getInstance().launchKernelOnMultiDevices(
+      createdL2JitMetas->exe, &launchArgs, createdL2JitMetas->kernelFuncStr);
   // TODO: a lot of these cache fetching should be put in launchKernel function
-  // because, the compilation should better be together with data migration, etc.
+  // because, the compilation should better be together with data migration,
+  // etc.
   return 0;
 }
 }

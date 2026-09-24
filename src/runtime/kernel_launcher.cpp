@@ -4,9 +4,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <iterator>
 #include <vector>
 
 /**
@@ -33,10 +34,9 @@ std::string JitManager::getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
   return s;
 }
 
-
 // FIXME: used for debugging only, delete this after usage
 static void printBufferShape(const PJRT_Api *api, PJRT_Buffer *buffer,
-                            const char *label, int device, int arg) {
+                             const char *label, int device, int arg) {
   PJRT_Buffer_Dimensions_Args q{};
   q.struct_size = PJRT_Buffer_Dimensions_Args_STRUCT_SIZE;
   q.buffer = buffer;
@@ -50,7 +50,6 @@ static void printBufferShape(const PJRT_Api *api, PJRT_Buffer *buffer,
     llvm::errs() << "]\n";
   }
 }
-
 
 /**
 -------------------- End Tool Functions --------------------
@@ -73,7 +72,7 @@ static PJRT_Buffer *createViewBuffer(const PJRT_Api *api, PJRT_Client *client,
       .struct_size = PJRT_Client_CreateViewOfDeviceBuffer_Args_STRUCT_SIZE,
       .client = client,
       .device_buffer_ptr = inputArg.data,
-      .dims = inputArg.shape,
+      .dims = inputArg.shape.data(),
       .num_dims = size_t(inputArg.rank),
       .element_type = getPJRTBufferType(inputArg.dtype),
       // PJRT_Buffer_MemoryLayout* layout;
@@ -98,7 +97,7 @@ static PJRT_Buffer *createCPUBuffer(const PJRT_Api *api, PJRT_Client *client,
       .client = client,
       .data = inputArg.data,
       .type = getPJRTBufferType(inputArg.dtype),
-      .dims = inputArg.shape,
+      .dims = inputArg.shape.data(),
       .num_dims = size_t(inputArg.rank),
       .host_buffer_semantics = PJRT_HostBufferSemantics_kMutableZeroCopy,
       .device = device};
@@ -158,18 +157,19 @@ static PJRT_Buffer *createLiteralBuffer(const PJRT_Api *api,
 
 static PJRT_Buffer *createBufferFromForgedTgtPointers(
     const PJRT_Api *api, PJRT_Client *client, int deviceIdx, int deviceCount,
-    PJRT_Device *device, const TensorDesc &inputArg) {
+    PJRT_Device *device, const TensorDesc &inputArg,
+    uint32_t offsetInByte = 0) {
   // pointing to a memory on host, host does not know the size
   // To make it work on TPU, we have to do it here
-  auto forgedPointer = inputArg.data;
+  void *dataSrc = inputArg.data;
   auto &internalBufferMap = getInternalBufferMap();
-  auto it = internalBufferMap.find(forgedPointer);
+  auto it = internalBufferMap.find(dataSrc);
   if (it == internalBufferMap.end()) {
-    internalBufferMap[forgedPointer] = std::vector<PJRT_Buffer *>(deviceCount, nullptr);
+    internalBufferMap[dataSrc] =
+        std::vector<PJRT_Buffer *>(deviceCount, nullptr);
   }
-
-  assert(internalBufferMap.find(forgedPointer) != internalBufferMap.end());
-  std::vector<PJRT_Buffer*>& buffers = internalBufferMap[forgedPointer]; 
+  assert(internalBufferMap.find(dataSrc) != internalBufferMap.end());
+  std::vector<PJRT_Buffer *> &buffers = internalBufferMap[dataSrc];
   assert(buffers.size() > deviceIdx);
   assert(buffers.size() == deviceCount);
 
@@ -177,12 +177,12 @@ static PJRT_Buffer *createBufferFromForgedTgtPointers(
     auto args = PJRT_Client_BufferFromHostBuffer_Args{
         .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
         .client = client,
-        .data = forgedPointer,
+        .data = static_cast<void *>(static_cast<std::byte *>(dataSrc) +
+                                    offsetInByte),
         .type = getPJRTBufferType(inputArg.dtype),
-        .dims = inputArg.shape,
+        .dims = inputArg.shape.data(),
         .num_dims = size_t(inputArg.rank),
-        .device = device
-    };
+        .device = device};
     auto err = api->PJRT_Client_BufferFromHostBuffer(&args);
     assert(!err);
     buffers[deviceIdx] = args.buffer;
@@ -191,177 +191,186 @@ static PJRT_Buffer *createBufferFromForgedTgtPointers(
   return buffers[deviceIdx];
 }
 
-// Creating PJRT Buffers for inputs.
-// For normal tensor input value, creating view buffer to achieve zero copy.
-// For literal value, we have to create buffer and move.
-// For CPU, we need special setting to avoid XLA do extra copy, see
-// `createCPUBuffer`. For TPU, buffer is already created.
-static void manageInputBuffers(const PJRT_Api *api, PJRT_Client *client,
-                               int deviceIdx, int deviceCount,
-                               PJRT_Device *device, TargetDeviceType deviceType,
-                               const TensorDesc *inputArgs,
-                               const int32_t inputArgCount,
-                               std::vector<PJRT_Buffer *> &buffers) {
-  // PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE);
-  assert(buffers.size() == inputArgCount &&
-         "Buffer size should be the same with arg counts");
-  if (deviceType == TargetDeviceType::CPU) {
-    for (int i = 0; i < inputArgCount; i++) {
-      if (inputArgs[i].isLiteral) {
-        buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
-      } else {
-        buffers[i] = createCPUBuffer(api, client, device, inputArgs[i]);
-      }
-    }
-  } else if (deviceType == TargetDeviceType::TPU) {
-    for (int i = 0; i < inputArgCount; i++) {
-      if (inputArgs[i].isLiteral) {
-        buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
-      } else {
-        buffers[i] = createBufferFromForgedTgtPointers(
-            api, client, deviceIdx, deviceCount, device, inputArgs[i]);
-      }
-    }
-  } else {
-    for (int i = 0; i < inputArgCount; i++) {
-      if (inputArgs[i].isLiteral) {
-        buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
-      } else {
-        buffers[i] = createViewBuffer(api, client, device, inputArgs[i]);
-      }
-    }
-  }
-  return;
-}
-
-static void executeLoadedKernelExecutable(
-    const PJRT_Api *api, PJRT_LoadedExecutable *exe, PJRT_Device *device,
-    PJRT_Buffer ***argLists, PJRT_Buffer ***outLists, const int in_args_count) {
-  PROFILE_SCOPE("executeExecutable", Phase::EXECUTION_RUN);
-
-  PJRT_ExecuteOptions execute_options = {
-      .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
-  };
-
-  const int deviceCount = 1;
-
-  PJRT_Event *deviceCompleteEvents[deviceCount] = {nullptr};
-
-  PJRT_LoadedExecutable_Execute_Args leeas = {
-      .struct_size =
-          PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE, // function and args
-      .executable = exe,
-      .options = &execute_options,
-      .argument_lists = argLists,         // [deviceCount][argCount],
-      .num_devices = (size_t)deviceCount, // we have one device, and the output
-                                          // by this device is 1.
-      .num_args = (size_t)in_args_count,
-      .output_lists = outLists,
-      .device_complete_events = deviceCompleteEvents,
-      .execute_device = device,
-  };
-
-  auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
-  if (executeErr) {
-    std::cerr << "[Error] Execute LoadedExecutable: "
-              << JitManager::getErrMsg(api, executeErr) << "\n";
-    std::exit(EXIT_FAILURE);
-  }
-
-  for (int i = 0; i < deviceCount; i++) {
-    if (leeas.device_complete_events != nullptr &&
-        leeas.device_complete_events[i] != nullptr) {
-      PJRT_Event_Await_Args waitArgs = {
-          .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
-          .event = leeas.device_complete_events[i]};
-      api->PJRT_Event_Await(&waitArgs);
-      PJRT_Event_Destroy_Args eda = {.struct_size =
-                                         PJRT_Event_Destroy_Args_STRUCT_SIZE,
-                                     .event = leeas.device_complete_events[i]};
-      api->PJRT_Event_Destroy(&eda);
-    }
-  }
-}
-
-/// Ideally, the data should be updated in-place
-/// But if not, we need to copy the data
-static void manageOutputBuffers(const PJRT_Api *api,
-                                const std::vector<PJRT_Buffer *> &argsBuffers,
-                                PJRT_Buffer ***outsBuffersList,
-                                TensorDesc *inputArgs, TensorDesc *outputArgs,
-                                TargetDeviceType targetDeviceTy) {
-  // PROFILE_SCOPE("manageOutputBuffers", Phase::EXECUTION_BUFFER_CLEARUP);
-  for (int i = 0; i < argsBuffers.size(); i++) {
-    auto inputArg = inputArgs[i];
-    if (inputArg.isLiteral) {
-      destroyPJRTBuffer(api, outsBuffersList[0][i]);
-      continue;
-    }
-
-    PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
-        .struct_size =
-            PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
-        .buffer = outsBuffersList[0][i],
-    };
-    api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
-    void *afterPtr = odmdpArgs.device_memory_ptr;
-    if (afterPtr != inputArg.data) {
-      if (targetDeviceTy == TargetDeviceType::CPU) {
-        DEBUG_PRINT("Data copied! arg idx: " + std::to_string(i));
-        // llvm::dbgs() << "Data copied to " << outputArgs[i].data << "\n";
-        std::memcpy(outputArgs[i].data, afterPtr,
-                    inputArg.getEleSize() * getDTypeSizeInByte(inputArg.dtype));
-      } else if (targetDeviceTy == TargetDeviceType::CUDA) {
-        // TODO: insert cudamemd2d?
-        std::cerr << "Not Implemented Yet for CUDA!\n";
-        exit(EXIT_FAILURE);
-      } else if (targetDeviceTy == TargetDeviceType::TPU) {
-        // This is supposed to be happen, because the inputArg.data is not a
-        // real pointer on the device, but a pointer we forged on OpenMP side to
-        // the buffer.
-        auto &InternalBufferMap = getInternalBufferMap();
-        InternalBufferMap[inputArg.data][0] = outsBuffersList[0][i];
-        continue;
-      } else {
-        std::cerr << "[Error] Unsupported Device: "
-                  << std::to_string(static_cast<int32_t>(targetDeviceTy))
-                  << "\n";
-        exit(EXIT_FAILURE);
-      }
-      destroyPJRTBuffer(api, outsBuffersList[0][i]);
-    }
-  }
-}
-
-// TODO: currently, launching the whole kernel in a single device.
-void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
-                              KernelArgs *offloadingArgs,
-                              const std::string &kernelFuncStr) {
-  assert(!this->pjrtDevices.empty());
-  auto device = this->pjrtDevices[0];
-
-  auto deviceType = JitManager::getInstance().targetDeviceTy;
-  // Create Buffer with memory managed by OpenMP
-  std::vector<PJRT_Buffer *> inputArgsBufs;
-  inputArgsBufs.resize(offloadingArgs->inputArgCount);
-  manageInputBuffers(pjrtApi, pjrtClient, 0, pjrtDevices.size(), device, deviceType,
-                     offloadingArgs->inputArgs, offloadingArgs->inputArgCount,
-                     inputArgsBufs);
-  PJRT_Buffer **inputArgsBufsList[] = {inputArgsBufs.data()};
-
-  std::vector<PJRT_Buffer *> outputArgsBufs;
-  outputArgsBufs.resize(offloadingArgs->outputArgCount);
-  PJRT_Buffer **outputArgsBufsList[] = {outputArgsBufs.data()};
-
-  // Execute the kernel
-  executeLoadedKernelExecutable(this->pjrtApi, exe, device, inputArgsBufsList,
-                                outputArgsBufsList,
-                                offloadingArgs->inputArgCount);
-  manageOutputBuffers(this->pjrtApi, inputArgsBufs, outputArgsBufsList,
-                      offloadingArgs->inputArgs, offloadingArgs->outputArgs,
-                      deviceType);
-  return;
-}
+// // Creating PJRT Buffers for inputs.
+// // For normal tensor input value, creating view buffer to achieve zero copy.
+// // For literal value, we have to create buffer and move.
+// // For CPU, we need special setting to avoid XLA do extra copy, see
+// // `createCPUBuffer`. For TPU, buffer is already created.
+// static void manageInputBuffers(const PJRT_Api *api, PJRT_Client *client,
+//                                int deviceIdx, int deviceCount,
+//                                PJRT_Device *device, TargetDeviceType
+//                                deviceType, const TensorDesc *inputArgs, const
+//                                int32_t inputArgCount, std::vector<PJRT_Buffer
+//                                *> &buffers) {
+//   // PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE);
+//   assert(buffers.size() == inputArgCount &&
+//          "Buffer size should be the same with arg counts");
+//   if (deviceType == TargetDeviceType::CPU) {
+//     for (int i = 0; i < inputArgCount; i++) {
+//       if (inputArgs[i].isLiteral) {
+//         buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
+//       } else {
+//         buffers[i] = createCPUBuffer(api, client, device, inputArgs[i]);
+//       }
+//     }
+//   } else if (deviceType == TargetDeviceType::TPU) {
+//     for (int i = 0; i < inputArgCount; i++) {
+//       if (inputArgs[i].isLiteral) {
+//         buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
+//       } else {
+//         buffers[i] = createBufferFromForgedTgtPointers(
+//             api, client, deviceIdx, deviceCount, device, inputArgs[i]);
+//       }
+//     }
+//   } else {
+//     for (int i = 0; i < inputArgCount; i++) {
+//       if (inputArgs[i].isLiteral) {
+//         buffers[i] = createLiteralBuffer(api, client, device, inputArgs[i]);
+//       } else {
+//         buffers[i] = createViewBuffer(api, client, device, inputArgs[i]);
+//       }
+//     }
+//   }
+//   return;
+// }
+//
+// static void executeLoadedKernelExecutable(
+//     const PJRT_Api *api, PJRT_LoadedExecutable *exe, PJRT_Device *device,
+//     PJRT_Buffer ***argLists, PJRT_Buffer ***outLists, const int
+//     in_args_count) {
+//   PROFILE_SCOPE("executeExecutable", Phase::EXECUTION_RUN);
+//
+//   PJRT_ExecuteOptions execute_options = {
+//       .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
+//   };
+//
+//   const int deviceCount = 1;
+//
+//   PJRT_Event *deviceCompleteEvents[deviceCount] = {nullptr};
+//
+//   PJRT_LoadedExecutable_Execute_Args leeas = {
+//       .struct_size =
+//           PJRT_LoadedExecutable_Execute_Args_STRUCT_SIZE, // function and
+//           args
+//       .executable = exe,
+//       .options = &execute_options,
+//       .argument_lists = argLists,         // [deviceCount][argCount],
+//       .num_devices = (size_t)deviceCount, // we have one device, and the
+//       output
+//                                           // by this device is 1.
+//       .num_args = (size_t)in_args_count,
+//       .output_lists = outLists,
+//       .device_complete_events = deviceCompleteEvents,
+//       .execute_device = device,
+//   };
+//
+//   auto executeErr = api->PJRT_LoadedExecutable_Execute(&leeas);
+//   if (executeErr) {
+//     std::cerr << "[Error] Execute LoadedExecutable: "
+//               << JitManager::getErrMsg(api, executeErr) << "\n";
+//     std::exit(EXIT_FAILURE);
+//   }
+//
+//   for (int i = 0; i < deviceCount; i++) {
+//     if (leeas.device_complete_events != nullptr &&
+//         leeas.device_complete_events[i] != nullptr) {
+//       PJRT_Event_Await_Args waitArgs = {
+//           .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
+//           .event = leeas.device_complete_events[i]};
+//       api->PJRT_Event_Await(&waitArgs);
+//       PJRT_Event_Destroy_Args eda = {.struct_size =
+//                                          PJRT_Event_Destroy_Args_STRUCT_SIZE,
+//                                      .event =
+//                                      leeas.device_complete_events[i]};
+//       api->PJRT_Event_Destroy(&eda);
+//     }
+//   }
+// }
+//
+// /// Ideally, the data should be updated in-place
+// /// But if not, we need to copy the data
+// static void manageOutputBuffers(const PJRT_Api *api,
+//                                 const std::vector<PJRT_Buffer *>
+//                                 &argsBuffers, PJRT_Buffer ***outsBuffersList,
+//                                 TensorDesc *inputArgs, TensorDesc
+//                                 *outputArgs, TargetDeviceType targetDeviceTy)
+//                                 {
+//   // PROFILE_SCOPE("manageOutputBuffers", Phase::EXECUTION_BUFFER_CLEARUP);
+//   for (int i = 0; i < argsBuffers.size(); i++) {
+//     auto inputArg = inputArgs[i];
+//     if (inputArg.isLiteral) {
+//       destroyPJRTBuffer(api, outsBuffersList[0][i]);
+//       continue;
+//     }
+//
+//     PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
+//         .struct_size =
+//             PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
+//         .buffer = outsBuffersList[0][i],
+//     };
+//     api->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
+//     void *afterPtr = odmdpArgs.device_memory_ptr;
+//     if (afterPtr != inputArg.data) {
+//       if (targetDeviceTy == TargetDeviceType::CPU) {
+//         DEBUG_PRINT("Data copied! arg idx: " + std::to_string(i));
+//         // llvm::dbgs() << "Data copied to " << outputArgs[i].data << "\n";
+//         std::memcpy(outputArgs[i].data, afterPtr,
+//                     inputArg.getEleSize() *
+//                     getDTypeSizeInByte(inputArg.dtype));
+//       } else if (targetDeviceTy == TargetDeviceType::CUDA) {
+//         // TODO: insert cudamemd2d?
+//         std::cerr << "Not Implemented Yet for CUDA!\n";
+//         exit(EXIT_FAILURE);
+//       } else if (targetDeviceTy == TargetDeviceType::TPU) {
+//         // This is supposed to be happen, because the inputArg.data is not a
+//         // real pointer on the device, but a pointer we forged on OpenMP side
+//         to
+//         // the buffer.
+//         auto &InternalBufferMap = getInternalBufferMap();
+//         InternalBufferMap[inputArg.data][0] = outsBuffersList[0][i];
+//         continue;
+//       } else {
+//         std::cerr << "[Error] Unsupported Device: "
+//                   << std::to_string(static_cast<int32_t>(targetDeviceTy))
+//                   << "\n";
+//         exit(EXIT_FAILURE);
+//       }
+//       destroyPJRTBuffer(api, outsBuffersList[0][i]);
+//     }
+//   }
+// }
+//
+// // TODO: currently, launching the whole kernel in a single device.
+// void JitManager::launchKernel(PJRT_LoadedExecutable *exe,
+//                               KernelArgs *offloadingArgs,
+//                               const std::string &kernelFuncStr) {
+//   assert(!this->pjrtDevices.empty());
+//   auto device = this->pjrtDevices[0];
+//
+//   auto deviceType = JitManager::getInstance().targetDeviceTy;
+//   // Create Buffer with memory managed by OpenMP
+//   std::vector<PJRT_Buffer *> inputArgsBufs;
+//   inputArgsBufs.resize(offloadingArgs->inputArgCount);
+//   manageInputBuffers(pjrtApi, pjrtClient, 0, pjrtDevices.size(), device,
+//   deviceType,
+//                      offloadingArgs->inputArgs,
+//                      offloadingArgs->inputArgCount, inputArgsBufs);
+//   PJRT_Buffer **inputArgsBufsList[] = {inputArgsBufs.data()};
+//
+//   std::vector<PJRT_Buffer *> outputArgsBufs;
+//   outputArgsBufs.resize(offloadingArgs->outputArgCount);
+//   PJRT_Buffer **outputArgsBufsList[] = {outputArgsBufs.data()};
+//
+//   // Execute the kernel
+//   executeLoadedKernelExecutable(this->pjrtApi, exe, device,
+//   inputArgsBufsList,
+//                                 outputArgsBufsList,
+//                                 offloadingArgs->inputArgCount);
+//   manageOutputBuffers(this->pjrtApi, inputArgsBufs, outputArgsBufsList,
+//                       offloadingArgs->inputArgs, offloadingArgs->outputArgs,
+//                       deviceType);
+//   return;
+// }
 
 /**
  * following functions are used for executing in multiple devices
@@ -372,7 +381,8 @@ static void manageMultiDevicesInputBuffers(
     const PJRT_Api *api, PJRT_Client *client,
     llvm::SmallVector<PJRT_Device *> devices, TargetDeviceType deviceType,
     const TensorDesc *inputArgs, const int32_t inputArgCount,
-    std::vector<std::vector<PJRT_Buffer *>> &buffers) {
+    std::vector<std::vector<PJRT_Buffer *>> &buffers, int partitionCount,
+    int replicaCount) {
   // PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE);
   assert(buffers.size() == devices.size() &&
          "Buffer size should be the same with devices size");
@@ -392,8 +402,17 @@ static void manageMultiDevicesInputBuffers(
         buffers[devIdx][i] =
             createLiteralBuffer(api, client, device, inputArgs[i]);
       } else {
-        buffers[devIdx][i] = createBufferFromForgedTgtPointers(
-            api, client, devIdx, devices.size(), device, inputArgs[i]);
+        if (replicaCount == 1 && partitionCount > 1) {
+          TensorDesc slicedArg = inputArgs[i]; // sliceArg supposed to be a copy
+          auto offset = devIdx * slicedArg.getDTypeSize() *
+                        (slicedArg.getEleCount() / partitionCount);
+          slicedArg.shape[0] = slicedArg.shape[0] / partitionCount;
+          buffers[devIdx][i] = createBufferFromForgedTgtPointers(
+              api, client, devIdx, devices.size(), device, slicedArg, offset);
+        } else {
+          buffers[devIdx][i] = createBufferFromForgedTgtPointers(
+              api, client, devIdx, devices.size(), device, inputArgs[i]);
+        }
       }
 
       // FIXME: delete after debugging
@@ -474,8 +493,8 @@ static void manageMultiDevicesOutputBuffers(
       internalBufferMap[inputArg.data][devIdx] = outsBuffersList[devIdx][i];
 
       // FIXME: delete after debugging
-      printBufferShape(api, outsBuffersList[devIdx][i], "[DEBUG OUT]", devIdx, i);
-
+      printBufferShape(api, outsBuffersList[devIdx][i], "[DEBUG OUT]", devIdx,
+                       i);
     }
   }
 }
@@ -497,7 +516,8 @@ void JitManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
   DEBUG_PRINT("Before manage input buffers");
   manageMultiDevicesInputBuffers(
       this->pjrtApi, this->pjrtClient, devices, this->targetDeviceTy,
-      offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputBufs);
+      offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputBufs,
+      PARTITION_COUNT, REPLICA_COUNT);
   DEBUG_PRINT("Finish manage input buffers");
 
   PJRT_Buffer ***inputBufsList;
@@ -534,3 +554,43 @@ void JitManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
   DEBUG_PRINT("Finish manage out buffers");
   return;
 }
+
+void JitManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
+  auto bufferMap = getInternalBufferMap();
+  auto it = bufferMap.find(hostPtr);
+  if (it == bufferMap.end()) {
+    llvm::errs() << "Can not find related buffer!\n";
+    return;
+  }
+  const auto& buffers = it->second;
+  size_t offset = 0;
+  // TODO: delete hard coded part after test
+  size_t bufferSize = size/buffers.size();
+
+  llvm::SmallVector<PJRT_Event*> events(buffers.size());
+  for (int devIdx = 0; devIdx < buffers.size(); devIdx++) {
+    PJRT_Buffer* buffer = buffers.at(devIdx);
+
+    auto args = PJRT_Buffer_ToHostBuffer_Args {
+      .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
+      .src = buffer,
+      .dst = static_cast<void*>(static_cast<std::byte*>(hostPtr) + offset),
+      .dst_size = bufferSize
+    };
+    auto* err = this->pjrtApi->PJRT_Buffer_ToHostBuffer(&args);
+    assert(!err);
+    events[devIdx] = args.event;
+    offset += bufferSize;
+  }
+
+  for (int devIdx = 0; devIdx < buffers.size(); devIdx++) {
+    auto awaitArgs = PJRT_Event_Await_Args{
+      .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
+      .event = events[devIdx] 
+    };
+    auto* err2 = this->pjrtApi->PJRT_Event_Await(&awaitArgs);
+    assert(!err2);
+  }
+}
+
+

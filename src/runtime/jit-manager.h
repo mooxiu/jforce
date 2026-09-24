@@ -28,6 +28,9 @@ struct L2JitMetas {
   std::string kernelFuncStr;
 };
 
+// TODO: 
+// move cache related fields into a seperate structure
+// move device related into sharder (first integrate sharder here)
 class JitManager {
 private:
   mlir::MLIRContext context;
@@ -49,6 +52,7 @@ private:
   void destroyLoadedExecutable(PJRT_LoadedExecutable *exe);
 
 public:
+  // TODO: this method should be private
   JitManager();
 
   // Making JitManager a singleton
@@ -85,5 +89,7 @@ public:
                                   const std::string &kernelFuncStr);
 
   static std::string getErrMsg(const PJRT_Api *api, PJRT_Error *err);
+
+  void moveDataToHostBuffer(void* hostPtr, size_t size);
 };
 #endif

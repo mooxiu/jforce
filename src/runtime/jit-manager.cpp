@@ -41,6 +41,7 @@
 std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap() {
   // void* -> pointer in the target. In multi-devices case, the pointer is to a
   // virtual device.
+  // FIXME: we should also store the size of the buffer!!!!!
   static std::unordered_map<void *, std::vector<PJRT_Buffer *>> map;
   return map;
 }
