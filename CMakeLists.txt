@@ -103,9 +103,11 @@ add_subdirectory(src/tool)
 
 add_library(jit-code-executor SHARED 
   src/runtime/jit-code-executor.cpp
-  src/runtime/kernel_launcher.cpp
+  src/runtime/cache-manager.cpp
+  src/runtime/device-manager.cpp
   src/runtime/jit-manager.cpp
   src/runtime/pipelines.cpp
+  src/runtime/sharder.cpp
 )
 
 # already public in transforms

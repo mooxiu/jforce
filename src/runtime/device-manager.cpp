@@ -1,7 +1,10 @@
+#include "runtime/jit-manager.h"
+
 #include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "jit-manager.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstddef>
@@ -13,26 +16,6 @@
 /**
 -------------------- Tool Functions --------------------
  */
-std::string JitManager::getErrMsg(const PJRT_Api *api, PJRT_Error *err) {
-  PJRT_Error_GetCode_Args code_args = {};
-  code_args.struct_size = PJRT_Error_GetCode_Args_STRUCT_SIZE;
-  code_args.error = err;
-
-  api->PJRT_Error_GetCode(&code_args);
-
-  PJRT_Error_Message_Args msg_args = {};
-  msg_args.struct_size = PJRT_Error_Message_Args_STRUCT_SIZE;
-  msg_args.error = err;
-  api->PJRT_Error_Message(&msg_args);
-  std::string s(msg_args.message);
-
-  PJRT_Error_Destroy_Args destroy_args = {};
-  destroy_args.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE;
-  destroy_args.error = err;
-
-  api->PJRT_Error_Destroy(&destroy_args);
-  return s;
-}
 
 // FIXME: used for debugging only, delete this after usage
 static void printBufferShape(const PJRT_Api *api, PJRT_Buffer *buffer,
@@ -190,6 +173,99 @@ static PJRT_Buffer *createBufferFromForgedTgtPointers(
 
   return buffers[deviceIdx];
 }
+
+// For filtering out the target device.
+static std::string getDeviceDescription(const PJRT_Api *api,
+                                        PJRT_Device *device) {
+  PJRT_Device_GetDescription_Args args = {
+      .struct_size = PJRT_Device_GetDescription_Args_STRUCT_SIZE,
+      .device = device,
+  };
+  auto err1 = api->PJRT_Device_GetDescription(&args);
+  if (err1) {
+    std::cerr << "[Error] Fail to get description of the device: "
+              << JitManager::getErrMsg(api, err1) << "\n";
+    return nullptr;
+  }
+  PJRT_DeviceDescription_ToString_Args ts_args = {
+      .struct_size = PJRT_DeviceDescription_ToString_Args_STRUCT_SIZE,
+      .device_description = args.device_description,
+  };
+  auto err2 = api->PJRT_DeviceDescription_ToString(&ts_args);
+  if (err2) {
+    std::cerr << "[Error] Fail to get device description to string: "
+              << JitManager::getErrMsg(api, err2) << "\n";
+    return nullptr;
+  }
+  return ts_args.to_string;
+}
+
+// Get the target device handle
+static llvm::SmallVector<PJRT_Device *>
+findDevices(const PJRT_Api *api, PJRT_Client *client,
+            const std::string &deviceDescKeyword) {
+  PJRT_Client_AddressableDevices_Args device_args = {
+      .struct_size = PJRT_Client_AddressableDevices_Args_STRUCT_SIZE,
+      .client = client,
+  };
+  auto err = api->PJRT_Client_AddressableDevices(&device_args);
+  if (err) {
+    std::cerr << "[Error] Cannot get addressable device: "
+              << JitManager::getInstance().getErrMsg(api, err) << "\n";
+    std::exit(EXIT_FAILURE);
+  }
+  if (device_args.num_addressable_devices < 1) {
+    std::cerr << "[Error] Cannot find any device!\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  llvm::SmallVector<PJRT_Device *> matched_devices;
+  for (int i = 0; i < device_args.num_addressable_devices; i++) {
+    auto device = device_args.addressable_devices[i];
+    std::string tmp = getDeviceDescription(api, device);
+    DEBUG_PRINT("Read device description: " + tmp +
+                ", and trying to find device: " + deviceDescKeyword);
+    std::transform(tmp.begin(), tmp.end(), tmp.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    DEBUG_PRINT("After lower: " + tmp);
+    if (tmp.find(deviceDescKeyword) != std::string::npos) {
+      matched_devices.push_back(device);
+    }
+  }
+  DEBUG_PRINT(
+      llvm::formatv("Found {0} matched PJRT devices.", matched_devices.size()));
+  return matched_devices;
+}
+
+
+DeviceManager::DeviceManager(const PJRT_Api* api, PJRT_Client* client, TargetDeviceType targetDeviceTy): 
+  api_(api), client_(client), targetDeviceTy_(targetDeviceTy) {
+  // Find all the available devices in the environment.
+  switch (this->targetDeviceTy_) {
+  case TargetDeviceType::CPU:
+    DEBUG_PRINT("Trying to get device type: CPU.");
+    this->pjrtDevices_ = findDevices(api_, client_, "cpu");
+    break;
+  case TargetDeviceType::CUDA:
+    DEBUG_PRINT("Trying to get device type: CUDA.");
+    this->pjrtDevices_ = findDevices(api_, client_, "cuda");
+    break;
+  case TargetDeviceType::ROCM:
+    DEBUG_PRINT("Trying to get device type: ROCM.");
+    this->pjrtDevices_ = findDevices(api_, client_, "rocm");
+    break;
+  case TargetDeviceType::TPU:
+    DEBUG_PRINT("Trying to get device type: TPU.");
+    this->pjrtDevices_ = findDevices(api_, client_, "tpu");
+    break;
+  default:
+    DEBUG_PRINT("Trying to get unknown type device, device type is: " +
+                std::to_string((int32_t)this->targetDeviceTy_));
+    std::cerr << "Fail to find device!\n";
+    std::exit(EXIT_FAILURE);
+  }
+};
+
 
 // // Creating PJRT Buffers for inputs.
 // // For normal tensor input value, creating view buffer to achieve zero copy.
@@ -499,12 +575,12 @@ static void manageMultiDevicesOutputBuffers(
   }
 }
 
-void JitManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
+void DeviceManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
                                             KernelArgs *offloadingArgs,
                                             const std::string &kernelFuncStr) {
 
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
-  auto devices = this->pjrtDevices;
+  auto devices = this->pjrtDevices_;
 
   // InputBufs[deviceId][argIdx]
   std::vector<std::vector<PJRT_Buffer *>> inputBufs(
@@ -515,7 +591,7 @@ void JitManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
   // InputBufs are buffers in each devices.
   DEBUG_PRINT("Before manage input buffers");
   manageMultiDevicesInputBuffers(
-      this->pjrtApi, this->pjrtClient, devices, this->targetDeviceTy,
+      api_, client_, devices, targetDeviceTy_,
       offloadingArgs->inputArgs, offloadingArgs->inputArgCount, inputBufs,
       PARTITION_COUNT, REPLICA_COUNT);
   DEBUG_PRINT("Finish manage input buffers");
@@ -541,21 +617,23 @@ void JitManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
   outputBufsList = rawOutputBufs.data();
 
   DEBUG_PRINT("Before executing");
-  executeLoadedKernelExecutableOnMultiDevices(this->pjrtApi, exe, devices,
+  executeLoadedKernelExecutableOnMultiDevices(api_, exe, devices,
                                               inputBufsList, outputBufsList,
                                               offloadingArgs->inputArgCount);
   DEBUG_PRINT("Finish executing");
 
   // move data back to the host
-  manageMultiDevicesOutputBuffers(pjrtApi, offloadingArgs->inputArgCount,
+  manageMultiDevicesOutputBuffers(api_, offloadingArgs->inputArgCount,
                                   outputBufsList, offloadingArgs->inputArgs,
-                                  offloadingArgs->outputArgs, targetDeviceTy,
+                                  offloadingArgs->outputArgs, targetDeviceTy_,
                                   devices.size());
   DEBUG_PRINT("Finish manage out buffers");
   return;
 }
 
-void JitManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
+
+
+void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
   auto bufferMap = getInternalBufferMap();
   auto it = bufferMap.find(hostPtr);
   if (it == bufferMap.end()) {
@@ -577,7 +655,7 @@ void JitManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
       .dst = static_cast<void*>(static_cast<std::byte*>(hostPtr) + offset),
       .dst_size = bufferSize
     };
-    auto* err = this->pjrtApi->PJRT_Buffer_ToHostBuffer(&args);
+    auto* err = api_->PJRT_Buffer_ToHostBuffer(&args);
     assert(!err);
     events[devIdx] = args.event;
     offset += bufferSize;
@@ -588,9 +666,22 @@ void JitManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
       .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
       .event = events[devIdx] 
     };
-    auto* err2 = this->pjrtApi->PJRT_Event_Await(&awaitArgs);
+    auto* err2 = api_->PJRT_Event_Await(&awaitArgs);
     assert(!err2);
   }
 }
 
-
+void DeviceManager::destroyHostBoundBuffers(void* hostPtr) {
+  auto &InternalBufferMap = getInternalBufferMap();
+  auto it = InternalBufferMap.find(hostPtr);
+  if (it != InternalBufferMap.end()) {
+    for (auto bufferPtr : it->second) {
+      PJRT_Buffer_Destroy_Args args = {.struct_size =
+                                           PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+                                       .extension_start = nullptr,
+                                       .buffer = bufferPtr};
+      api_->PJRT_Buffer_Destroy(&args);
+    }
+    InternalBufferMap.erase(it);
+  }
+};
