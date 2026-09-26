@@ -37,7 +37,6 @@ private:
   llvm::DenseMap<uintptr_t, L1JitMetas> l1JitMetasMap;
   std::shared_mutex l2JitMetaRWMtx;
   llvm::DenseMap<llvm::SmallVector<uint64_t, 128>, L2JitMetas> l2JitMetasMap;
-  // NOTE: I feel this can be added to JitMetasLayer1
   std::shared_mutex moduleOpRWMtx;
   llvm::DenseMap<uintptr_t, mlir::OwningOpRef<mlir::ModuleOp>> moduleOpMap;
 
@@ -82,9 +81,6 @@ public:
                                   const std::string &kernelFuncStr);
 };
 
-// TODO:
-// move cache related fields into a seperate structure
-// move device related into sharder (first integrate sharder here)
 class JitManager {
 private:
   mlir::MLIRContext context;
