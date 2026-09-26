@@ -1,18 +1,10 @@
 #include "../support/profiler.h"
 #include "../support/utilities.h"
-#include "flang/Optimizer/Transforms/Passes.h"
 #include "jit-manager.h"
-#include "mlir/Dialect/Affine/Transforms/Passes.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
-#include "pipelines.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -23,24 +15,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
-#include <utility>
 
 using namespace mlir;
-
-#define JIT_LITERAL_VAL_ATTR_NAME "jit.literal_val"
-#define JIT_ARGS_MAPPING_ATTR_NAME "jit.args_mapping"
-#define JIT_SHAPE_ARG_ATTR_NAME "jit.shape_arg"
-
-#ifdef ENABLE_XLA_DEBUG
-#define PRINT_PASS()                                                           \
-  llvm::errs() << "Pass pipeline: ";                                           \
-  pm.printAsTextualPipeline(llvm::errs());                                     \
-  llvm::errs() << "\n";                                                        \
-  ctx->disableMultithreading();                                                \
-  pm.enableIRPrinting()
-#else
-#define PRINT_PASS()
-#endif
 
 llvm::SmallVector<TensorDesc>
 assembleXLAFuncArgs(ArrayRef<Type> kernelFuncTypes, int64_t argCount,
@@ -55,82 +31,13 @@ assembleXLAFuncArgs(ArrayRef<Type> kernelFuncTypes, int64_t argCount,
 
     XLAFuncArgs[i] = TensorDesc{
         .data = TgtArgs[i],
-        .shape = rtType.getShape().data(),
+        .shape = rtType.getShape(),
         .rank = (int32_t)rtType.getRank(),
         .dtype = getDTypeFromRankedTensorType(rtType),
         .isLiteral = isLiteralTy(ArgTypes[i]),
     };
   }
   return XLAFuncArgs;
-}
-
-struct jitArg {
-  void *hostPtr;
-  void *tgtPtr;
-  int64_t size;
-  bool isLiteral;
-};
-
-void insertJitInfo(mlir::OpBuilder &builder, func::FuncOp kernelFunc,
-                   llvm::SmallVector<jitArg> args) {
-  auto ctx = builder.getContext();
-  auto attrName = builder.getStringAttr(JIT_LITERAL_VAL_ATTR_NAME);
-  for (int i = 0; i < args.size(); i++) {
-    if (args[i].isLiteral) {
-      std::uintptr_t literalAddr =
-          reinterpret_cast<std::uintptr_t>(args[i].hostPtr);
-      auto attr = IntegerAttr::get(IntegerType::get(ctx, sizeof(void *) * 8),
-                                   literalAddr);
-      kernelFunc.setArgAttr(i, attrName, attr);
-    }
-  }
-  return;
-}
-
-// Store pair of <arg index, is shape arg>
-llvm::DenseMap<uint32_t, bool> getShapeArgInfoMap(func::FuncOp funcOp) {
-  llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
-  for (uint32_t i = 0; i < funcOp.getNumArguments(); i++) {
-    if (funcOp.getArgAttrOfType<UnitAttr>(i, JIT_SHAPE_ARG_ATTR_NAME)) {
-      shapeArgInfoMap[i] = true;
-    } else {
-      shapeArgInfoMap[i] = false;
-    }
-  }
-  return shapeArgInfoMap;
-}
-
-// Return OwningOpRef instead of a raw mlir::ModuleOp to keep the onwership
-mlir::OwningOpRef<mlir::ModuleOp>
-preprocessModuleOp(MLIRContext *ctx, void *JitCode, int64_t NumArgs,
-                   void **TgtArgs, void **ArgPtrs, int64_t *ArgSizes,
-                   int64_t *ArgTypes) {
-  auto packJitArg = [&]() {
-    llvm::SmallVector<jitArg> args;
-    args.resize(NumArgs);
-
-    for (int i = 0; i < NumArgs; i++) {
-      args[i] = jitArg{
-          .hostPtr = ArgPtrs[i],
-          .tgtPtr = TgtArgs[i],
-          .size = ArgSizes[i],
-          .isLiteral = isLiteralTy(ArgTypes[i]),
-      };
-    };
-    return args;
-  };
-
-  mlir::OpBuilder builder(ctx);
-  // Use OweningOpRef so RAII can help to destroy the tree
-  mlir::OwningOpRef<mlir::ModuleOp> moduleOpRef =
-      JitManager::getInstance().getModuleOp(JitCode);
-
-  auto kernel = moduleOpRef->lookupSymbol<func::FuncOp>("kernel");
-  assert(kernel && "FuncOp with name kernel should exist!");
-
-  auto jitArgs = packJitArg();
-  insertJitInfo(builder, kernel, jitArgs);
-  return moduleOpRef;
 }
 
 static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
@@ -166,12 +73,20 @@ static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
 //
 
 extern "C" {
-__attribute__((visibility("default"))) PJRT_Buffer *
-GetPjrtBuffer(void *cpu_ptr) {
+
+__attribute__((visibility("default"))) void RetrieveData(void *hostPtr,
+                                                         size_t size) {
+  DEBUG_PRINT(llvm::formatv("retrieve data of size: {0}", size));
+  JitManager::getInstance().moveDataToHostBuffer(hostPtr, size);
+}
+
+[[deprecated("Should not use this one, plugin should know less about PJRT")]]
+__attribute__((visibility("default")))
+PJRT_Buffer *GetPjrtBuffer(void *cpu_ptr) {
   auto &InternalBufferMap = getInternalBufferMap();
   auto it = InternalBufferMap.find(cpu_ptr);
   if (it != InternalBufferMap.end()) {
-    std::vector<PJRT_Buffer*> buffers = it->second;
+    std::vector<PJRT_Buffer *> buffers = it->second;
     // FIXME: for test only
     DEBUG_PRINT(llvm::formatv("Buffers size: {}", buffers.size()));
     return buffers[1];
@@ -180,27 +95,8 @@ GetPjrtBuffer(void *cpu_ptr) {
   return nullptr;
 }
 
-__attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr,
-                                                              PJRT_Api *api) {
-  auto &InternalBufferMap = getInternalBufferMap();
-  auto it = InternalBufferMap.find(cpu_ptr);
-  if (it != InternalBufferMap.end()) {
-    for (auto bufferPtr: it->second) {
-      PJRT_Buffer_Destroy_Args args = {
-        .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-        .extension_start = nullptr, 
-        .buffer = bufferPtr
-      };
-      api->PJRT_Buffer_Destroy(&args);
-    }
-    InternalBufferMap.erase(it);
-  }
-}
-
-// NOTE: I suspect this might not be necessary.
-// Why the plugin has to have a PJRTClient pointer?
-__attribute__((visibility("default"))) PJRT_Client *GetExecutorPJRTClient() {
-  return JitManager::getInstance().getPJRTClientPointer();
+__attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr) {
+  JitManager::getInstance().destroyHostBoundBuffers(cpu_ptr);
 }
 
 /**
@@ -228,69 +124,18 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
   ArgSizes -= 1;
 
   // -----------------------------------------------
-  auto l1JitMetas = JitManager::getInstance().tryGetL1JitMetas(JitCode);
-  llvm::SmallVector<uint64_t, 128> l2Key;
-  if (l1JitMetas != nullptr) {
-    l2Key = JitManager::getInstance().getL2JitMetasKey(
-        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCode,
-        l1JitMetas->shapeArgInfoMap);
-    auto l2JitMetas = JitManager::getInstance().tryGetL2JitMetas(l2Key);
-
-    if (l2JitMetas != nullptr) {
-      auto newArgs = assembleXLAFuncArgs(l2JitMetas->kernelFuncTypes,
-                                         NumHostArgs, ArgTypes, TgtArgs);
-      auto kArgs = (KernelArgs){.inputArgCount = unsigned(NumArgs),
-                                .inputArgs = newArgs.data(),
-                                .outputArgCount = unsigned(NumArgs),
-                                .outputArgs = newArgs.data()};
-      JitManager::getInstance().launchKernel(l2JitMetas->exe, &kArgs,
-                                             l2JitMetas->kernelFuncStr);
-      return 0;
-    }
-  }
-
-  MLIRContext *ctx = JitManager::getInstance().getContext();
-
-  // Parse JitCode to ModuleOp, etc.
-  auto moduleOpRef = preprocessModuleOp(ctx, JitCode, NumArgs, TgtArgs, ArgPtrs,
-                                        ArgSizes, ArgTypes);
-  auto moduleOp = moduleOpRef.get();
-
-  // Lower JItCode to StableHLO
-  mlir::PassManager pm(ctx);
-  // INFO: uncomment print pass when we need to debug the IR transformation
-  // PRINT_PASS();
-  pm.enableCrashReproducerGeneration("./crash_repro.mlir");
-  // pm.enableTiming();
-  createLowerToStableHLOPassPipeline(pm);
-  if (mlir::failed(pm.run(moduleOp))) {
-    llvm::errs() << "MLIR Pass Pipeline failed!\n";
-    std::exit(EXIT_FAILURE);
-  }
-
-  auto kernelFunc = moduleOp.lookupSymbol<func::FuncOp>("main");
-  assert(kernelFunc && "Kernel Func should be renamed as main!\n");
-
-  if (l1JitMetas == nullptr) {
-    auto shapeInfoMap = getShapeArgInfoMap(kernelFunc);
-    l2Key = JitManager::getInstance().getL2JitMetasKey(
-        NumArgs, ArgTypes, TgtArgs, ArgSizes, JitCode, shapeInfoMap);
-    JitManager::getInstance().saveL1JitMetas(JitCode, std::move(shapeInfoMap));
-  }
-
-  auto createdL2JitMetas =
-      JitManager::getInstance().createL2JitMetas(l2Key, kernelFunc);
-
-  auto newArgs = assembleXLAFuncArgs(createdL2JitMetas->kernelFuncTypes,
-                                     NumHostArgs, ArgTypes, TgtArgs);
+  auto &jm = JitManager::getInstance();
+  auto l2Cache = jm.getOrCompileKernel(JitCode, NumArgs, TgtArgs, ArgSizes,
+                                       ArgPtrs, ArgTypes);
+  assert(l2Cache);
+  auto newArgs = assembleXLAFuncArgs(l2Cache->kernelFuncTypes, NumHostArgs,
+                                     ArgTypes, TgtArgs);
   auto launchArgs = (struct KernelArgs){.inputArgCount = unsigned(NumArgs),
                                         .inputArgs = newArgs.data(),
                                         .outputArgCount = unsigned(NumArgs),
                                         .outputArgs = newArgs.data()};
-  JitManager::getInstance().launchKernelOnMultiDevices(createdL2JitMetas->exe, &launchArgs,
-                                         createdL2JitMetas->kernelFuncStr);
-  // TODO: a lot of these cache fetching should be put in launchKernel function
-  // because, the compilation should better be together with data migration, etc.
+  JitManager::getInstance().launch(l2Cache->exe, &launchArgs,
+                                   l2Cache->kernelFuncStr);
   return 0;
 }
 }

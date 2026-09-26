@@ -63,6 +63,13 @@ include_directories(
   ${STABLEHLO_BUILD_PATH} # Important for generated .td files
 )
 
+# -------------------- Use Shardy --------------------  
+set(SHARDY_BUILD_PATH "${SHARDY_PROJECT}/build")
+file(GLOB shardy_all_libs ${SHARDY_BUILD_PATH}/lib/lib*.a)
+include_directories(
+  ${SHARDY_PROJECT}
+  ${SHARDY_BUILD_PATH} 
+)
 
 # -------------------- Compile CPP Runtime as A library --------------------  
 include(FetchContent)
@@ -96,9 +103,11 @@ add_subdirectory(src/tool)
 
 add_library(jit-code-executor SHARED 
   src/runtime/jit-code-executor.cpp
-  src/runtime/kernel_launcher.cpp
+  src/runtime/cache-manager.cpp
+  src/runtime/device-manager.cpp
   src/runtime/jit-manager.cpp
   src/runtime/pipelines.cpp
+  src/runtime/sharder.cpp
 )
 
 # already public in transforms
@@ -111,6 +120,10 @@ target_link_libraries(jit-code-executor PRIVATE
   ${CMAKE_DL_LIBS} # For dlopen, dlclose, dlsym, etc.
   JitSupport
   JitTransforms
+)
+
+target_link_libraries(jit-code-executor PRIVATE
+  -Wl,--start-group ${shardy_all_libs}  -Wl,--end-group
 )
 
 # -DENABLE_PROFILING
