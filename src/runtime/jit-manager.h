@@ -52,9 +52,6 @@ public:
                    void *JitCode,
                    const llvm::DenseMap<uint32_t, bool> &shapeArgInfoMap);
   L2JitMetas *tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key);
-  // L2JitMetas *insertL2CacheAndReturn(llvm::SmallVector<uint64_t, 128> &key,
-  //                                    PJRT_LoadedExecutable *exec,
-  //                                    std::string_view kernelFuncStr);
   L2JitMetas *insertL2CacheAndReturn(
       llvm::SmallVector<uint64_t, 128> &key, PJRT_LoadedExecutable *exec,
       std::string kernelFuncStr, mlir::func::FuncOp kernelFunc,
@@ -69,7 +66,7 @@ private:
   llvm::SmallVector<PJRT_Device *> pjrtDevices_ = {};
   // forged tgtPtr in host side -> vec{dev0Buffer, dev1Buffer, ....}
   std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
-  // std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap();
+  // TODO: can use finer granuality mtx to improve performance if necessary.
   std::shared_mutex deviceBufferMtx;
   void manageMultiDevicesInputBuffers(const TensorDesc *inputArgs, const int32_t inputArgCount,
     std::vector<std::vector<PJRT_Buffer *>> &buffers, int partitionCount, int replicaCount);

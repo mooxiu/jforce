@@ -146,7 +146,6 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(int deviceIdx, PJR
   // To make it work on TPU, we have to do it here
   void *dataSrc = inputArg.data;
 
-  std::unique_lock<std::shared_mutex> lock(this->deviceBufferMtx);
   auto it = deviceBuffersMap.find(dataSrc);
   if (it == deviceBuffersMap.end()) {
     deviceBuffersMap[dataSrc] =
@@ -510,7 +509,7 @@ static void executeLoadedKernelExecutableOnMultiDevices(
       .options = &execute_options,
       .argument_lists = argLists, // [deviceCount][argCount],
       .num_devices = (size_t)deviceCount,
-      .num_args = (size_t)in_args_count, // WARNING: what does this mean?
+      .num_args = (size_t)in_args_count,
       .output_lists = outLists,
       .device_complete_events = deviceCompleteEvents.data(),
       .execute_device = nullptr,
@@ -538,6 +537,7 @@ static void executeLoadedKernelExecutableOnMultiDevices(
   }
 }
 
+// TODO: this only works when using the TPU plugin, where all the memory
 void DeviceManager::manageMultiDevicesOutputBuffers(int inArgsCount, PJRT_Buffer **const *outsBuffersList, TensorDesc *inputArgs, TensorDesc *outputArgs) {
   for (int devIdx = 0; devIdx < this->pjrtDevices_.size(); devIdx++) {
     for (int i = 0; i < inArgsCount; i++) {
@@ -546,19 +546,23 @@ void DeviceManager::manageMultiDevicesOutputBuffers(int inArgsCount, PJRT_Buffer
         destroyPJRTBuffer(api_, outsBuffersList[devIdx][i]);
         continue;
       }
-
-      PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
-          .struct_size =
-              PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
-          .buffer = outsBuffersList[devIdx][i],
-      };
-      api_->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
-      void *afterPtr = odmdpArgs.device_memory_ptr;
-
-      std::unique_lock<std::shared_mutex> lock(this->deviceBufferMtx);
-      deviceBuffersMap[inputArg.data][devIdx] = outsBuffersList[devIdx][i];
-      lock.unlock();
-
+      // PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args odmdpArgs = {
+      //     .struct_size =
+      //         PJRT_Buffer_OpaqueDeviceMemoryDataPointer_Args_STRUCT_SIZE,
+      //     .buffer = outsBuffersList[devIdx][i],
+      // };
+      // api_->PJRT_Buffer_OpaqueDeviceMemoryDataPointer(&odmdpArgs);
+      // void *afterPtr = odmdpArgs.device_memory_ptr;
+      if (deviceBuffersMap[inputArg.data][devIdx] != outsBuffersList[devIdx][i]) {
+        auto oldHandle = deviceBuffersMap[inputArg.data][devIdx];
+        PJRT_Buffer_Destroy_Args destroyArg = {
+          .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+          .buffer = oldHandle,
+        };
+        auto err = api_->PJRT_Buffer_Destroy(&destroyArg);
+        assert(!err);
+        deviceBuffersMap[inputArg.data][devIdx] = outsBuffersList[devIdx][i];
+      }
       // FIXME: delete after debugging
       printBufferShape(api_, outsBuffersList[devIdx][i], "[DEBUG OUT]", devIdx,
                        i);
@@ -569,13 +573,12 @@ void DeviceManager::manageMultiDevicesOutputBuffers(int inArgsCount, PJRT_Buffer
 void DeviceManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
                                             KernelArgs *offloadingArgs,
                                             const std::string &kernelFuncStr) {
-
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
-  auto devices = this->pjrtDevices_;
-
+  // TODO: improve this when it becomes slow
+  std::unique_lock<std::shared_mutex> lock(deviceBufferMtx);
   // InputBufs[deviceId][argIdx]
   std::vector<std::vector<PJRT_Buffer *>> inputBufs(
-      devices.size(),
+      pjrtDevices_.size(),
       std::vector<PJRT_Buffer *>(offloadingArgs->inputArgCount));
 
   // Move data from input data `offloading -> inputArgs` to `inputBufs`.
@@ -592,7 +595,7 @@ void DeviceManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
   inputBufsList = rawInputBufs.data();
 
   std::vector<std::vector<PJRT_Buffer *>> outputArgsBufs(
-      devices.size(),
+      pjrtDevices_.size(),
       std::vector<PJRT_Buffer *>(offloadingArgs->outputArgCount));
 
   // outputBufsList stores the data handler for each output on each device.
@@ -605,7 +608,7 @@ void DeviceManager::launchKernelOnMultiDevices(PJRT_LoadedExecutable *exe,
   outputBufsList = rawOutputBufs.data();
 
   DEBUG_PRINT("Before executing");
-  executeLoadedKernelExecutableOnMultiDevices(api_, exe, devices,
+  executeLoadedKernelExecutableOnMultiDevices(api_, exe, pjrtDevices_,
                                               inputBufsList, outputBufsList,
                                               offloadingArgs->inputArgCount);
   DEBUG_PRINT("Finish executing");
@@ -645,7 +648,6 @@ void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
     events[devIdx] = args.event;
     offset += bufferSize;
   }
-  rLock.unlock();
 
   for (int devIdx = 0; devIdx < buffers.size(); devIdx++) {
     auto awaitArgs = PJRT_Event_Await_Args{
