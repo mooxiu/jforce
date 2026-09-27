@@ -80,20 +80,19 @@ __attribute__((visibility("default"))) void RetrieveData(void *hostPtr,
   JitManager::getInstance().moveDataToHostBuffer(hostPtr, size);
 }
 
-[[deprecated("Should not use this one, plugin should know less about PJRT")]]
-__attribute__((visibility("default")))
-PJRT_Buffer *GetPjrtBuffer(void *cpu_ptr) {
-  auto &InternalBufferMap = getInternalBufferMap();
-  auto it = InternalBufferMap.find(cpu_ptr);
-  if (it != InternalBufferMap.end()) {
-    std::vector<PJRT_Buffer *> buffers = it->second;
-    // FIXME: for test only
-    DEBUG_PRINT(llvm::formatv("Buffers size: {}", buffers.size()));
-    return buffers[1];
-  }
-  DEBUG_PRINT("PJRT Buffer Not found!");
-  return nullptr;
-}
+// [[deprecated("Should not use this one, plugin should know less about PJRT")]]
+// __attribute__((visibility("default")))
+// PJRT_Buffer *GetPjrtBuffer(void *cpu_ptr) {
+//   auto &InternalBufferMap = getInternalBufferMap();
+//   auto it = InternalBufferMap.find(cpu_ptr);
+//   if (it != InternalBufferMap.end()) {
+//     std::vector<PJRT_Buffer *> buffers = it->second;
+//     DEBUG_PRINT(llvm::formatv("Buffers size: {}", buffers.size()));
+//     return buffers[1];
+//   }
+//   DEBUG_PRINT("PJRT Buffer Not found!");
+//   return nullptr;
+// }
 
 __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr) {
   JitManager::getInstance().destroyHostBoundBuffers(cpu_ptr);

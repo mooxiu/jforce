@@ -14,11 +14,10 @@
 #include <cstdint>
 #include <shared_mutex>
 #include <string>
+#include <vector>
 
 #define PARTITION_COUNT 3
 #define REPLICA_COUNT 1
-
-std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap();
 
 struct L1JitMetas {
   llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
@@ -68,12 +67,20 @@ private:
   PJRT_Client *client_;
   TargetDeviceType targetDeviceTy_;
   llvm::SmallVector<PJRT_Device *> pjrtDevices_ = {};
-  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code);
+  // forged tgtPtr in host side -> vec{dev0Buffer, dev1Buffer, ....}
+  std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
+  // std::unordered_map<void *, std::vector<PJRT_Buffer *>> &getInternalBufferMap();
+  std::shared_mutex deviceBufferMtx;
+  void manageMultiDevicesInputBuffers(const TensorDesc *inputArgs, const int32_t inputArgCount,
+    std::vector<std::vector<PJRT_Buffer *>> &buffers, int partitionCount, int replicaCount);
+  PJRT_Buffer * createBufferFromForgedTgtPointers(int deviceIdx, PJRT_Device *device, const TensorDesc &inputArg, uint32_t offsetInByte);
+  void manageMultiDevicesOutputBuffers(int inArgsCount, PJRT_Buffer **const *outsBuffersList, TensorDesc *inputArgs, TensorDesc *outputArgs);
 
 public:
   DeviceManager(const PJRT_Api* api, PJRT_Client* client, TargetDeviceType targetDeviceTy);
   void destroyHostBoundBuffers(void *hostPtr);
   void moveDataToHostBuffer(void *hostPtr, size_t size);
+  [[deprecated("should use launchKernelOnMultiDevices")]]
   void launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                     const std::string &kernelFuncStr);
   void launchKernelOnMultiDevices(PJRT_LoadedExecutable *exec,
