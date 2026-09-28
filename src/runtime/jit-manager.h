@@ -85,6 +85,53 @@ public:
                                   const std::string &kernelFuncStr);
 };
 
+struct MeshAxis {
+  std::string name;
+  uint32_t ordinal;
+  uint32_t size;
+};
+
+// Sharding Strategy is what we would like to partition an argument
+struct ArgSharding {
+  std::vector<std::vector<const MeshAxis&>> argShards;
+};
+
+// Keeps the sharding of all arguments of a function.
+struct ShardingDecision {
+  std::vector<ArgSharding> argShardings; 
+};
+
+// Profile to be serialized or deserialized, inserted.
+// TODO: currently, the key of decisions is written as a void*, this is wrong, the pointer can be different in different invokes.
+// I am considering something like a hash(ModuleOp)...
+struct Profile {
+  llvm::DenseMap<void*, ShardingDecision> decisions;
+};
+
+class Sharder {
+  public:
+    Sharder(llvm::SmallVector<uint32_t> mesh);
+    ~Sharder();
+    Sharder(const Sharder&) = delete;
+    Sharder& operator=(const Sharder&) = delete;
+   
+    // heuristicShard accept a moduleOp, and return a sharding decision.
+    // The sharding decision is ideally made by using profilings.
+    ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
+
+  private:
+    uint32_t deviceCount;
+    llvm::SmallVector<uint32_t> deviceMesh;
+
+    Profile* profile = nullptr;
+    bool profileChangeFlag = false;
+    std::string profilePath = "";
+    
+    void addToProfile();
+    void serializeProfile();
+    Profile* deserializeProfile();
+};
+
 class JitManager {
 private:
   mlir::MLIRContext context;
@@ -94,6 +141,7 @@ private:
   JitManager();
   CacheManager cacheManager;
   DeviceManager deviceManager;
+  Sharder sharder;
   L2JitMetas *createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
                                mlir::func::FuncOp kernelFunc);
   mlir::OwningOpRef<mlir::ModuleOp>
