@@ -134,7 +134,7 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
                                         .outputArgCount = unsigned(NumArgs),
                                         .outputArgs = newArgs.data()};
   JitManager::getInstance().launch(l2Cache->exe, &launchArgs,
-                                   l2Cache->kernelFuncStr);
+                                   l2Cache->kernelFuncStr, l2Cache->sd);
   return 0;
 }
 }

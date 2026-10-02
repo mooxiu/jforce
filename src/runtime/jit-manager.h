@@ -12,12 +12,33 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
+#include <functional>
 #include <shared_mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
-#define PARTITION_COUNT 3
-#define REPLICA_COUNT 1
+struct MeshAxis {
+  std::string name;
+  int ordinal;
+  int64_t size;
+};
+
+// Each arg is a nested dimenisonal arrary.
+// ArgSharding[i] means how the i-th dimension of the arg sharded or replicaed.
+// Because an argument has a
+using DimSharding = std::vector<std::reference_wrapper<const MeshAxis>>;
+using ArgSharding = std::vector<DimSharding>;
+// FIXME: do we have to assign the output sharding?
+using ShardingDecision = std::vector<ArgSharding>;
+
+// Profile to be serialized or deserialized, inserted.
+// TODO: currently, the key of decisions is written as a void*, this is wrong,
+// the pointer can be different in different invokes. I am considering something
+// like a hash(ModuleOp)...
+struct Profile {
+  llvm::DenseMap<void *, ShardingDecision> decisions;
+};
 
 struct L1JitMetas {
   llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
@@ -27,6 +48,14 @@ struct L2JitMetas {
   PJRT_LoadedExecutable *exe;
   std::vector<mlir::Type> kernelFuncTypes;
   std::string kernelFuncStr;
+  ShardingDecision sd;
+
+  L2JitMetas() = delete;
+  L2JitMetas(PJRT_LoadedExecutable *exe,
+             std::vector<mlir::Type> kernelFuncTypes, std::string kernelFuncStr,
+             ShardingDecision sd)
+      : exe(exe), kernelFuncTypes(std::move(kernelFuncTypes)),
+        kernelFuncStr(std::move(kernelFuncStr)), sd(std::move(sd)) {};
 };
 
 class CacheManager {
@@ -53,83 +82,77 @@ public:
                    const llvm::DenseMap<uint32_t, bool> &shapeArgInfoMap);
   L2JitMetas *tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key);
   L2JitMetas *insertL2CacheAndReturn(
-      llvm::SmallVector<uint64_t, 128> &key, PJRT_LoadedExecutable *exec,
-      std::string kernelFuncStr, mlir::func::FuncOp kernelFunc,
-      std::function<void (PJRT_LoadedExecutable *)> destroyExec);
+      const llvm::SmallVector<uint64_t, 128> &key, L2JitMetas &&l2Cache,
+      std::function<void(PJRT_LoadedExecutable *)> destroyExecCallback);
 };
 
 class DeviceManager {
+  friend class JitManager;
+
 private:
   const PJRT_Api *api_;
   PJRT_Client *client_;
   TargetDeviceType targetDeviceTy_;
   llvm::SmallVector<PJRT_Device *> pjrtDevices_ = {};
+
   // forged tgtPtr in host side -> vec{dev0Buffer, dev1Buffer, ....}
   std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
-  // TODO: can use finer granuality mtx to improve performance if necessary.
-  std::shared_mutex deviceBufferMtx;
-  void manageMultiDevicesInputBuffers(const TensorDesc *inputArgs, const int32_t inputArgCount,
-    std::vector<std::vector<PJRT_Buffer *>> &buffers, int partitionCount, int replicaCount);
-  PJRT_Buffer * createBufferFromForgedTgtPointers(int deviceIdx, PJRT_Device *device, const TensorDesc &inputArg, uint32_t offsetInByte);
-  void manageMultiDevicesOutputBuffers(int inArgsCount, PJRT_Buffer **const *outsBuffersList, TensorDesc *inputArgs, TensorDesc *outputArgs);
+  PJRT_Buffer *createBufferFromForgedTgtPointers(
+      int deviceIdx,
+      // const TensorDesc &inputArg,
+      void *dataSrc, DType elementDType, llvm::ArrayRef<int64_t> shape,
+      llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte);
 
 public:
-  DeviceManager(const PJRT_Api* api, PJRT_Client* client, TargetDeviceType targetDeviceTy);
+  DeviceManager(const PJRT_Api *api, PJRT_Client *client,
+                TargetDeviceType targetDeviceTy);
   void destroyHostBoundBuffers(void *hostPtr);
+  bool destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr);
+  void moveDataSegsToDevice(
+      const int devIdx, void *dataSrc,
+      const llvm::ArrayRef<int64_t> &tensorShape,
+      const llvm::ArrayRef<std::pair<uint32_t, uint32_t>> &tensorSlices,
+      DType elementDType);
   void moveDataToHostBuffer(void *hostPtr, size_t size);
-  [[deprecated("should use launchKernelOnMultiDevices")]]
-  void launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-                    const std::string &kernelFuncStr);
-  void launchKernelOnMultiDevices(PJRT_LoadedExecutable *exec,
-                                  KernelArgs *kernelArgs,
-                                  const std::string &kernelFuncStr);
-};
+  void moveOutBuffersToDeviceBufferMap(int devIdx, void *argPtr, int argIdx,
+                                       PJRT_Buffer **const *outsBuffersList);
+  PJRT_Buffer *createLiteralBuffer(int devIdx, const TensorDesc &inputArg);
 
-struct MeshAxis {
-  std::string name;
-  uint32_t ordinal;
-  uint32_t size;
-};
-
-// Sharding Strategy is what we would like to partition an argument
-struct ArgSharding {
-  std::vector<std::vector<const MeshAxis&>> argShards;
-};
-
-// Keeps the sharding of all arguments of a function.
-struct ShardingDecision {
-  std::vector<ArgSharding> argShardings; 
-};
-
-// Profile to be serialized or deserialized, inserted.
-// TODO: currently, the key of decisions is written as a void*, this is wrong, the pointer can be different in different invokes.
-// I am considering something like a hash(ModuleOp)...
-struct Profile {
-  llvm::DenseMap<void*, ShardingDecision> decisions;
+  [[deprecated("should use JitManager::launch")]] void
+  launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
+               const std::string &kernelFuncStr);
+  // void launchKernelOnMultiDevices(PJRT_LoadedExecutable *exec,
+  //                                 KernelArgs *kernelArgs,
+  //                                 const std::string &kernelFuncStr,
+  //                                 const ShardingDecision &shardingDecision);
 };
 
 class Sharder {
-  public:
-    Sharder(llvm::SmallVector<uint32_t> mesh);
-    ~Sharder();
-    Sharder(const Sharder&) = delete;
-    Sharder& operator=(const Sharder&) = delete;
-   
-    // heuristicShard accept a moduleOp, and return a sharding decision.
-    // The sharding decision is ideally made by using profilings.
-    ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
+  friend class JitManager;
 
-  private:
-    uint32_t deviceCount;
-    llvm::SmallVector<uint32_t> deviceMesh;
+public:
+  Sharder(uint32_t deviceSize);
+  ~Sharder();
+  Sharder(const Sharder &) = delete;
+  Sharder &operator=(const Sharder &) = delete;
 
-    Profile* profile = nullptr;
-    bool profileChangeFlag = false;
-    std::string profilePath = "";
-    
-    void addToProfile();
-    void serializeProfile();
-    Profile* deserializeProfile();
+  // heuristicShard accept a moduleOp, and return a sharding decision.
+  // The sharding decision is ideally made by using profilings.
+  ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
+
+private:
+  uint32_t deviceCount;
+  std::string meshName;
+  llvm::SmallVector<uint32_t> deviceMesh;
+  llvm::SmallVector<MeshAxis> meshAxes;
+
+  Profile *profile = nullptr;
+  bool profileChangeFlag = false;
+  std::string profilePath = "";
+
+  void addToProfile();
+  void serializeProfile();
+  Profile *deserializeProfile();
 };
 
 class JitManager {
@@ -142,13 +165,25 @@ private:
   CacheManager cacheManager;
   DeviceManager deviceManager;
   Sharder sharder;
-  L2JitMetas *createL2JitMetas(llvm::SmallVector<uint64_t, 128> &key,
+  L2JitMetas *createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
                                mlir::func::FuncOp kernelFunc);
   mlir::OwningOpRef<mlir::ModuleOp>
   preprocessModuleOp(void *JitCode, int64_t NumArgs, void **TgtArgs,
                      void **ArgPtrs, int64_t *ArgSizes, int64_t *ArgTypes);
   void destroyLoadedExecutable(PJRT_LoadedExecutable *exe);
-  PJRT_LoadedExecutable * compilePJRTExecutable(const std::string &func_code);
+  mlir::ModuleOp annoateShardyInfo(mlir::ModuleOp moduleOp,
+                                   const ShardingDecision &sd);
+  PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code);
+  void prepareInputBuffers(const TensorDesc *args, const unsigned int count,
+                           std::vector<std::vector<PJRT_Buffer *>> inBuffers,
+                           const ShardingDecision &sd);
+  void executeOnMultiDevices(PJRT_LoadedExecutable *exe,
+                             PJRT_Buffer ***argLists,
+                             PJRT_Buffer **const *outLists,
+                             const int in_args_count);
+  void manageOutBuffers(int inArgsCount, PJRT_Buffer **const *outsBuffersList,
+                        TensorDesc *inputArgs, TensorDesc *outputArgs);
+
 public:
   // Making JitManager a singleton
   JitManager(const JitManager &) = delete;
@@ -163,8 +198,9 @@ public:
 
   mlir::func::FuncOp lowerToStableHLO(mlir::ModuleOp moduleOp);
   void moveDataToHostBuffer(void *hostPtr, size_t size);
+
   void destroyHostBoundBuffers(void *hostPtr);
   void launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-              const std::string &kernelFuncStr);
+              const std::string &kernelFuncStr, const ShardingDecision &sd);
 };
 #endif

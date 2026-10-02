@@ -4,6 +4,7 @@
 #include "mlir/Parser/Parser.h"
 #include "llvm/Support/raw_ostream.h"
 #include <functional>
+#include <utility>
 
 mlir::ModuleOp CacheManager::getModuleOp(void *JitCode) {
   auto JitCodePtr = reinterpret_cast<uintptr_t>(JitCode);
@@ -93,30 +94,18 @@ CacheManager::tryGetL2JitMetas(llvm::SmallVector<uint64_t, 128> &key) {
 }
 
 L2JitMetas * CacheManager::insertL2CacheAndReturn(
-    llvm::SmallVector<uint64_t, 128> &key, 
-    PJRT_LoadedExecutable* exec, 
-    std::string kernelFuncStr,
-    mlir::func::FuncOp kernelFunc,
+    const llvm::SmallVector<uint64_t, 128> &key, 
+    L2JitMetas&& l2Cache,  
     std::function<void(PJRT_LoadedExecutable*)> destroyExec
     ) {
   std::unique_lock<std::shared_mutex> wLock(this->l2JitMetaRWMtx);
   auto it = this->l2JitMetasMap.find(key);
   if (it != l2JitMetasMap.end()) {
     // this->destroyLoadedExecutable(exec);
-    destroyExec(exec);
+    destroyExec(l2Cache.exe);
     return &(it->getSecond());
   }
   
-
-  auto funcTypes = kernelFunc.getFunctionType().getInputs();
-  std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
-
-
-  auto insertedPair = this->l2JitMetasMap.try_emplace(
-      key, (L2JitMetas){
-               .exe = exec,
-               .kernelFuncTypes = std::move(argTypesVec),
-               .kernelFuncStr = std::move(kernelFuncStr),
-           });
+  auto insertedPair = this->l2JitMetasMap.try_emplace(key, std::move(l2Cache));
   return &(insertedPair.first->getSecond());
 };
