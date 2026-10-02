@@ -657,10 +657,10 @@ void JitManager::destroyHostBoundBuffers(void *hostPtr) {
 // TODO: for each device, we probably should use thread to do the IO
 static void prepareInputBuffersForSingleDevice(
     int devIdx, DeviceManager &devManager, const TensorDesc *args,
-    const unsigned int count, std::vector<std::vector<PJRT_Buffer *>> inBuffers,
+    const unsigned int count, std::vector<std::vector<PJRT_Buffer *>>& inBuffers,
     const ShardingDecision &sd, const llvm::SmallVector<size_t> &devPos) {
 
-  for (int argIdx; argIdx < count; argIdx++) {
+  for (int argIdx = 0; argIdx < count; argIdx++) {
     auto arg = args[argIdx];
     auto argSD = sd[argIdx];
 
@@ -670,7 +670,7 @@ static void prepareInputBuffersForSingleDevice(
     }
 
     // slices of the tensor on each dimension for this argument tensor
-    llvm::SmallVector<std::pair<uint32_t, uint32_t>> tensorSlices(arg.rank);
+    llvm::SmallVector<std::pair<size_t, size_t>> tensorSlices(arg.rank);
     for (int argDimIdx = 0; argDimIdx < arg.rank; argDimIdx++) {
       const auto &dimSD = argSD[argDimIdx];
       if (dimSD.empty()) {
@@ -696,11 +696,12 @@ static void prepareInputBuffersForSingleDevice(
 
         // in most cases, we only have 1 or 2 dims, no need to cache the prefix
         // prod
-        tensorSlices[argDimIdx] = std::make_pair(offset, offset + sliceStep);
+        auto start = offset * sliceStep;
+        tensorSlices[argDimIdx] = std::make_pair(start, start + sliceStep);
       }
     }
-    devManager.moveDataSegsToDevice(devIdx, arg.data, arg.shape, tensorSlices,
-                                    arg.dtype);
+    inBuffers[devIdx][argIdx] = devManager.moveDataSegsToDevice(
+        devIdx, arg.data, arg.shape, tensorSlices, arg.dtype);
 
     /**
      * No need to map to 1-dimensional memory as API can help us.
@@ -784,7 +785,7 @@ static void prepareInputBuffersForSingleDevice(
 
 void JitManager::prepareInputBuffers(
     const TensorDesc *args, const unsigned int count,
-    std::vector<std::vector<PJRT_Buffer *>> inBuffers,
+    std::vector<std::vector<PJRT_Buffer *>>& inBuffers,
     const ShardingDecision &sd) {
   // TODO: be compatible with existing plugins.
   // currently only consider TPU runtime plugin
@@ -828,8 +829,7 @@ void JitManager::executeOnMultiDevices(PJRT_LoadedExecutable *exe,
       .struct_size = PJRT_ExecuteOptions_STRUCT_SIZE,
   };
   const int deviceCount = this->deviceManager.pjrtDevices_.size();
-  // int deviceCount = 2;
-  std::vector<PJRT_Event *> deviceCompleteEvents(deviceCount);
+  llvm::SmallVector<PJRT_Event *> deviceCompleteEvents(deviceCount);
 
   PJRT_LoadedExecutable_Execute_Args leeas = {
       .struct_size =

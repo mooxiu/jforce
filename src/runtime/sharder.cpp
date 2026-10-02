@@ -3,6 +3,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
+#include "support/utilities.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -17,6 +18,7 @@
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
 Sharder::Sharder(uint32_t deviceCount) {
+  DEBUG_PRINT(llvm::formatv("Initializing Sharder. We got {0} devices.", deviceCount));
   this->deviceCount = deviceCount;
   this->deviceMesh = {deviceCount};
 
@@ -25,12 +27,11 @@ Sharder::Sharder(uint32_t deviceCount) {
   this->meshName = name.str();
 
   llvm::SmallVector<MeshAxis> meshAxes;
-  meshAxes.resize(deviceCount);
+  meshAxes.reserve(deviceCount);
   for (int i = 0; i < deviceMesh.size(); i++) {
-    meshAxes[i] = MeshAxis{.name = llvm::formatv("axis-{0}", i),
-                           .ordinal = i,
-                           .size = deviceMesh[i]};
+    meshAxes.emplace_back(llvm::formatv("axis-{0}", i), i, deviceMesh[i]);
   }
+  this->meshAxes = std::move(meshAxes);
 
   if (std::any_of(deviceMesh.begin(), deviceMesh.end(),
                   [](uint32_t i) { return i == 0; })) {

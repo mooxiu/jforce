@@ -11,6 +11,7 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <shared_mutex>
@@ -22,6 +23,9 @@ struct MeshAxis {
   std::string name;
   int ordinal;
   int64_t size;
+
+  MeshAxis(std::string name_, int ordinal_, int64_t size_)
+      : name(name_), ordinal(ordinal_), size(size_) {};
 };
 
 // Each arg is a nested dimenisonal arrary.
@@ -108,10 +112,10 @@ public:
                 TargetDeviceType targetDeviceTy);
   void destroyHostBoundBuffers(void *hostPtr);
   bool destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr);
-  void moveDataSegsToDevice(
+  PJRT_Buffer* moveDataSegsToDevice(
       const int devIdx, void *dataSrc,
       const llvm::ArrayRef<int64_t> &tensorShape,
-      const llvm::ArrayRef<std::pair<uint32_t, uint32_t>> &tensorSlices,
+      const llvm::ArrayRef<std::pair<size_t, size_t>> &tensorSlices,
       DType elementDType);
   void moveDataToHostBuffer(void *hostPtr, size_t size);
   void moveOutBuffersToDeviceBufferMap(int devIdx, void *argPtr, int argIdx,
@@ -175,7 +179,7 @@ private:
                                    const ShardingDecision &sd);
   PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code);
   void prepareInputBuffers(const TensorDesc *args, const unsigned int count,
-                           std::vector<std::vector<PJRT_Buffer *>> inBuffers,
+                           std::vector<std::vector<PJRT_Buffer *>>& inBuffers,
                            const ShardingDecision &sd);
   void executeOnMultiDevices(PJRT_LoadedExecutable *exe,
                              PJRT_Buffer ***argLists,

@@ -143,9 +143,13 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
         .dims = hypercubeDims.data(),
         .num_dims = rank,
         .byte_strides = byteStrides.data(),
+        .num_byte_strides = byteStrides.size(),
         .device = pjrtDevices_[deviceIdx]};
     auto err = api_->PJRT_Client_BufferFromHostBuffer(&args);
-    assert(!err);
+    if (err) {
+      llvm::errs() << "BufferFromHostBuffer fails: " << JitManager::getErrMsg(api_, err) << "\n";
+      std::abort();
+    }
     buffers[deviceIdx] = args.buffer;
   }
 
@@ -469,9 +473,9 @@ DeviceManager::DeviceManager(const PJRT_Api *api, PJRT_Client *client,
 // }
 //
 
-void DeviceManager::moveDataSegsToDevice(
+PJRT_Buffer *DeviceManager::moveDataSegsToDevice(
     const int devIdx, void *dataSrc, const llvm::ArrayRef<int64_t> &tensorShape,
-    const llvm::ArrayRef<std::pair<uint32_t, uint32_t>> &tensorSlices,
+    const llvm::ArrayRef<std::pair<size_t, size_t>> &tensorSlices,
     DType elementDType) {
   assert(tensorShape.size() == tensorSlices.size());
   auto elementSizeInByte = getDTypeSizeInByte(elementDType);
@@ -479,7 +483,7 @@ void DeviceManager::moveDataSegsToDevice(
   llvm::SmallVector<int64_t> byteStrides(tensorShape.size());
   for (int i = byteStrides.size() - 1; i >= 0; --i) {
     byteStrides[i] = elementSizeInByte;
-    if (i != byteStrides.size()) {
+    if (i != byteStrides.size() - 1) {
       byteStrides[i] = tensorShape[i + 1] * byteStrides[i + 1];
     }
   }
@@ -491,8 +495,8 @@ void DeviceManager::moveDataSegsToDevice(
   for (int i = 0; i < tensorSlices.size(); i++) {
     offsetInByte += tensorSlices[i].first * byteStrides[i];
   }
-  createBufferFromForgedTgtPointers(devIdx, dataSrc, elementDType, dims,
-                                    byteStrides, offsetInByte);
+  return createBufferFromForgedTgtPointers(devIdx, dataSrc, elementDType, dims,
+                                           byteStrides, offsetInByte);
 };
 
 void DeviceManager::moveOutBuffersToDeviceBufferMap(
