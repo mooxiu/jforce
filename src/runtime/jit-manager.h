@@ -103,13 +103,13 @@ private:
   std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
   PJRT_Buffer *createBufferFromForgedTgtPointers(
       int deviceIdx,
-      // const TensorDesc &inputArg,
       void *dataSrc, DType elementDType, llvm::ArrayRef<int64_t> shape,
       llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte);
 
 public:
   DeviceManager(const PJRT_Api *api, PJRT_Client *client,
                 TargetDeviceType targetDeviceTy);
+  bool invalidateDeviceBuffers(void* forgedTgtPtr, size_t size);
   void destroyHostBoundBuffers(void *hostPtr);
   bool destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr);
   PJRT_Buffer* moveDataSegsToDevice(
@@ -122,14 +122,7 @@ public:
                                        PJRT_Buffer **const *outsBuffersList);
   PJRT_Buffer *createLiteralBuffer(int devIdx, const TensorDesc &inputArg);
 
-  [[deprecated("should use JitManager::launch")]] void
-  launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-               const std::string &kernelFuncStr);
-  // void launchKernelOnMultiDevices(PJRT_LoadedExecutable *exec,
-  //                                 KernelArgs *kernelArgs,
-  //                                 const std::string &kernelFuncStr,
-  //                                 const ShardingDecision &shardingDecision);
-};
+ };
 
 class Sharder {
   friend class JitManager;
@@ -201,9 +194,15 @@ public:
                                  int64_t *ArgTypes);
 
   mlir::func::FuncOp lowerToStableHLO(mlir::ModuleOp moduleOp);
+  bool invalidateCachedDeviceBuffers(void *forgedTgtPtr, size_t size);
   void moveDataToHostBuffer(void *hostPtr, size_t size);
 
   void destroyHostBoundBuffers(void *hostPtr);
+
+  [[deprecated("should use JitManager::launch")]] void
+  launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
+               const std::string &kernelFuncStr);
+
   void launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
               const std::string &kernelFuncStr, const ShardingDecision &sd);
 };

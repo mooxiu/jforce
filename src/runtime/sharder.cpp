@@ -51,7 +51,6 @@ Sharder::~Sharder() {
 }
 
 ShardingDecision Sharder::heuristicShard(mlir::ModuleOp moduleOp) {
-  // TODO: implement this
   auto kernelFunc = moduleOp.lookupSymbol<mlir::func::FuncOp>("main");
   assert(kernelFunc && "sharder should be able to find the main function");
   for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {

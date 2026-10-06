@@ -11,10 +11,12 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 
 using namespace mlir;
 
@@ -73,10 +75,19 @@ static void checkDeletgatedLaunchInputs(void *JitCode, int64_t NumArgs,
 //
 
 extern "C" {
+// tgtPtr, hostPtr in this context are the same.
+// For JForce, it interacts with a forged pointer of OpenMP offloading runtime plugin,
+// hostPtr, tgtPtr, forgedTgtPtr are used interchangeably for now.
+__attribute__((visibility("default"))) bool InvalidateBuffer(void *tgtPtr, int64_t size) {
+  return JitManager::getInstance().invalidateCachedDeviceBuffers(tgtPtr, size);
+}
 
 __attribute__((visibility("default"))) void RetrieveData(void *hostPtr,
                                                          size_t size) {
-  DEBUG_PRINT(llvm::formatv("retrieve data of size: {0}", size));
+  ;
+  DEBUG_PRINT(
+      llvm::formatv("retrieve data for pointer address: {0}, of size: {1}",
+                    reinterpret_cast<std::uintptr_t>(hostPtr), size));
   JitManager::getInstance().moveDataToHostBuffer(hostPtr, size);
 }
 

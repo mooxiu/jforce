@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 bool DeviceManager::destroyPJRTBuffer(const PJRT_Api *api,
@@ -147,7 +148,8 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
         .device = pjrtDevices_[deviceIdx]};
     auto err = api_->PJRT_Client_BufferFromHostBuffer(&args);
     if (err) {
-      llvm::errs() << "BufferFromHostBuffer fails: " << JitManager::getErrMsg(api_, err) << "\n";
+      llvm::errs() << "BufferFromHostBuffer fails: "
+                   << JitManager::getErrMsg(api_, err) << "\n";
       std::abort();
     }
     buffers[deviceIdx] = args.buffer;
@@ -472,6 +474,43 @@ DeviceManager::DeviceManager(const PJRT_Api *api, PJRT_Client *client,
 //   return;
 // }
 //
+
+bool DeviceManager::invalidateDeviceBuffers(void *forgedTgtPtr, size_t size) {
+  auto cachedBufferListIt = deviceBuffersMap.find(forgedTgtPtr);
+  if (cachedBufferListIt == deviceBuffersMap.end()) {
+    DEBUG_PRINT(
+        llvm::formatv("ForgedTgtPtr {0} not found in cached buffer list.",
+                      reinterpret_cast<std::intptr_t>(forgedTgtPtr)));
+    return true;
+  }
+  auto cachedBufferList = std::move(cachedBufferListIt->second);
+#ifdef ENABLE_XLA_DEBUG
+  PJRT_Buffer_OnDeviceSizeInBytes_Args arg = {
+      .struct_size = PJRT_Buffer_OnDeviceSizeInBytes_Args_STRUCT_SIZE,
+      .buffer = cachedBufferList[0],
+  };
+  auto err = this->api_->PJRT_Buffer_OnDeviceSizeInBytes(&arg);
+  assert(!err);
+  auto totalSizeSansPadding =
+      arg.on_device_size_in_bytes * cachedBufferList.size();
+  if (totalSizeSansPadding < size) {
+    // this is weird
+    DEBUG_PRINT(llvm::formatv(
+        "Total device size is smaller than the expected size! dev 0 buffer "
+        "size: {0}, dev count: {1}, expected size: {2}",
+        arg.on_device_size_in_bytes, cachedBufferList.size(), size));
+  }
+#endif
+  deviceBuffersMap.erase(cachedBufferListIt);
+  for (auto *buffer : cachedBufferList) {
+    PJRT_Buffer_Destroy_Args destroyBuffer = {
+        .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
+        .buffer = buffer
+    };
+    api_->PJRT_Buffer_Destroy(&destroyBuffer);
+  }
+  return true;
+};
 
 PJRT_Buffer *DeviceManager::moveDataSegsToDevice(
     const int devIdx, void *dataSrc, const llvm::ArrayRef<int64_t> &tensorShape,

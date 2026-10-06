@@ -21,7 +21,6 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/bit.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
 #include <chrono>
@@ -30,10 +29,7 @@
 #include <cstdio>
 #include <dlfcn.h>
 #include <iostream>
-#include <iterator>
-#include <numeric>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -69,7 +65,7 @@ static void printBufferShape(const PJRT_Api *api, PJRT_Buffer *buffer,
   }
 }
 
-std::string getPluginPath() {
+static std::string getPluginPath() {
   const char *path = std::getenv("PJRT_PLUGIN_PATH");
 
   if (!path || *path == '\0') {
@@ -214,7 +210,7 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
     build_opts->set_num_replicas(1);
     // build_opts->set_num_partitions(1);
 
-    build_opts->set_num_partitions(3);
+    build_opts->set_num_partitions(deviceManager.pjrtDevices_.size());
     build_opts->set_use_spmd_partitioning(true);
     build_opts->set_use_shardy_partitioner(true);
     build_opts->allow_spmd_sharding_propagation_to_output();
@@ -387,147 +383,6 @@ JitManager::preprocessModuleOp(void *JitCode, int64_t NumArgs, void **TgtArgs,
   return moduleOpRef;
 }
 
-// mlir::func::FuncOp hardcodedShard(mlir::func::FuncOp kernelFunc,
-//                                   mlir::OpBuilder &opBuilder) {
-//   // add the gloabal constraint
-//   auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
-//   assert(moduleOp && "suppose module exists");
-//   auto *ctx = opBuilder.getContext();
-//   ctx->getOrLoadDialect<mlir::sdy::SdyDialect>();
-//
-//   mlir::OpBuilder::InsertionGuard lock(opBuilder);
-//   opBuilder.setInsertionPointToStart(moduleOp.getBody(0));
-//
-//   auto meshName = "dummyMeshName";
-//   mlir::sdy::MeshOp::create(
-//       opBuilder, moduleOp.getLoc(), meshName,
-//       mlir::sdy::MeshAttr::get(ctx,
-//                                {mlir::sdy::MeshAxisAttr::get(ctx, "data",
-//                                3)}));
-//
-//   // add sharding or replica to each one
-//   // for simplicity, we shard on all tensors, replicate on all scalars
-//   auto displayAr = [](::llvm::ArrayRef<int64_t> arr) -> std::string {
-//     std::stringstream ss;
-//     for (int i = 0; i < arr.size(); i++) {
-//       if (i != 0) {
-//         ss << "x";
-//       }
-//       ss << arr[i];
-//     }
-//     return ss.str();
-//   };
-//
-//   auto dataAxisAttr = mlir::sdy::AxisRefAttr::get(
-//       /*context=*/ctx,
-//       /*name=*/"data",
-//       /*sub_axis_info=*/{});
-//
-//   for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {
-//     auto arg = kernelFunc.getArgument(i);
-//     auto argTy = llvm::cast<mlir::RankedTensorType>(arg.getType());
-//     assert(argTy && "we're suppose to be dealing with StableHLO function");
-//     DEBUG_PRINT(llvm::formatv("ArgIdx: {0}, the rank: {1}, the shape: {2}",
-//     i,
-//                               argTy.getRank(), displayAr(argTy.getShape())));
-//     if (argTy.getRank() > 0) {
-//       // Sharding
-//       kernelFunc.setArgAttr(
-//           i,
-//           mlir::sdy::TensorShardingAttr::name, // "sdy.sharding"
-//           mlir::sdy::TensorShardingAttr::get(
-//               /*context=*/ctx,
-//               /*mesh_name=*/meshName,
-//               /*dim_shardings=*/
-//               {mlir::sdy::DimensionShardingAttr::get(
-//                   /*context=*/ctx,
-//                   /*axes=*/{dataAxisAttr},
-//                   /*is_closed=*/true, // INFO: I think this means shardy can
-//                   not
-//                                       // add new things
-//                   /*priority=*/std::nullopt)},
-//               /*replicated_axes=*/{},
-//               /*unreduced_axes=*/{}));
-//     } else {
-//       // Replicate
-//       kernelFunc.setArgAttr(
-//           i,
-//           mlir::sdy::TensorShardingAttr::name, // "sdy.sharding"
-//           mlir::sdy::TensorShardingAttr::get(
-//               /*context=*/ctx,
-//               /*mesh_name=*/meshName,
-//               /*dim_shardings=*/{},
-//               /*replicated_axes=*/{dataAxisAttr},
-//               /*unreduced_axes=*/{}));
-//     }
-//   }
-//   return kernelFunc;
-// }
-//
-// mlir::func::FuncOp hardcodedReplica(mlir::func::FuncOp kernelFunc,
-//                                     mlir::OpBuilder &opBuilder) {
-//   // add the gloabal constraint
-//   auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
-//   assert(moduleOp && "suppose module exists");
-//   auto *ctx = opBuilder.getContext();
-//   ctx->getOrLoadDialect<mlir::sdy::SdyDialect>();
-//
-//   mlir::OpBuilder::InsertionGuard lock(opBuilder);
-//   opBuilder.setInsertionPointToStart(moduleOp.getBody(0));
-//
-//   auto meshName = "dummyMeshName";
-//   mlir::sdy::MeshOp::create(
-//       opBuilder, moduleOp.getLoc(), meshName,
-//       mlir::sdy::MeshAttr::get(ctx,
-//                                {mlir::sdy::MeshAxisAttr::get(ctx, "data",
-//                                3)}));
-//
-//   // add sharding or replica to each one
-//   // for simplicity, we shard on all tensors, replicate on all scalars
-//   auto displayAr = [](::llvm::ArrayRef<int64_t> arr) -> std::string {
-//     std::stringstream ss;
-//     for (int i = 0; i < arr.size(); i++) {
-//       if (i != 0) {
-//         ss << "x";
-//       }
-//       ss << arr[i];
-//     }
-//     return ss.str();
-//   };
-//
-//   auto dataAxisAttr = mlir::sdy::AxisRefAttr::get(
-//       /*context=*/ctx,
-//       /*name=*/"data",
-//       /*sub_axis_info=*/{});
-//
-//   for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {
-//     auto arg = kernelFunc.getArgument(i);
-//     auto argTy = llvm::cast<mlir::RankedTensorType>(arg.getType());
-//     assert(argTy && "we're suppose to be dealing with StableHLO function");
-//     DEBUG_PRINT(llvm::formatv("ArgIdx: {0}, the rank: {1}, the shape: {2}",
-//     i,
-//                               argTy.getRank(), displayAr(argTy.getShape())));
-//     // Replicate
-//     llvm::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings;
-//     for (int64_t d = 0; d < argTy.getRank(); ++d) {
-//       dimShardings.push_back(
-//           mlir::sdy::DimensionShardingAttr::get(ctx,
-//                                                 /*axes=*/{},
-//                                                 /*is_closed=*/true,
-//                                                 /*priority=*/std::nullopt));
-//     }
-//     kernelFunc.setArgAttr(i,
-//                           mlir::sdy::TensorShardingAttr::name, //
-//                           "sdy.sharding" mlir::sdy::TensorShardingAttr::get(
-//                               /*context=*/ctx,
-//                               /*mesh_name=*/meshName,
-//                               /*dim_shardings=*/dimShardings,
-//                               /*replicated_axes=*/{dataAxisAttr},
-//                               /*unreduced_axes=*/{}));
-//   }
-//   return kernelFunc;
-// }
-
 mlir::ModuleOp JitManager::annoateShardyInfo(mlir::ModuleOp moduleOp,
                                              const ShardingDecision &sd) {
   OpBuilder opBuilder(&context);
@@ -652,6 +507,10 @@ void JitManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
 
 void JitManager::destroyHostBoundBuffers(void *hostPtr) {
   deviceManager.destroyHostBoundBuffers(hostPtr);
+}
+
+bool JitManager::invalidateCachedDeviceBuffers(void *forgedTgtPtr, size_t size) {
+  return deviceManager.invalidateDeviceBuffers(forgedTgtPtr, size);
 }
 
 // TODO: for each device, we probably should use thread to do the IO
