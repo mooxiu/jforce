@@ -1,8 +1,10 @@
 #include "../support/utilities.h"
+#include "flang/Support/Fortran.h"
 #include "jit-manager.h"
 #include "runtime/jit-manager.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -11,8 +13,94 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <thread>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
+#include <utility>
 #include <vector>
+
+static void destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr) {
+  PJRT_Buffer_Destroy_Args args = {
+      .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE, .buffer = dataPtr};
+  api->PJRT_Buffer_Destroy(&args);
+}
+
+static void destroyPJRTBuffers(const PJRT_Api *api,
+                               std::vector<DeviceBufferSlot> buffers) {
+  for (auto& buffer : buffers) {
+    destroyPJRTBuffer(api, buffer.bufferPtr);
+  }
+}
+
+std::optional<std::vector<DeviceBufferSlot>>
+DeviceBuffersCache::getBuffers(void *dataSrc) {
+  std::shared_lock<std::shared_mutex> rLock(this->mtx);
+  auto it = this->deviceBuffersMap.find(dataSrc);
+  if (it != deviceBuffersMap.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
+std::optional<DeviceBufferSlot>
+DeviceBuffersCache::getBuffer(void *dataSrc, int devIdx) {
+  std::shared_lock<std::shared_mutex> rLock(this->mtx);
+  auto it = this->deviceBuffersMap.find(dataSrc);
+  if (it != deviceBuffersMap.end()) {
+    auto buffers = it->second;
+    if (buffers.size() - 1 < devIdx) {
+      DEBUG_PRINT("DevIdx exceed the buffers size!\n");
+      return std::nullopt;
+    }
+    return buffers.at(devIdx);
+  }
+  return std::nullopt;
+}
+
+// Try insert or update with buffer.
+// If buffer already exists in the slot and the same with prepared buffer, do nothing.
+// Else, insert or update.
+DeviceBufferSlot DeviceBuffersCache::tryInsertOrUpdate(const PJRT_Api* api, void* dataSrc, int devIdx, int devCount, PJRT_Buffer* buffer) {
+  if (devIdx > devCount - 1) {
+    llvm::errs() << "Invalid devIdx and devCount.\n";
+    std::exit(EXIT_FAILURE);
+  }
+  std::optional<DeviceBufferSlot> bufferOptional = getBuffer(dataSrc, devIdx); 
+  if (bufferOptional.has_value() && bufferOptional.value().bufferPtr == buffer) {
+    return bufferOptional.value();
+  }
+
+  std::unique_lock<std::shared_mutex> wLock(this->mtx);
+  auto it = deviceBuffersMap.find(dataSrc);
+  if (it != deviceBuffersMap.end()) {
+    auto& buffers = it->second;
+    assert(buffers.size() == devCount);
+    if (buffers[devIdx].bufferPtr == buffer) {
+      return buffers[devIdx];
+    } 
+    destroyPJRTBuffer(api, buffers[devIdx].bufferPtr);
+    buffers[devIdx].bufferPtr = buffer;
+    return buffers[devIdx];
+  } else {
+    // cache not exist
+    std::vector<DeviceBufferSlot> buffers(devCount, DeviceBufferSlot{nullptr});
+    deviceBuffersMap[dataSrc] = std::move(buffers);
+    deviceBuffersMap[dataSrc][devIdx] = DeviceBufferSlot{std::move(buffer)};
+    return deviceBuffersMap[dataSrc][devIdx];
+  }
+}
+
+void DeviceBuffersCache::deleteEntry(void *dataSrc, const PJRT_Api *api_) {
+  std::unique_lock<std::shared_mutex> wLock(this->mtx);
+  auto it = deviceBuffersMap.find(dataSrc);
+  if (it == deviceBuffersMap.end()) {
+    return;
+  }
+  auto buffers = std::move(it->second);
+  deviceBuffersMap.erase(it);
+  wLock.unlock();
+  destroyPJRTBuffers(api_, buffers);
+}
 
 bool DeviceManager::destroyPJRTBuffer(const PJRT_Api *api,
                                       PJRT_Buffer *dataPtr) {
@@ -124,38 +212,29 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
   size_t rank = hypercubeDims.size();
   // pointing to a memory on host, host does not know the size
   // To make it work on TPU, we have to do it here
-  auto it = deviceBuffersMap.find(dataSrc);
-  if (it == deviceBuffersMap.end()) {
-    deviceBuffersMap[dataSrc] =
-        std::vector<PJRT_Buffer *>(pjrtDevices_.size(), nullptr);
+  auto cache = deviceBuffersCache.getBuffer(dataSrc, deviceIdx);
+  if (cache.has_value() && cache.value().bufferPtr != nullptr) {
+    return cache.value().bufferPtr;
   }
-  assert(deviceBuffersMap.find(dataSrc) != deviceBuffersMap.end());
-  std::vector<PJRT_Buffer *> &buffers = deviceBuffersMap[dataSrc];
-  assert(buffers.size() > deviceIdx);
-  assert(buffers.size() == pjrtDevices_.size());
-
-  if (!buffers[deviceIdx]) {
-    auto args = PJRT_Client_BufferFromHostBuffer_Args{
-        .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
-        .client = client_,
-        .data = static_cast<void *>(static_cast<std::byte *>(dataSrc) +
-                                    offsetInByte),
-        .type = getPJRTBufferType(elementDType),
-        .dims = hypercubeDims.data(),
-        .num_dims = rank,
-        .byte_strides = byteStrides.data(),
-        .num_byte_strides = byteStrides.size(),
-        .device = pjrtDevices_[deviceIdx]};
-    auto err = api_->PJRT_Client_BufferFromHostBuffer(&args);
-    if (err) {
-      llvm::errs() << "BufferFromHostBuffer fails: "
-                   << JitManager::getErrMsg(api_, err) << "\n";
-      std::abort();
-    }
-    buffers[deviceIdx] = args.buffer;
+  auto args = PJRT_Client_BufferFromHostBuffer_Args{
+      .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
+      .client = client_,
+      .data = static_cast<void *>(static_cast<std::byte *>(dataSrc) +
+                                  offsetInByte),
+      .type = getPJRTBufferType(elementDType),
+      .dims = hypercubeDims.data(),
+      .num_dims = rank,
+      .byte_strides = byteStrides.data(),
+      .num_byte_strides = byteStrides.size(),
+      .device = pjrtDevices_[deviceIdx]};
+  auto err = api_->PJRT_Client_BufferFromHostBuffer(&args);
+  if (err) {
+    llvm::errs() << "BufferFromHostBuffer fails: "
+                 << JitManager::getErrMsg(api_, err) << "\n";
+    std::abort();
   }
-
-  return buffers[deviceIdx];
+  auto updated = deviceBuffersCache.tryInsertOrUpdate(api_, dataSrc, deviceIdx, pjrtDevices_.size(), args.buffer);
+  return updated.bufferPtr;
 }
 
 // For filtering out the target device.
@@ -476,39 +555,7 @@ DeviceManager::DeviceManager(const PJRT_Api *api, PJRT_Client *client,
 //
 
 bool DeviceManager::invalidateDeviceBuffers(void *forgedTgtPtr, size_t size) {
-  auto cachedBufferListIt = deviceBuffersMap.find(forgedTgtPtr);
-  if (cachedBufferListIt == deviceBuffersMap.end()) {
-    DEBUG_PRINT(
-        llvm::formatv("ForgedTgtPtr {0} not found in cached buffer list.",
-                      reinterpret_cast<std::intptr_t>(forgedTgtPtr)));
-    return true;
-  }
-  auto cachedBufferList = std::move(cachedBufferListIt->second);
-#ifdef ENABLE_XLA_DEBUG
-  PJRT_Buffer_OnDeviceSizeInBytes_Args arg = {
-      .struct_size = PJRT_Buffer_OnDeviceSizeInBytes_Args_STRUCT_SIZE,
-      .buffer = cachedBufferList[0],
-  };
-  auto err = this->api_->PJRT_Buffer_OnDeviceSizeInBytes(&arg);
-  assert(!err);
-  auto totalSizeSansPadding =
-      arg.on_device_size_in_bytes * cachedBufferList.size();
-  if (totalSizeSansPadding < size) {
-    // this is weird
-    DEBUG_PRINT(llvm::formatv(
-        "Total device size is smaller than the expected size! dev 0 buffer "
-        "size: {0}, dev count: {1}, expected size: {2}",
-        arg.on_device_size_in_bytes, cachedBufferList.size(), size));
-  }
-#endif
-  deviceBuffersMap.erase(cachedBufferListIt);
-  for (auto *buffer : cachedBufferList) {
-    PJRT_Buffer_Destroy_Args destroyBuffer = {
-        .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-        .buffer = buffer
-    };
-    api_->PJRT_Buffer_Destroy(&destroyBuffer);
-  }
+  deviceBuffersCache.deleteEntry(forgedTgtPtr, this->api_);
   return true;
 };
 
@@ -541,63 +588,60 @@ PJRT_Buffer *DeviceManager::moveDataSegsToDevice(
 void DeviceManager::moveOutBuffersToDeviceBufferMap(
     int devIdx, void *argPtr, int argIdx,
     PJRT_Buffer **const *outsBuffersList) {
-  if (deviceBuffersMap[argPtr][devIdx] != outsBuffersList[devIdx][argIdx]) {
-    auto oldHandle = deviceBuffersMap[argPtr][devIdx];
-    PJRT_Buffer_Destroy_Args destroyArg = {
-        .struct_size = PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-        .buffer = oldHandle,
-    };
-    auto err = api_->PJRT_Buffer_Destroy(&destroyArg);
-    assert(!err);
-    deviceBuffersMap[argPtr][devIdx] = outsBuffersList[devIdx][argIdx];
-  }
+  assert(outsBuffersList[devIdx][argIdx] && "buffer not exists in outsBuffersList!");
+  auto outsBuffer = outsBuffersList[devIdx][argIdx];
+  deviceBuffersCache.tryInsertOrUpdate(api_, argPtr, devIdx, pjrtDevices_.size(), outsBuffer);
 }
 
 void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
-  auto it = deviceBuffersMap.find(hostPtr);
-  if (it == deviceBuffersMap.end()) {
+  auto buffersOptional = deviceBuffersCache.getBuffers(hostPtr);
+  if (!buffersOptional.has_value()) {
     llvm::errs() << "Can not find related buffer!\n";
     return;
   }
-  const auto &buffers = it->second;
+  
+  auto buffers = buffersOptional.value();
+  llvm::SmallVector<PJRT_Event *> events;
+  events.reserve(buffers.size());
   size_t offset = 0;
-  // TODO: delete hard coded part after test
-  size_t bufferSize = size / buffers.size();
+  int currIdx = 0;
+  while (offset < size) {
+    auto buffer = buffers[currIdx];
+    assert(buffer.bufferPtr != nullptr);
+    PJRT_Buffer_OnDeviceSizeInBytes_Args getSizeArg = {
+      .struct_size = PJRT_Buffer_OnDeviceSizeInBytes_Args_STRUCT_SIZE,
+      .buffer = buffer.bufferPtr
+    };
+    auto err = api_->PJRT_Buffer_OnDeviceSizeInBytes(&getSizeArg);
+    if (err) {
+      llvm::errs() << "Error in getting buffer's size: " << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+      std::exit(EXIT_FAILURE);
+    }
 
-  llvm::SmallVector<PJRT_Event *> events(buffers.size());
-  for (int devIdx = 0; devIdx < buffers.size(); devIdx++) {
-    PJRT_Buffer *buffer = buffers.at(devIdx);
-
-    auto args = PJRT_Buffer_ToHostBuffer_Args{
-        .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
-        .src = buffer,
-        .dst = static_cast<void *>(static_cast<std::byte *>(hostPtr) + offset),
-        .dst_size = bufferSize};
-    auto *err = api_->PJRT_Buffer_ToHostBuffer(&args);
-    assert(!err);
-    events[devIdx] = args.event;
-    offset += bufferSize;
+    PJRT_Buffer_ToHostBuffer_Args toHostArg = {
+      .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
+      .src = buffer.bufferPtr,
+      .dst = static_cast<void *>(static_cast<std::byte *>(hostPtr) + offset),
+      .dst_size = getSizeArg.on_device_size_in_bytes
+    };
+    err = api_->PJRT_Buffer_ToHostBuffer(&toHostArg);
+    if (err) {
+      llvm::errs() << "Error in moving buffer to host: " << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+      std::exit(EXIT_FAILURE);
+    }
+    events.push_back(std::move(toHostArg.event));
+    offset += getSizeArg.on_device_size_in_bytes;
+    currIdx += 1;
   }
-
-  for (int devIdx = 0; devIdx < buffers.size(); devIdx++) {
+  for (int eventIdx= 0; eventIdx < events.size(); eventIdx++) {
     auto awaitArgs =
         PJRT_Event_Await_Args{.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
-                              .event = events[devIdx]};
+                              .event = events[eventIdx]};
     auto *err2 = api_->PJRT_Event_Await(&awaitArgs);
     assert(!err2);
   }
 }
 
 void DeviceManager::destroyHostBoundBuffers(void *hostPtr) {
-  auto it = deviceBuffersMap.find(hostPtr);
-  if (it != deviceBuffersMap.end()) {
-    for (auto bufferPtr : it->second) {
-      PJRT_Buffer_Destroy_Args args = {.struct_size =
-                                           PJRT_Buffer_Destroy_Args_STRUCT_SIZE,
-                                       .extension_start = nullptr,
-                                       .buffer = bufferPtr};
-      api_->PJRT_Buffer_Destroy(&args);
-    }
-    deviceBuffersMap.erase(it);
-  }
+  this->invalidateDeviceBuffers(hostPtr, 0);
 };

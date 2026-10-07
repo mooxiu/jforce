@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <utility>
@@ -90,6 +91,22 @@ public:
       std::function<void(PJRT_LoadedExecutable *)> destroyExecCallback);
 };
 
+struct DeviceBufferSlot {
+  PJRT_Buffer* bufferPtr;
+};
+
+class DeviceBuffersCache {
+private:
+  std::shared_mutex mtx;
+  std::unordered_map<void *, std::vector<DeviceBufferSlot>> deviceBuffersMap;
+
+public:
+  std::optional<std::vector<DeviceBufferSlot>> getBuffers(void *dataSrc);
+  std::optional<DeviceBufferSlot> getBuffer(void *dataSrc, int devIdx);
+  DeviceBufferSlot tryInsertOrUpdate(const PJRT_Api* api, void* dataSrc, int devIdx, int devCount, PJRT_Buffer* buffer);
+  void deleteEntry(void *dataSrc, const PJRT_Api *api_);
+};
+
 class DeviceManager {
   friend class JitManager;
 
@@ -98,21 +115,22 @@ private:
   PJRT_Client *client_;
   TargetDeviceType targetDeviceTy_;
   llvm::SmallVector<PJRT_Device *> pjrtDevices_ = {};
+  DeviceBuffersCache deviceBuffersCache;
 
   // forged tgtPtr in host side -> vec{dev0Buffer, dev1Buffer, ....}
-  std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
+  // std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
   PJRT_Buffer *createBufferFromForgedTgtPointers(
-      int deviceIdx,
-      void *dataSrc, DType elementDType, llvm::ArrayRef<int64_t> shape,
-      llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte);
+      int deviceIdx, void *dataSrc, DType elementDType,
+      llvm::ArrayRef<int64_t> shape, llvm::ArrayRef<int64_t> byteStrides,
+      uint32_t offsetInByte);
 
 public:
   DeviceManager(const PJRT_Api *api, PJRT_Client *client,
                 TargetDeviceType targetDeviceTy);
-  bool invalidateDeviceBuffers(void* forgedTgtPtr, size_t size);
+  bool invalidateDeviceBuffers(void *forgedTgtPtr, size_t size);
   void destroyHostBoundBuffers(void *hostPtr);
   bool destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr);
-  PJRT_Buffer* moveDataSegsToDevice(
+  PJRT_Buffer *moveDataSegsToDevice(
       const int devIdx, void *dataSrc,
       const llvm::ArrayRef<int64_t> &tensorShape,
       const llvm::ArrayRef<std::pair<size_t, size_t>> &tensorSlices,
@@ -121,8 +139,7 @@ public:
   void moveOutBuffersToDeviceBufferMap(int devIdx, void *argPtr, int argIdx,
                                        PJRT_Buffer **const *outsBuffersList);
   PJRT_Buffer *createLiteralBuffer(int devIdx, const TensorDesc &inputArg);
-
- };
+};
 
 class Sharder {
   friend class JitManager;
@@ -172,7 +189,7 @@ private:
                                    const ShardingDecision &sd);
   PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code);
   void prepareInputBuffers(const TensorDesc *args, const unsigned int count,
-                           std::vector<std::vector<PJRT_Buffer *>>& inBuffers,
+                           std::vector<std::vector<PJRT_Buffer *>> &inBuffers,
                            const ShardingDecision &sd);
   void executeOnMultiDevices(PJRT_LoadedExecutable *exe,
                              PJRT_Buffer ***argLists,

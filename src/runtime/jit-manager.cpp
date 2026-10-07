@@ -42,7 +42,7 @@
   llvm::errs() << "Pass pipeline: ";                                           \
   pm.printAsTextualPipeline(llvm::errs());                                     \
   llvm::errs() << "\n";                                                        \
-  ctx->disableMultithreading();                                                \
+  ctx.disableMultithreading();                                                \
   pm.enableIRPrinting()
 #else
 #define PRINT_PASS()
@@ -220,6 +220,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
 
     // ref: https://openxla.org/xla/hlo_dumps
     auto *debug = build_opts->mutable_debug_options();
+    debug->set_xla_gpu_executable_warn_stuck_timeout_seconds(10);
+    debug->set_xla_gpu_executable_terminate_timeout_seconds(30);
     debug->set_xla_enable_dumping(true);
     debug->set_xla_dump_hlo_as_text(true);
     debug->set_xla_dump_to(
@@ -302,7 +304,8 @@ mlir::func::FuncOp JitManager::lowerToStableHLO(mlir::ModuleOp moduleOp) {
   // Lower JItCode to StableHLO
   mlir::PassManager pm(&this->context);
   // INFO: uncomment print pass when we need to debug the IR transformation
-  // PRINT_PASS();
+  auto& ctx = this->context;
+  PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
   // pm.enableTiming();
   createLowerToStableHLOPassPipeline(pm);
