@@ -1,3 +1,7 @@
+#include "../support/profiler.h"
+#include "../support/utilities.h"
+#include "Passes.h"
+#include "Utils.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -9,20 +13,14 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/TypeID.h"
-#include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
-#include "../support/utilities.h"
-#include "../support/profiler.h"
-#include "Passes.h"
-#include "Utils.h"
 
 using namespace mlir;
 
@@ -91,18 +89,18 @@ struct ShapeInferPass
                 shapeSizes.push_back(dimSize);
               }
             }
-            shapeMap.insert(
-                std::pair(ssOp.getResult(), shapeSizes)); // %10 -> {%c964, %c965}
-            sliceShiftMap.insert(
-                std::pair(ssOp.getResult(), shapeShifts)); // %10 -> {%c-1, %c-1}
+            shapeMap.insert(std::pair(ssOp.getResult(),
+                                      shapeSizes)); // %10 -> {%c964, %c965}
+            sliceShiftMap.insert(std::pair(ssOp.getResult(),
+                                           shapeShifts)); // %10 -> {%c-1, %c-1}
           })
           .Case<hlfir::DeclareOp>([&](hlfir::DeclareOp dop) {
             // Example: %1:2 = hlfir.declare %arg0(%0) {uniq_name =
             // "_QFFcoexecute_aEz"} : (!fir.ref<!fir.array<?x?xf64>>,
             // !fir.shape<2>) -> (!fir.box<!fir.array<?x?xf64>>,
-            // !fir.ref<!fir.array<?x?xf64>>) 
-            //  
-            // Expect: 
+            // !fir.ref<!fir.array<?x?xf64>>)
+            //
+            // Expect:
             // %1:2 = hlfir.declare
             // %arg0(%0) {uniq_name = "_QFFcoexecute_aEz"} :
             // (!fir.ref<!fir.array<1000x1000xf64>>, !fir.shape<2>) ->
@@ -128,9 +126,8 @@ struct ShapeInferPass
                   dop.getMemref(), dop.getShape(), dop.getTypeparams(),
                   dop.getDummyScope(), dop.getStorage(),
                   dop.getStorageOffsetAttr(), dop.getUniqNameAttr(),
-                  dop.getFortranAttrsAttr(), dop.getDataAttrAttr(), 
-                  dop.getSkipReboxAttr(), nullptr
-              );
+                  dop.getFortranAttrsAttr(), dop.getDataAttrAttr(),
+                  dop.getSkipReboxAttr(), nullptr);
               dop.replaceAllUsesWith(ndop.getResults());
               dop.erase();
             }
@@ -167,10 +164,10 @@ struct ShapeInferPass
             // %5 = hlfir.designate %3#0 (%c1:%c5:%c1)  shape %4 :
             // (!fir.box<!fir.array<?xf64>>, index, index, index, !fir.shape<1>)
             // -> !fir.box<!fir.array<?xf64>> In the above example, it creates a
-            // part-ref of %3#0, with starting index %c1, end index %c5 and stride
-            // %c1 in such case, the shape will be different But it can also be
-            // something a simple form, referring just a single value of it:
-            // example: %451 = "hlfir.designate"(%447#0, %arg9)
+            // part-ref of %3#0, with starting index %c1, end index %c5 and
+            // stride %c1 in such case, the shape will be different But it can
+            // also be something a simple form, referring just a single value of
+            // it: example: %451 = "hlfir.designate"(%447#0, %arg9)
             if (isDynamicShape(dop.getResult().getType())) {
               auto shapeVal = dop.getShape();
               auto it = shapeMap.find(shapeVal);
@@ -191,10 +188,10 @@ struct ShapeInferPass
           })
           .Case<hlfir::ElementalOp>([&](hlfir::ElementalOp eop) {
             // Example: %6 = hlfir.elemental %0 unordered : (!fir.shape<2>) ->
-            // !hlfir.expr<?x?xf64> { static ElementalOp create(::mlir::OpBuilder
-            // &builder, ::mlir::Location location, mlir::Type result_type,
-            // mlir::Value shape, mlir::Value mold = {}, mlir::ValueRange
-            // typeparams = {}, bool isUnordered = false);
+            // !hlfir.expr<?x?xf64> { static ElementalOp
+            // create(::mlir::OpBuilder &builder, ::mlir::Location location,
+            // mlir::Type result_type, mlir::Value shape, mlir::Value mold = {},
+            // mlir::ValueRange typeparams = {}, bool isUnordered = false);
             if (isDynamicShape(eop.getResult().getType()) &&
                 !isDynamicShape(eop.getShape().getType())) {
               assert(shapeMap.contains(eop.getShape()) &&
@@ -213,9 +210,41 @@ struct ShapeInferPass
               eop.erase();
             }
           })
+          .Case<hlfir::MatmulOp>([&](hlfir::MatmulOp matmulOp) {
+            auto res = matmulOp.getResult();
+            if (!isDynamicShape(res.getType())) {
+              return;
+            }
+            assert(!isDynamicShape(matmulOp.getLhs().getType()));
+            assert(!isDynamicShape(matmulOp.getRhs().getType()));
+            auto lhsTy = matmulOp.getLhs().getType();
+            auto lhsTyInfo = inspectTypeInfo(lhsTy);
+            auto rhsTy = matmulOp.getRhs().getType();
+            auto rhsTyInfo = inspectTypeInfo(rhsTy);
+            assert(lhsTyInfo.rank == 2 && rhsTyInfo.rank == 2);
+            llvm::SmallVector<int64_t> resShape{lhsTyInfo.shape[0],
+                                                rhsTyInfo.shape[1]};
+            auto updatedResTy = convertToStaticShape(res.getType(), resShape);
+            opBuilder.setInsertionPoint(matmulOp);
+            hlfir::MatmulOp neoMMOp = hlfir::MatmulOp::create(
+                opBuilder, funcOp.getLoc(), updatedResTy, matmulOp.getLhs(),
+                matmulOp.getRhs(), matmulOp.getFastMathFlagsAttr());
+            shapeMap[neoMMOp] = resShape;
+            matmulOp.replaceAllUsesWith(neoMMOp.getResult());
+            matmulOp.erase();
+          })
+          .Case<hlfir::ShapeOfOp>([&](hlfir::ShapeOfOp shapeOp) {
+            auto exprTy =
+                llvm::cast<hlfir::ExprType>(shapeOp.getExpr().getType());
+            if (!isDynamicShape(exprTy)) {
+              shapeMap[shapeOp.getResult()] = llvm::SmallVector<int64_t>(
+                  exprTy.getShape().begin(), exprTy.getShape().end());
+            }
+          })
           .Case<hlfir::SumOp>([&](hlfir::SumOp sumOp) {
-            // %17 = "hlfir.sum"(%16, %2) <{fastmath = #arith.fastmath<contract>,
-            // operandSegmentSizes = array<i32: 1, 1, 0>}> :
+            // %17 = "hlfir.sum"(%16, %2) <{fastmath =
+            // #arith.fastmath<contract>, operandSegmentSizes = array<i32: 1, 1,
+            // 0>}> :
             // (!hlfir.expr<100x128xf64>, i32) -> !hlfir.expr<?xf64>
             if (isDynamicShape(sumOp.getResult().getType())) {
               auto arrayVal = sumOp.getArray();
@@ -235,8 +264,8 @@ struct ShapeInferPass
                 } else if (auto constOp =
                                llvm::dyn_cast_or_null<arith::ConstantOp>(
                                    dimVal.getDefiningOp())) {
-                  if (auto intAttr =
-                          llvm::dyn_cast<mlir::IntegerAttr>(constOp.getValue())) {
+                  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(
+                          constOp.getValue())) {
                     dimIdx = intAttr.getInt();
                   }
                 }
@@ -255,8 +284,8 @@ struct ShapeInferPass
                 // DO NOTHING
               }
               shapeMap.insert(std::pair(sumOp.getResult(), outputShape));
-              Type newResType =
-                  convertToStaticShape(sumOp.getResult().getType(), outputShape);
+              Type newResType = convertToStaticShape(
+                  sumOp.getResult().getType(), outputShape);
               opBuilder.setInsertionPoint(sumOp);
               auto newSumOp = hlfir::SumOp::create(
                   opBuilder, funcOp->getLoc(), newResType, sumOp.getArray(),
@@ -277,7 +306,8 @@ struct ShapeInferPass
                 assert(shapeMap.contains(arg) && "Arg Shape should be known!");
                 auto staticShape = shapeMap.at(arg);
                 arg.setType(convertToStaticShape(arg.getType(), staticShape));
-                inputTypes[i] = convertToStaticShape(inputTypes[i], staticShape);
+                inputTypes[i] =
+                    convertToStaticShape(inputTypes[i], staticShape);
               }
             }
             auto newFuncType =
@@ -290,39 +320,40 @@ struct ShapeInferPass
   }
 
   void setSliceShiftAsAttr(OpBuilder opBuilder, func::FuncOp funcOp) {
-    funcOp -> walk([&](fir::ShapeShiftOp ssOp){
+    funcOp->walk([&](fir::ShapeShiftOp ssOp) {
       auto it = sliceShiftMap.find(ssOp.getResult());
-      assert(it!= sliceShiftMap.end() 
-             && "All slice shift Op Value is supposed to stored in sliceShiftMap!\n");
+      assert(
+          it != sliceShiftMap.end() &&
+          "All slice shift Op Value is supposed to stored in sliceShiftMap!\n");
       ArrayRef<int64_t> shifts(it->getSecond());
-      ssOp->setAttr(JIT_SLICE_SHIFT_ATTR_NAME, opBuilder.getDenseI64ArrayAttr(shifts));
+      ssOp->setAttr(JIT_SLICE_SHIFT_ATTR_NAME,
+                    opBuilder.getDenseI64ArrayAttr(shifts));
       return;
-    });  
+    });
   }
 
-  StringRef getArgument() const override { 
-    return "jforce-shape-infer"; 
-  }
+  StringRef getArgument() const override { return "jforce-shape-infer"; }
 
   void runOnOperation() override {
     PROFILE_SCOPE("shape infer", Phase::LOWERING_SHAPE_INFER);
     sliceShiftMap.clear();
     func::FuncOp funcOp = getOperation();
-    MLIRContext* ctx = funcOp.getContext();
+    MLIRContext *ctx = funcOp.getContext();
     OpBuilder opBuilder(ctx);
 
     shapeInferenceInternal(opBuilder, funcOp);
-    setSliceShiftAsAttr(opBuilder, funcOp); 
+    setSliceShiftAsAttr(opBuilder, funcOp);
   }
 };
 } // namespace
 
 namespace xla_jit {
-  std::unique_ptr<mlir::Pass> createShapeInferPass() {
-    return std::make_unique<ShapeInferPass>();
-  }
-
-  void registerShapeInferPass() {
-    ::mlir::registerPass([]()->std::unique_ptr<mlir::Pass>{return createShapeInferPass();});
-  };
+std::unique_ptr<mlir::Pass> createShapeInferPass() {
+  return std::make_unique<ShapeInferPass>();
 }
+
+void registerShapeInferPass() {
+  ::mlir::registerPass(
+      []() -> std::unique_ptr<mlir::Pass> { return createShapeInferPass(); });
+};
+} // namespace xla_jit

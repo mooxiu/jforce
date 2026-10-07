@@ -20,7 +20,7 @@ add_library(JitTransforms STATIC
   CleanFIRLoopPass.cpp
   OptimizingMemOpsPass.cpp
   CleanFIROpsPass.cpp
-  SimplifyDoLoopPass.cpp
+  # SimplifyDoLoopPass.cpp
   OutlineAffinePass.cpp
   PropagateConstantsPass.cpp
   LoopSinkingPass.cpp

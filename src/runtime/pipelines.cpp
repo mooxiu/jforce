@@ -71,9 +71,11 @@ void createTranslateToStableHLOPipeline(PassManager& pm) {
   pm.addPass(createInlinerPass());
 }
 
-void createLowerToStableHLOPassPipeline(PassManager& pm) {
+void createLowerToStableHLOPassPipeline(PassManager& pm, bool hasWorkdistribute) {
   createLowerToFixedShapedIRPipeline(pm);
-  createLowerToAffineIRPipeline(pm);
+  if (!hasWorkdistribute) {
+    createLowerToAffineIRPipeline(pm);
+  }
   createTranslateToStableHLOPipeline(pm);
 
   auto &nestedPMPhase4 = pm.nest<mlir::func::FuncOp>();

@@ -16,6 +16,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllExtensions.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Support/WalkResult.h"
 #include "pipelines.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -307,8 +308,13 @@ mlir::func::FuncOp JitManager::lowerToStableHLO(mlir::ModuleOp moduleOp) {
   auto& ctx = this->context;
   PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
-  // pm.enableTiming();
-  createLowerToStableHLOPassPipeline(pm);
+
+  bool hasWorkdistribute = false;
+  moduleOp.walk([&](omp::WorkdistributeOp){
+    hasWorkdistribute = true;
+    return mlir::WalkResult::interrupt();
+  });
+  createLowerToStableHLOPassPipeline(pm, hasWorkdistribute);
   if (mlir::failed(pm.run(moduleOp))) {
     llvm::errs() << "MLIR Pass Pipeline failed!\n";
     std::exit(EXIT_FAILURE);
