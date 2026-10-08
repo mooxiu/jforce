@@ -274,8 +274,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
     std::exit(EXIT_FAILURE);
   }
 
+#ifdef ENABLE_XLA_DEBUG
   // Debugging the compiled executable
-  // FIXME: hide in if else condition
   PJRT_LoadedExecutable_GetExecutable_Args legeArgs = {
       .struct_size = PJRT_LoadedExecutable_GetExecutable_Args_STRUCT_SIZE,
       .loaded_executable = compile_args.executable};
@@ -297,6 +297,7 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
   assert(!nrErr);
   DEBUG_PRINT(llvm::formatv("After compilation check: Num Replicas: {0}",
                             nrArgs.num_replicas));
+#endif
 
   return compile_args.executable;
 }
