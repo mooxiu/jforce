@@ -26,7 +26,7 @@ static void destroyPJRTBuffer(const PJRT_Api *api, PJRT_Buffer *dataPtr) {
 
 static void destroyPJRTBuffers(const PJRT_Api *api,
                                std::vector<DeviceBufferSlot> buffers) {
-  for (auto& buffer : buffers) {
+  for (auto &buffer : buffers) {
     destroyPJRTBuffer(api, buffer.bufferPtr);
   }
 }
@@ -41,8 +41,8 @@ DeviceBuffersCache::getBuffers(void *dataSrc) {
   return std::nullopt;
 }
 
-std::optional<DeviceBufferSlot>
-DeviceBuffersCache::getBuffer(void *dataSrc, int devIdx) {
+std::optional<DeviceBufferSlot> DeviceBuffersCache::getBuffer(void *dataSrc,
+                                                              int devIdx) {
   std::shared_lock<std::shared_mutex> rLock(this->mtx);
   auto it = this->deviceBuffersMap.find(dataSrc);
   if (it != deviceBuffersMap.end()) {
@@ -57,26 +57,30 @@ DeviceBuffersCache::getBuffer(void *dataSrc, int devIdx) {
 }
 
 // Try insert or update with buffer.
-// If buffer already exists in the slot and the same with prepared buffer, do nothing.
-// Else, insert or update.
-DeviceBufferSlot DeviceBuffersCache::tryInsertOrUpdate(const PJRT_Api* api, void* dataSrc, int devIdx, int devCount, PJRT_Buffer* buffer) {
+// If buffer already exists in the slot and the same with prepared buffer, do
+// nothing. Else, insert or update.
+DeviceBufferSlot DeviceBuffersCache::tryInsertOrUpdate(const PJRT_Api *api,
+                                                       void *dataSrc,
+                                                       int devIdx, int devCount,
+                                                       PJRT_Buffer *buffer) {
   if (devIdx > devCount - 1) {
     llvm::errs() << "Invalid devIdx and devCount.\n";
     std::exit(EXIT_FAILURE);
   }
-  std::optional<DeviceBufferSlot> bufferOptional = getBuffer(dataSrc, devIdx); 
-  if (bufferOptional.has_value() && bufferOptional.value().bufferPtr == buffer) {
+  std::optional<DeviceBufferSlot> bufferOptional = getBuffer(dataSrc, devIdx);
+  if (bufferOptional.has_value() &&
+      bufferOptional.value().bufferPtr == buffer) {
     return bufferOptional.value();
   }
 
   std::unique_lock<std::shared_mutex> wLock(this->mtx);
   auto it = deviceBuffersMap.find(dataSrc);
   if (it != deviceBuffersMap.end()) {
-    auto& buffers = it->second;
+    auto &buffers = it->second;
     assert(buffers.size() == devCount);
     if (buffers[devIdx].bufferPtr == buffer) {
       return buffers[devIdx];
-    } 
+    }
     destroyPJRTBuffer(api, buffers[devIdx].bufferPtr);
     buffers[devIdx].bufferPtr = buffer;
     return buffers[devIdx];
@@ -200,15 +204,15 @@ PJRT_Buffer *DeviceManager::createLiteralBuffer(int devIdx,
   return buffer_args.buffer;
 }
 
-/// \param hypercubeDims describes the shape of the selected part of the
+/// \param subtensorDims describes the shape of the selected part of the
 /// original tensor to move. e.g., if we're moving T(1:3, 2:8, 3:7), then this
 /// should be (2, 6, 4) = (3 - 1, 8 - 2, 7 - 3)
 PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
     int deviceIdx,
     // const TensorDesc &inputArg,
-    void *dataSrc, DType elementDType, llvm::ArrayRef<int64_t> hypercubeDims,
+    void *dataSrc, DType elementDType, llvm::ArrayRef<int64_t> subtensorDims,
     llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte = 0) {
-  size_t rank = hypercubeDims.size();
+  size_t rank = subtensorDims.size();
   // pointing to a memory on host, host does not know the size
   // To make it work on TPU, we have to do it here
   auto cache = deviceBuffersCache.getBuffer(dataSrc, deviceIdx);
@@ -218,10 +222,10 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
   auto args = PJRT_Client_BufferFromHostBuffer_Args{
       .struct_size = PJRT_Client_BufferFromHostBuffer_Args_STRUCT_SIZE,
       .client = client_,
-      .data = static_cast<void *>(static_cast<std::byte *>(dataSrc) +
-                                  offsetInByte),
+      .data =
+          static_cast<void *>(static_cast<std::byte *>(dataSrc) + offsetInByte),
       .type = getPJRTBufferType(elementDType),
-      .dims = hypercubeDims.data(),
+      .dims = subtensorDims.data(),
       .num_dims = rank,
       .byte_strides = byteStrides.data(),
       .num_byte_strides = byteStrides.size(),
@@ -232,7 +236,8 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
                  << JitManager::getErrMsg(api_, err) << "\n";
     std::abort();
   }
-  auto updated = deviceBuffersCache.tryInsertOrUpdate(api_, dataSrc, deviceIdx, pjrtDevices_.size(), args.buffer);
+  auto updated = deviceBuffersCache.tryInsertOrUpdate(
+      api_, dataSrc, deviceIdx, pjrtDevices_.size(), args.buffer);
   return updated.bufferPtr;
 }
 
@@ -587,9 +592,11 @@ PJRT_Buffer *DeviceManager::moveDataSegsToDevice(
 void DeviceManager::moveOutBuffersToDeviceBufferMap(
     int devIdx, void *argPtr, int argIdx,
     PJRT_Buffer **const *outsBuffersList) {
-  assert(outsBuffersList[devIdx][argIdx] && "buffer not exists in outsBuffersList!");
+  assert(outsBuffersList[devIdx][argIdx] &&
+         "buffer not exists in outsBuffersList!");
   auto outsBuffer = outsBuffersList[devIdx][argIdx];
-  deviceBuffersCache.tryInsertOrUpdate(api_, argPtr, devIdx, pjrtDevices_.size(), outsBuffer);
+  deviceBuffersCache.tryInsertOrUpdate(api_, argPtr, devIdx,
+                                       pjrtDevices_.size(), outsBuffer);
 }
 
 void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
@@ -598,7 +605,7 @@ void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
     llvm::errs() << "Can not find related buffer!\n";
     return;
   }
-  
+
   auto buffers = buffersOptional.value();
   llvm::SmallVector<PJRT_Event *> events;
   events.reserve(buffers.size());
@@ -608,31 +615,31 @@ void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
     auto buffer = buffers[currIdx];
     assert(buffer.bufferPtr != nullptr);
     PJRT_Buffer_OnDeviceSizeInBytes_Args getSizeArg = {
-      .struct_size = PJRT_Buffer_OnDeviceSizeInBytes_Args_STRUCT_SIZE,
-      .buffer = buffer.bufferPtr
-    };
+        .struct_size = PJRT_Buffer_OnDeviceSizeInBytes_Args_STRUCT_SIZE,
+        .buffer = buffer.bufferPtr};
     auto err = api_->PJRT_Buffer_OnDeviceSizeInBytes(&getSizeArg);
     if (err) {
-      llvm::errs() << "Error in getting buffer's size: " << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+      llvm::errs() << "Error in getting buffer's size: "
+                   << JitManager::getInstance().getErrMsg(api_, err) << "\n";
       std::exit(EXIT_FAILURE);
     }
 
     PJRT_Buffer_ToHostBuffer_Args toHostArg = {
-      .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
-      .src = buffer.bufferPtr,
-      .dst = static_cast<void *>(static_cast<std::byte *>(hostPtr) + offset),
-      .dst_size = getSizeArg.on_device_size_in_bytes
-    };
+        .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
+        .src = buffer.bufferPtr,
+        .dst = static_cast<void *>(static_cast<std::byte *>(hostPtr) + offset),
+        .dst_size = getSizeArg.on_device_size_in_bytes};
     err = api_->PJRT_Buffer_ToHostBuffer(&toHostArg);
     if (err) {
-      llvm::errs() << "Error in moving buffer to host: " << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+      llvm::errs() << "Error in moving buffer to host: "
+                   << JitManager::getInstance().getErrMsg(api_, err) << "\n";
       std::exit(EXIT_FAILURE);
     }
     events.push_back(std::move(toHostArg.event));
     offset += getSizeArg.on_device_size_in_bytes;
     currIdx += 1;
   }
-  for (int eventIdx= 0; eventIdx < events.size(); eventIdx++) {
+  for (int eventIdx = 0; eventIdx < events.size(); eventIdx++) {
     auto awaitArgs =
         PJRT_Event_Await_Args{.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
                               .event = events[eventIdx]};

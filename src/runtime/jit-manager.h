@@ -92,7 +92,7 @@ public:
 };
 
 struct DeviceBufferSlot {
-  PJRT_Buffer* bufferPtr;
+  PJRT_Buffer *bufferPtr;
 };
 
 class DeviceBuffersCache {
@@ -103,7 +103,9 @@ private:
 public:
   std::optional<std::vector<DeviceBufferSlot>> getBuffers(void *dataSrc);
   std::optional<DeviceBufferSlot> getBuffer(void *dataSrc, int devIdx);
-  DeviceBufferSlot tryInsertOrUpdate(const PJRT_Api* api, void* dataSrc, int devIdx, int devCount, PJRT_Buffer* buffer);
+  DeviceBufferSlot tryInsertOrUpdate(const PJRT_Api *api, void *dataSrc,
+                                     int devIdx, int devCount,
+                                     PJRT_Buffer *buffer);
   void deleteEntry(void *dataSrc, const PJRT_Api *api_);
 };
 
@@ -121,8 +123,8 @@ private:
   // std::unordered_map<void *, std::vector<PJRT_Buffer *>> deviceBuffersMap;
   PJRT_Buffer *createBufferFromForgedTgtPointers(
       int deviceIdx, void *dataSrc, DType elementDType,
-      llvm::ArrayRef<int64_t> shape, llvm::ArrayRef<int64_t> byteStrides,
-      uint32_t offsetInByte);
+      llvm::ArrayRef<int64_t> subtensorDims,
+      llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte);
 
 public:
   DeviceManager(const PJRT_Api *api, PJRT_Client *client,
