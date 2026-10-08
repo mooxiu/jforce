@@ -658,11 +658,11 @@ static fir::DoLoopOp transformOneLoop(fir::DoLoopOp loop,
 class SimplifyDoLoop : 
   public mlir::PassWrapper<SimplifyDoLoop, mlir::OperationPass<func::FuncOp>> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SimplifyDoLoop)
+
   StringRef getArgument() const override { 
     return "simplify-do-loop"; 
   }
-
-
 
   void runOnOperation() override {
     mlir::func::FuncOp func = getOperation();

@@ -710,6 +710,8 @@ struct HoistReadOpFromLoop : public OpRewritePattern<ReadOpTy> {
 struct OptimizeMemOpsPass
     : public mlir::PassWrapper<OptimizeMemOpsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(OptimizeMemOpsPass);
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
     return;

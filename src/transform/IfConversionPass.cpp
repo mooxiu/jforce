@@ -277,6 +277,9 @@ struct HoistIfInvariantArithOps: OpRewritePattern<IfTy> {
 struct IfConversionPass
     : public mlir::PassWrapper<IfConversionPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
+  
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(IfConversionPass);
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<hlfir::hlfirDialect, fir::FIROpsDialect>();
     return;

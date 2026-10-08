@@ -5,6 +5,6 @@
 
 using namespace mlir;
 
-void createLowerToStableHLOPassPipeline(PassManager& pm);
+void createLowerToStableHLOPassPipeline(PassManager& pm, bool hasWorkdistribute);
 
 #endif

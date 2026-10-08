@@ -7,8 +7,10 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #ifdef ENABLE_XLA_DEBUG
 #define SET_XLA_FLAG()                                                         \
@@ -83,13 +85,26 @@ enum class TargetDeviceType : int32_t {
  */
 struct TensorDesc {
   void *data;
-  const int64_t *shape;
+  std::vector<int64_t> shape;
   int32_t rank;
   DType dtype;
   bool isLiteral;
 
+  size_t getDTypeSize() {
+    switch (dtype) {
+      case DType::I32:
+      case DType::F32:
+        return 4;
+      case DType::I64:
+      case DType::F64:
+        return 8;
+      default:
+        llvm_unreachable("Unexpecxted dtype");
+    }
+  }
+
   // Return total elements of this tensor
-  size_t getEleSize() {
+  size_t getEleCount() {
     if (rank == 0) {
       return 1;
     }

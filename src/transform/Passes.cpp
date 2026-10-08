@@ -10,7 +10,7 @@ void xla_jit::registerAllJitPasses() {
   registerTranslatePass();
   registerAffineCFGPass();
   registerCleanFIRLoopPass();
-  registerSimplifyDoLoopPass();
+  // registerSimplifyDoLoopPass();
   registerAffineToStableHLORaisingPass();
   registerArithRaisingPass();
   registerOutlineAffinePass();
