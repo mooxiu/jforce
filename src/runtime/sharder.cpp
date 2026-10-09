@@ -8,16 +8,31 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <ios>
+#include <mutex>
+#include <optional>
+#include <ostream>
+#include <shared_mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+#include <nlohmann/json.hpp>
+
+using namespace nlohmann;
+
+
 
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
-Sharder::Sharder(uint32_t deviceCount) {
+Sharder::Sharder(uint32_t deviceCount, std::string profilePath = ""): profile() {
   DEBUG_PRINT(llvm::formatv("Initializing Sharder. We got {0} devices.", deviceCount));
   this->deviceCount = deviceCount;
   this->deviceMesh = {deviceCount};
@@ -39,7 +54,7 @@ Sharder::Sharder(uint32_t deviceCount) {
     std::exit(EXIT_FAILURE);
   }
   if (!profilePath.empty()) {
-    this->profile = this->deserializeProfile();
+    this->deserializeProfile();
   }
 }
 
@@ -85,12 +100,95 @@ ShardingDecision Sharder::heuristicShard(mlir::ModuleOp moduleOp) {
   // addToProfile
 }
 
+// {{{}, .., {}}, }
+std::string Sharder::toStr(const ShardingDecision& sd) {
+  std::string res;
+  res.push_back('{');
+  for (const auto& argSd: sd) {
+    res.push_back('{');
+    for (const auto& dimSd: argSd) {
+      res.push_back('{'); 
+        for (const auto& axis: dimSd) {
+          res += axis.get().name;
+          res.push_back(',');
+        } 
+        res.pop_back();
+      res.push_back('}');
+    } 
+    res.push_back('}');
+  }
+  res.push_back('}');
+  return res;
+};
+
+ShardingDecision Sharder::toSD(const std::string& sdStr) {
+  ShardingDecision sd;
+  int level = 0;
+  for (int i = 0; i < sdStr.size(); i++) {
+    if (sdStr[i] == '{') {
+      level += 1;  
+      if (level == 2) {
+        ArgSharding argSd;
+        while (!(sdStr[i] == '}' && level == 2)) {
+          i += 1;
+          DimSharding dimSd;
+          if (sdStr[i] == '{') {
+            level += 1;
+          } else if (sdStr[i] == '}') {
+            level -= 1;
+          } else {
+            std::string axisName;
+            while (sdStr[i] != ',') {
+              axisName.push_back(sdStr[i]);
+              i += 1;
+            }
+            dimSd.push_back(getMeshAxis(axisName));
+          }
+          argSd.push_back(std::move(dimSd));
+        }
+        sd.push_back(std::move(argSd));
+      }
+    }
+  } 
+  return sd;
+};
+
+std::optional<MeshAxis&> Sharder::getMeshAxis(const std::string& axisName) {
+  for (auto& meshAxis : this->meshAxes) {
+    if (meshAxis.name == axisName) {
+      return meshAxis;
+    }
+  }
+  return std::nullopt;
+};
+
 void Sharder::serializeProfile() {
+  std::unique_lock<std::shared_mutex> wLock(profileMtx);
   llvm_unreachable("serialize profile not omplemented");
 }
 
-Profile *Sharder::deserializeProfile() {
-  llvm_unreachable("deserialize profile not implemented");
+void Sharder::deserializeProfile() {
+  {
+    std::unique_lock<std::shared_mutex> wLock(profileMtx);
+    if (!std::filesystem::exists(profilePath)) {
+      std::ofstream file{profilePath}; 
+      if (!file) {
+        llvm::errs() << "can not create corresponding profile file!\n";
+        std::exit(EXIT_FAILURE);
+      }
+    }
+  }
+
+  std::shared_lock<std::shared_mutex> rLock(profileMtx);
+  std::ifstream in(profilePath, std::ios_base::in);
+  nlohmann::json data = nlohmann::json::parse(in);
+  if (!data) {
+    llvm::errs() << "parse fail!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  assert(data.is_array());
+  this->profile = std::move(ShPGOProfile(std::move(data)));
+  return;
 }
 
 void addToProfile(ShardingDecision *decsion) {

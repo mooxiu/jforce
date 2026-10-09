@@ -9,11 +9,14 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
+#include "nlohmann/json_fwd.hpp"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -34,15 +37,21 @@ struct MeshAxis {
 // Because an argument has a
 using DimSharding = std::vector<std::reference_wrapper<const MeshAxis>>;
 using ArgSharding = std::vector<DimSharding>;
-// FIXME: do we have to assign the output sharding?
 using ShardingDecision = std::vector<ArgSharding>;
 
 // Profile to be serialized or deserialized, inserted.
-// TODO: currently, the key of decisions is written as a void*, this is wrong,
-// the pointer can be different in different invokes. I am considering something
-// like a hash(ModuleOp)...
-struct Profile {
-  llvm::DenseMap<void *, ShardingDecision> decisions;
+struct ShPGORecord {
+  std::string kernelFingerprint;
+  std::string devMeshFingerprint;
+  std::string hwFingerprint;
+  ShardingDecision sd;
+  double_t exeTime;
+};
+
+struct ShPGOProfile {
+  llvm::SmallVector<ShPGORecord> records;
+  ShPGOProfile();
+  ShPGOProfile(nlohmann::json&& json);
 };
 
 struct L1JitMetas {
@@ -147,7 +156,7 @@ class Sharder {
   friend class JitManager;
 
 public:
-  Sharder(uint32_t deviceSize);
+  Sharder(uint32_t deviceSize, std::string profilePath);
   ~Sharder();
   Sharder(const Sharder &) = delete;
   Sharder &operator=(const Sharder &) = delete;
@@ -155,6 +164,9 @@ public:
   // heuristicShard accept a moduleOp, and return a sharding decision.
   // The sharding decision is ideally made by using profilings.
   ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
+  std::string toStr(const ShardingDecision& sd);
+  ShardingDecision toSD(const std::string& sdStr);
+  std::optional<MeshAxis&> getMeshAxis(const std::string& axisName);
 
 private:
   uint32_t deviceCount;
@@ -162,13 +174,16 @@ private:
   llvm::SmallVector<uint32_t> deviceMesh;
   llvm::SmallVector<MeshAxis> meshAxes;
 
-  Profile *profile = nullptr;
+  // Profile parsed
+  ShPGOProfile profile;
   bool profileChangeFlag = false;
   std::string profilePath = "";
+  // prevent two threads change the same profile file concurrently
+  std::shared_mutex profileMtx; 
 
   void addToProfile();
   void serializeProfile();
-  Profile *deserializeProfile();
+  void deserializeProfile();
 };
 
 class JitManager {

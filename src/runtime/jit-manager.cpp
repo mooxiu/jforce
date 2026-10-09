@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <iostream>
 #include <string>
@@ -134,11 +135,21 @@ static TargetDeviceType getTargetDeviceFromEnv() {
   return TargetDeviceType::INVALID;
 }
 
+static std::string getProfileFileFromEnv() {
+  const char* path = std::getenv("JFORCE_PROFILE_FILE");
+  if (!path|| *path == '\0') {
+    llvm::report_fatal_error("JFORCE_TARGET_DEVICE is not set; "
+                             "expected CPU, CUDA, ROCM, or TPU.");
+  }
+  std::string name(path);
+  return name;
+}
+
 JitManager::JitManager()
     : pjrtApi(loadPjrtAPi()), pjrtClient(getPJRTClient(pjrtApi)),
       targetDeviceTy(getTargetDeviceFromEnv()), cacheManager(context),
       deviceManager(pjrtApi, pjrtClient, targetDeviceTy),
-      sharder(deviceManager.pjrtDevices_.size()) {
+      sharder(deviceManager.pjrtDevices_.size(), getProfileFileFromEnv()) {
   // Initialize context
   mlir::DialectRegistry registry;
   registry
@@ -759,9 +770,16 @@ void JitManager::manageOutBuffers(int inArgsCount,
   }
 }
 
+void JitManager::generateShPGORecord(const ShardingDecision &sd) {
+  ShPGORecord rec;
+  rec.sd = sd.toString();
+}
+
 void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                         const std::string &kernelFuncStr,
                         const ShardingDecision &sd) {
+  generateShPGORecord();
+
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
   // TODO: improve this when it becomes slow
   // InputBufs[deviceId][argIdx]
