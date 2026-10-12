@@ -191,13 +191,11 @@ private:
 
   // Profile parsed
   ShPGOProfile profile;
-  bool profileChangeFlag = false;
   std::string profilePath = "";
   // prevent two threads change the same profile file concurrently
   std::shared_mutex profileMtx;
 
-  void addToProfile();
-  void serializeProfile();
+  void flushProfile();
   void deserializeProfile();
 };
 

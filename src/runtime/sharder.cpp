@@ -18,12 +18,13 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <istream>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <ostream>
 #include <shared_mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,14 +57,14 @@ Sharder::Sharder(uint32_t deviceCount, std::string profilePath = "")
     std::exit(EXIT_FAILURE);
   }
   if (!profilePath.empty()) {
+    this->profilePath = profilePath;
     this->deserializeProfile();
   }
 }
 
 Sharder::~Sharder() {
-  if (profileChangeFlag && !profilePath.empty()) {
-    serializeProfile();
-    return;
+  if (!uncommitedRecords.empty()) {
+    flushProfile();
   }
 }
 
@@ -171,9 +172,46 @@ Sharder::getMeshAxis(const std::string &axisName) {
   return std::nullopt;
 };
 
-void Sharder::serializeProfile() {
+void Sharder::flushProfile() {
   std::unique_lock<std::shared_mutex> wLock(profileMtx);
-  llvm_unreachable("serialize profile not omplemented");
+  if (!std::filesystem::exists(profilePath)) {
+    llvm::errs() << "can not create corresponding profile file!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  std::ifstream file{profilePath};
+  if (!file) {
+    llvm::errs() << "cannot open profile: " << profilePath << "\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  auto data = nlohmann::json::array();
+  file >> std::ws;
+  if (file.peek() == std::char_traits<char>::eof()) {
+    file >> data;
+  }
+  for (const auto& entry: uncommitedRecords) {
+    const auto& rec = entry.second;
+    data.push_back({
+      {"id", rec.id},
+      {"kernelFingerprint", rec.kernelFingerprint},
+      {"devMeshFingerprint", rec.devMeshFingerprint},
+      {"hwFingerprint", rec.hwFingerprint},
+      {"sd", toStr(rec.sd)},
+      {"exeTime", rec.exeTime},
+    });
+  }
+  const std::filesystem::path tempPath = profilePath + ".tmp";
+  {
+    std::ofstream out(tempPath, std::ios::trunc);
+    if (!out) {
+      llvm::errs() << "Cannot create temporary profile\n";
+      std::exit(EXIT_FAILURE);
+    }
+    out << data.dump(2);
+    out.close();
+  }
+  std::filesystem::rename(tempPath, profilePath);
+  uncommitedRecords.clear();
 }
 
 void Sharder::deserializeProfile() {
@@ -223,12 +261,17 @@ Sharder::startRecordProfile(const ShardingDecision &sd,
           "A100", // TODO: detect from the environment or by user input?
       .sd = sd,
   };
-  this->uncommitedRecords[id] = std::move(rec);
+  {
+    std::unique_lock<std::shared_mutex> lock(profileMtx);
+    this->uncommitedRecords[id] = std::move(rec);
+  }
   return std::make_pair(id, start);
 };
 
 void Sharder::endRecordProfile(uint64_t ID, const std::chrono::time_point<std::chrono::steady_clock>&& start) {
   auto end = std::chrono::steady_clock::now();
+
+  std::unique_lock<std::shared_mutex> lock(profileMtx);
   auto it = this->uncommitedRecords.find(ID);
   if (it == uncommitedRecords.end()) {
     llvm::errs() << "Record not found in uncommitedRecords!\n";
