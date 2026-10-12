@@ -10,6 +10,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -20,7 +21,6 @@
 #include <ostream>
 #include <shared_mutex>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -142,7 +142,12 @@ ShardingDecision Sharder::toSD(const std::string& sdStr) {
               axisName.push_back(sdStr[i]);
               i += 1;
             }
-            dimSd.push_back(getMeshAxis(axisName));
+            auto axisOptional = getMeshAxis(axisName);
+            if (!axisOptional.has_value()) {
+              llvm::errs() << "axis not found with name: " << axisName << ", parse fail!\n";
+              std::exit(EXIT_FAILURE);
+            }
+            dimSd.push_back(axisOptional.value());
           }
           argSd.push_back(std::move(dimSd));
         }
@@ -153,10 +158,10 @@ ShardingDecision Sharder::toSD(const std::string& sdStr) {
   return sd;
 };
 
-std::optional<MeshAxis&> Sharder::getMeshAxis(const std::string& axisName) {
-  for (auto& meshAxis : this->meshAxes) {
+std::optional<std::reference_wrapper<const MeshAxis>> Sharder::getMeshAxis(const std::string& axisName) {
+  for (const auto& meshAxis : this->meshAxes) {
     if (meshAxis.name == axisName) {
-      return meshAxis;
+      return std::make_optional(meshAxis);
     }
   }
   return std::nullopt;
@@ -191,7 +196,18 @@ void Sharder::deserializeProfile() {
   return;
 }
 
-void addToProfile(ShardingDecision *decsion) {
-  // TODO: maybe we can do topK etc.
-  llvm_unreachable("add to profile not implemented");
-}
+void Sharder::startRecordProfile(const ShardingDecision& sd) {
+  auto start = std::chrono::steady_clock::now();  
+  ShPGORecord rec = {
+    .sd = sd,
+    .devMeshFingerprint = "NVidia",
+    .kernelFingerprint = ,
+    .hwFingerprint = "A100",
+  };
+  this->uncommitedRecords.push_back(ShPGORecord &&Elt)
+};
+
+void Sharder::endRecordProfile() {
+
+};
+

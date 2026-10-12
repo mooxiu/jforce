@@ -51,7 +51,7 @@ struct ShPGORecord {
 struct ShPGOProfile {
   llvm::SmallVector<ShPGORecord> records;
   ShPGOProfile();
-  ShPGOProfile(nlohmann::json&& json);
+  ShPGOProfile(nlohmann::json &&json);
 };
 
 struct L1JitMetas {
@@ -62,14 +62,17 @@ struct L2JitMetas {
   PJRT_LoadedExecutable *exe;
   std::vector<mlir::Type> kernelFuncTypes;
   std::string kernelFuncStr;
+
   ShardingDecision sd;
+  size_t kernelFingerprint;
 
   L2JitMetas() = delete;
   L2JitMetas(PJRT_LoadedExecutable *exe,
              std::vector<mlir::Type> kernelFuncTypes, std::string kernelFuncStr,
-             ShardingDecision sd)
+             ShardingDecision sd, size_t kernelFingerprint)
       : exe(exe), kernelFuncTypes(std::move(kernelFuncTypes)),
-        kernelFuncStr(std::move(kernelFuncStr)), sd(std::move(sd)) {};
+        kernelFuncStr(std::move(kernelFuncStr)), sd(std::move(sd)),
+        kernelFingerprint(kernelFingerprint) {};
 };
 
 class CacheManager {
@@ -164,22 +167,27 @@ public:
   // heuristicShard accept a moduleOp, and return a sharding decision.
   // The sharding decision is ideally made by using profilings.
   ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
-  std::string toStr(const ShardingDecision& sd);
-  ShardingDecision toSD(const std::string& sdStr);
-  std::optional<MeshAxis&> getMeshAxis(const std::string& axisName);
+  std::string toStr(const ShardingDecision &sd);
+  ShardingDecision toSD(const std::string &sdStr);
+  std::optional<std::reference_wrapper<const MeshAxis>>
+  getMeshAxis(const std::string &axisName);
+
+  void startRecordProfile();
+  void endRecordProfile();
 
 private:
   uint32_t deviceCount;
   std::string meshName;
   llvm::SmallVector<uint32_t> deviceMesh;
   llvm::SmallVector<MeshAxis> meshAxes;
+  llvm::SmallVector<ShPGORecord> uncommitedRecords;
 
   // Profile parsed
   ShPGOProfile profile;
   bool profileChangeFlag = false;
   std::string profilePath = "";
   // prevent two threads change the same profile file concurrently
-  std::shared_mutex profileMtx; 
+  std::shared_mutex profileMtx;
 
   void addToProfile();
   void serializeProfile();
@@ -237,6 +245,8 @@ public:
   launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                const std::string &kernelFuncStr);
 
+  void startShardingProfiling();
+  void endShardingProfiling();
   void launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
               const std::string &kernelFuncStr, const ShardingDecision &sd);
 };

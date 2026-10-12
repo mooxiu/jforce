@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -459,7 +460,7 @@ mlir::ModuleOp JitManager::annoateShardyInfo(mlir::ModuleOp moduleOp,
 
 L2JitMetas *
 JitManager::createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
-                             mlir::func::FuncOp kernelFunc) {
+                             mlir::func::FuncOp kernelFunc, size_t kernelFingerprint) {
   mlir::OpBuilder opBuilder(&this->context);
   auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
   ShardingDecision sd = sharder.heuristicShard(moduleOp);
@@ -470,7 +471,7 @@ JitManager::createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
   auto funcTypes = kernelFunc.getFunctionType().getInputs();
   std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
   L2JitMetas l2Cache(exec, std::move(argTypesVec), std::move(kernelFuncStr),
-                     std::move(sd));
+                     std::move(sd), kernelFingerprint);
   return cacheManager.insertL2CacheAndReturn(
       key, std::move(l2Cache),
       [this](PJRT_LoadedExecutable *e) { this->destroyLoadedExecutable(e); });
@@ -510,6 +511,9 @@ L2JitMetas *JitManager::getOrCompileKernel(void *JitCode, int64_t NumArgs,
     }
   } else {
     // Neither L1Cache nor L2Cache hit.
+    std::string jitCodeText(reinterpret_cast<char*>(JitCode));
+    std::size_t kernelFingerprint = std::hash<std::string>{}(jitCodeText);
+    
     auto moduleRef = preprocessModuleOp(JitCode, NumArgs, TgtArgs, ArgPtrs,
                                         ArgSizes, ArgTypes);
     auto kernelFunc = lowerToStableHLO(moduleRef.get());
@@ -518,7 +522,7 @@ L2JitMetas *JitManager::getOrCompileKernel(void *JitCode, int64_t NumArgs,
     auto l2Key = cacheManager.getL2JitMetasKey(NumArgs, TgtArgs, ArgSizes,
                                                JitCode, shapeInfoMap);
     cacheManager.saveL1JitMetas(JitCode, std::move(shapeInfoMap));
-    return createL2JitMetas(l2Key, kernelFunc);
+    return createL2JitMetas(l2Key, kernelFunc, kernelFingerprint);
   }
 }
 
@@ -770,16 +774,18 @@ void JitManager::manageOutBuffers(int inArgsCount,
   }
 }
 
-void JitManager::generateShPGORecord(const ShardingDecision &sd) {
-  ShPGORecord rec;
-  rec.sd = sd.toString();
+void JitManager::startShardingProfiling() {
+  this->sharder.startRecordProfile();
+}
+
+void JitManager::endShardingProfiling() {
+  this->sharder.endRecordProfile();
 }
 
 void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                         const std::string &kernelFuncStr,
                         const ShardingDecision &sd) {
-  generateShPGORecord();
-
+  startShardingProfiling(sd, kernelFuncStr);
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
   // TODO: improve this when it becomes slow
   // InputBufs[deviceId][argIdx]
@@ -823,5 +829,7 @@ void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
   manageOutBuffers(kernelArgs->inputArgCount, outputBufsList,
                    kernelArgs->inputArgs, kernelArgs->outputArgs);
   DEBUG_PRINT("Finish manage out buffers");
+
+  endShardingProfiling();
   return;
 }
