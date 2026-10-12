@@ -12,11 +12,10 @@
 #include "nlohmann/json_fwd.hpp"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
-#include <cmath>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -41,11 +40,12 @@ using ShardingDecision = std::vector<ArgSharding>;
 
 // Profile to be serialized or deserialized, inserted.
 struct ShPGORecord {
-  std::string kernelFingerprint;
+  uint64_t id;
+  size_t kernelFingerprint;
   std::string devMeshFingerprint;
   std::string hwFingerprint;
   ShardingDecision sd;
-  double_t exeTime;
+  uint64_t exeTime;
 };
 
 struct ShPGOProfile {
@@ -64,6 +64,8 @@ struct L2JitMetas {
   std::string kernelFuncStr;
 
   ShardingDecision sd;
+  // Finger print of the original JITCode, without size specialization.
+  // Why: same code with different runtime size can be autotuned.
   size_t kernelFingerprint;
 
   L2JitMetas() = delete;
@@ -172,15 +174,20 @@ public:
   std::optional<std::reference_wrapper<const MeshAxis>>
   getMeshAxis(const std::string &axisName);
 
-  void startRecordProfile();
-  void endRecordProfile();
+  // Return the id for uncommited profiling record
+  uint64_t getNextID();
+  // Return <ID, start time point>
+  std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>> startRecordProfile(const ShardingDecision& sd, size_t kernelFingerprint);
+  void endRecordProfile(uint64_t ID, const std::chrono::time_point<std::chrono::steady_clock>&& start);
 
 private:
   uint32_t deviceCount;
   std::string meshName;
   llvm::SmallVector<uint32_t> deviceMesh;
   llvm::SmallVector<MeshAxis> meshAxes;
-  llvm::SmallVector<ShPGORecord> uncommitedRecords;
+
+  std::atomic<std::uint64_t> nextId_{1};
+  llvm::DenseMap<uint64_t, ShPGORecord> uncommitedRecords;
 
   // Profile parsed
   ShPGOProfile profile;
@@ -205,7 +212,8 @@ private:
   DeviceManager deviceManager;
   Sharder sharder;
   L2JitMetas *createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
-                               mlir::func::FuncOp kernelFunc);
+                               mlir::func::FuncOp kernelFunc,
+                               size_t kernelFingerprint);
   mlir::OwningOpRef<mlir::ModuleOp>
   preprocessModuleOp(void *JitCode, int64_t NumArgs, void **TgtArgs,
                      void **ArgPtrs, int64_t *ArgSizes, int64_t *ArgTypes);
@@ -245,9 +253,6 @@ public:
   launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                const std::string &kernelFuncStr);
 
-  void startShardingProfiling();
-  void endShardingProfiling();
-  void launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-              const std::string &kernelFuncStr, const ShardingDecision &sd);
+  void launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs);
 };
 #endif

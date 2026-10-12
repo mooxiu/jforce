@@ -9,14 +9,17 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <ostream>
 #include <shared_mutex>
@@ -24,16 +27,15 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 using namespace nlohmann;
 
-
-
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
-Sharder::Sharder(uint32_t deviceCount, std::string profilePath = ""): profile() {
-  DEBUG_PRINT(llvm::formatv("Initializing Sharder. We got {0} devices.", deviceCount));
+Sharder::Sharder(uint32_t deviceCount, std::string profilePath = "")
+    : profile() {
+  DEBUG_PRINT(
+      llvm::formatv("Initializing Sharder. We got {0} devices.", deviceCount));
   this->deviceCount = deviceCount;
   this->deviceMesh = {deviceCount};
 
@@ -101,32 +103,32 @@ ShardingDecision Sharder::heuristicShard(mlir::ModuleOp moduleOp) {
 }
 
 // {{{}, .., {}}, }
-std::string Sharder::toStr(const ShardingDecision& sd) {
+std::string Sharder::toStr(const ShardingDecision &sd) {
   std::string res;
   res.push_back('{');
-  for (const auto& argSd: sd) {
+  for (const auto &argSd : sd) {
     res.push_back('{');
-    for (const auto& dimSd: argSd) {
-      res.push_back('{'); 
-        for (const auto& axis: dimSd) {
-          res += axis.get().name;
-          res.push_back(',');
-        } 
-        res.pop_back();
+    for (const auto &dimSd : argSd) {
+      res.push_back('{');
+      for (const auto &axis : dimSd) {
+        res += axis.get().name;
+        res.push_back(',');
+      }
+      res.pop_back();
       res.push_back('}');
-    } 
+    }
     res.push_back('}');
   }
   res.push_back('}');
   return res;
 };
 
-ShardingDecision Sharder::toSD(const std::string& sdStr) {
+ShardingDecision Sharder::toSD(const std::string &sdStr) {
   ShardingDecision sd;
   int level = 0;
   for (int i = 0; i < sdStr.size(); i++) {
     if (sdStr[i] == '{') {
-      level += 1;  
+      level += 1;
       if (level == 2) {
         ArgSharding argSd;
         while (!(sdStr[i] == '}' && level == 2)) {
@@ -144,7 +146,8 @@ ShardingDecision Sharder::toSD(const std::string& sdStr) {
             }
             auto axisOptional = getMeshAxis(axisName);
             if (!axisOptional.has_value()) {
-              llvm::errs() << "axis not found with name: " << axisName << ", parse fail!\n";
+              llvm::errs() << "axis not found with name: " << axisName
+                           << ", parse fail!\n";
               std::exit(EXIT_FAILURE);
             }
             dimSd.push_back(axisOptional.value());
@@ -154,12 +157,13 @@ ShardingDecision Sharder::toSD(const std::string& sdStr) {
         sd.push_back(std::move(argSd));
       }
     }
-  } 
+  }
   return sd;
 };
 
-std::optional<std::reference_wrapper<const MeshAxis>> Sharder::getMeshAxis(const std::string& axisName) {
-  for (const auto& meshAxis : this->meshAxes) {
+std::optional<std::reference_wrapper<const MeshAxis>>
+Sharder::getMeshAxis(const std::string &axisName) {
+  for (const auto &meshAxis : this->meshAxes) {
     if (meshAxis.name == axisName) {
       return std::make_optional(meshAxis);
     }
@@ -176,7 +180,7 @@ void Sharder::deserializeProfile() {
   {
     std::unique_lock<std::shared_mutex> wLock(profileMtx);
     if (!std::filesystem::exists(profilePath)) {
-      std::ofstream file{profilePath}; 
+      std::ofstream file{profilePath};
       if (!file) {
         llvm::errs() << "can not create corresponding profile file!\n";
         std::exit(EXIT_FAILURE);
@@ -192,22 +196,47 @@ void Sharder::deserializeProfile() {
     std::exit(EXIT_FAILURE);
   }
   assert(data.is_array());
-  this->profile = std::move(ShPGOProfile(std::move(data)));
+  this->profile = ShPGOProfile(std::move(data));
   return;
 }
 
-void Sharder::startRecordProfile(const ShardingDecision& sd) {
-  auto start = std::chrono::steady_clock::now();  
+uint64_t Sharder::getNextID() {
+  return this->nextId_.fetch_add(1, std::memory_order_relaxed);
+};
+
+std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
+Sharder::startRecordProfile(const ShardingDecision &sd,
+                            size_t kernelFingerprint) {
+  auto start = std::chrono::steady_clock::now();
+  uint64_t id = getNextID();
+  std::string devmeshFingerprint = "{";
+  for (const auto &s : this->deviceMesh) {
+    devmeshFingerprint += s;
+    devmeshFingerprint.push_back(',');
+  }
+  devmeshFingerprint.push_back('}');
   ShPGORecord rec = {
-    .sd = sd,
-    .devMeshFingerprint = "NVidia",
-    .kernelFingerprint = ,
-    .hwFingerprint = "A100",
+      .id = id,
+      .kernelFingerprint = kernelFingerprint,
+      .devMeshFingerprint = devmeshFingerprint,
+      .hwFingerprint =
+          "A100", // TODO: detect from the environment or by user input?
+      .sd = sd,
   };
-  this->uncommitedRecords.push_back(ShPGORecord &&Elt)
+  this->uncommitedRecords[id] = std::move(rec);
+  return std::make_pair(id, start);
 };
 
-void Sharder::endRecordProfile() {
+void Sharder::endRecordProfile(uint64_t ID, const std::chrono::time_point<std::chrono::steady_clock>&& start) {
+  auto end = std::chrono::steady_clock::now();
+  auto it = this->uncommitedRecords.find(ID);
+  if (it == uncommitedRecords.end()) {
+    llvm::errs() << "Record not found in uncommitedRecords!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  auto& rec = it->second;
+  rec.exeTime = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  return;
+}
 
-};
 

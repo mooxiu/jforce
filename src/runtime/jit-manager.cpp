@@ -45,7 +45,7 @@
   llvm::errs() << "Pass pipeline: ";                                           \
   pm.printAsTextualPipeline(llvm::errs());                                     \
   llvm::errs() << "\n";                                                        \
-  ctx.disableMultithreading();                                                \
+  ctx.disableMultithreading();                                                 \
   pm.enableIRPrinting()
 #else
 #define PRINT_PASS()
@@ -137,8 +137,8 @@ static TargetDeviceType getTargetDeviceFromEnv() {
 }
 
 static std::string getProfileFileFromEnv() {
-  const char* path = std::getenv("JFORCE_PROFILE_FILE");
-  if (!path|| *path == '\0') {
+  const char *path = std::getenv("JFORCE_PROFILE_FILE");
+  if (!path || *path == '\0') {
     llvm::report_fatal_error("JFORCE_TARGET_DEVICE is not set; "
                              "expected CPU, CUDA, ROCM, or TPU.");
   }
@@ -318,12 +318,12 @@ mlir::func::FuncOp JitManager::lowerToStableHLO(mlir::ModuleOp moduleOp) {
   // Lower JItCode to StableHLO
   mlir::PassManager pm(&this->context);
   // INFO: uncomment print pass when we need to debug the IR transformation
-  auto& ctx = this->context;
+  auto &ctx = this->context;
   PRINT_PASS();
   pm.enableCrashReproducerGeneration("./crash_repro.mlir");
 
   bool hasWorkdistribute = false;
-  moduleOp.walk([&](omp::WorkdistributeOp){
+  moduleOp.walk([&](omp::WorkdistributeOp) {
     hasWorkdistribute = true;
     return mlir::WalkResult::interrupt();
   });
@@ -460,7 +460,8 @@ mlir::ModuleOp JitManager::annoateShardyInfo(mlir::ModuleOp moduleOp,
 
 L2JitMetas *
 JitManager::createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
-                             mlir::func::FuncOp kernelFunc, size_t kernelFingerprint) {
+                             mlir::func::FuncOp kernelFunc,
+                             size_t kernelFingerprint) {
   mlir::OpBuilder opBuilder(&this->context);
   auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
   ShardingDecision sd = sharder.heuristicShard(moduleOp);
@@ -507,13 +508,15 @@ L2JitMetas *JitManager::getOrCompileKernel(void *JitCode, int64_t NumArgs,
       auto moduleRef = preprocessModuleOp(JitCode, NumArgs, TgtArgs, ArgPtrs,
                                           ArgSizes, ArgTypes);
       auto kernelFunc = lowerToStableHLO(moduleRef.get());
-      return createL2JitMetas(l2CacheKey, kernelFunc);
+      return createL2JitMetas(
+          l2CacheKey, kernelFunc,
+          std::hash<std::string>{}(reinterpret_cast<char *>(JitCode)));
     }
   } else {
     // Neither L1Cache nor L2Cache hit.
-    std::string jitCodeText(reinterpret_cast<char*>(JitCode));
-    std::size_t kernelFingerprint = std::hash<std::string>{}(jitCodeText);
-    
+    std::size_t kernelFingerprint =
+        std::hash<std::string>{}(reinterpret_cast<char *>(JitCode));
+
     auto moduleRef = preprocessModuleOp(JitCode, NumArgs, TgtArgs, ArgPtrs,
                                         ArgSizes, ArgTypes);
     auto kernelFunc = lowerToStableHLO(moduleRef.get());
@@ -534,14 +537,16 @@ void JitManager::destroyHostBoundBuffers(void *hostPtr) {
   deviceManager.destroyHostBoundBuffers(hostPtr);
 }
 
-bool JitManager::invalidateCachedDeviceBuffers(void *forgedTgtPtr, size_t size) {
+bool JitManager::invalidateCachedDeviceBuffers(void *forgedTgtPtr,
+                                               size_t size) {
   return deviceManager.invalidateDeviceBuffers(forgedTgtPtr, size);
 }
 
 // TODO: for each device, we probably should use thread to do the IO
 static void prepareInputBuffersForSingleDevice(
     int devIdx, DeviceManager &devManager, const TensorDesc *args,
-    const unsigned int count, std::vector<std::vector<PJRT_Buffer *>>& inBuffers,
+    const unsigned int count,
+    std::vector<std::vector<PJRT_Buffer *>> &inBuffers,
     const ShardingDecision &sd, const llvm::SmallVector<size_t> &devPos) {
 
   for (int argIdx = 0; argIdx < count; argIdx++) {
@@ -669,7 +674,7 @@ static void prepareInputBuffersForSingleDevice(
 
 void JitManager::prepareInputBuffers(
     const TensorDesc *args, const unsigned int count,
-    std::vector<std::vector<PJRT_Buffer *>>& inBuffers,
+    std::vector<std::vector<PJRT_Buffer *>> &inBuffers,
     const ShardingDecision &sd) {
   // TODO: be compatible with existing plugins.
   // currently only consider TPU runtime plugin
@@ -774,18 +779,8 @@ void JitManager::manageOutBuffers(int inArgsCount,
   }
 }
 
-void JitManager::startShardingProfiling() {
-  this->sharder.startRecordProfile();
-}
-
-void JitManager::endShardingProfiling() {
-  this->sharder.endRecordProfile();
-}
-
-void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-                        const std::string &kernelFuncStr,
-                        const ShardingDecision &sd) {
-  startShardingProfiling(sd, kernelFuncStr);
+void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
+  auto idAndStartPair = sharder.startRecordProfile(l2Cache->sd, l2Cache->kernelFingerprint);
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
   // TODO: improve this when it becomes slow
   // InputBufs[deviceId][argIdx]
@@ -797,7 +792,7 @@ void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
   // InputBufs are buffers in each devices.
   DEBUG_PRINT("Before manage input buffers");
   prepareInputBuffers(kernelArgs->inputArgs, kernelArgs->inputArgCount,
-                      inputBufs, sd);
+                      inputBufs, l2Cache->sd);
   DEBUG_PRINT("Finish manage input buffers");
 
   PJRT_Buffer ***inputBufsList;
@@ -821,7 +816,7 @@ void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
   outputBufsList = rawOutputBufs.data();
 
   DEBUG_PRINT("Before executing");
-  executeOnMultiDevices(exec, inputBufsList, outputBufsList,
+  executeOnMultiDevices(l2Cache->exe, inputBufsList, outputBufsList,
                         kernelArgs->inputArgCount);
   DEBUG_PRINT("Finish executing");
 
@@ -829,7 +824,6 @@ void JitManager::launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
   manageOutBuffers(kernelArgs->inputArgCount, outputBufsList,
                    kernelArgs->inputArgs, kernelArgs->outputArgs);
   DEBUG_PRINT("Finish manage out buffers");
-
-  endShardingProfiling();
+  sharder.endRecordProfile(idAndStartPair.first, std::move(idAndStartPair.second));
   return;
 }
