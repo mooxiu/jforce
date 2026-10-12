@@ -186,7 +186,7 @@ void Sharder::flushProfile() {
 
   auto data = nlohmann::json::array();
   file >> std::ws;
-  if (file.peek() == std::char_traits<char>::eof()) {
+  if (file.peek() != std::char_traits<char>::eof()) {
     file >> data;
   }
   for (const auto& entry: uncommitedRecords) {
