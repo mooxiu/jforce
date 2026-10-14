@@ -88,8 +88,8 @@ set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   protobuf
   GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
-  # GIT_TAG v29.5
-  GIT_TAG v30.2
+  GIT_TAG v29.5
+  # GIT_TAG v30.2
 )
 FetchContent_MakeAvailable(protobuf)
 

@@ -31,6 +31,44 @@
 
 using namespace nlohmann;
 
+
+ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
+  if (!data.is_array()) {
+    llvm::report_fatal_error("Sharding profile must be an array");
+  }
+  records.reserve(data.size());
+    
+  for (const auto& entry: data) {
+    auto field = [&](const char* name) -> const nlohmann::json & {
+      auto it = entry.find(name);
+      if (it == entry.end()) {
+        llvm::errs() << "Missing profile field: " << name << "\n";
+      }
+      return *it;
+    };
+
+    auto number = [&](const char* name) -> uint64_t {
+      const auto& value = field(name);
+      return value.get<uint64_t>();
+    };
+
+    auto text = [&](const char* name) -> std::string {
+      const auto& value = field(name);
+      return value.get<std::string>();
+    };
+
+    ShPGORecord rec{};
+    rec.kernelFingerprint = static_cast<size_t>(number("kernelFingerprint"));
+    rec.devMeshFingerprint = text("devMeshFingerprint");
+    rec.hwFingerprint = text("hwFingerprint");
+    rec.sd = sharder.toSD(text("sd"));
+    rec.exeTime = number("exeTime");
+
+    this->records.push_back(std::move(rec));
+  }
+}
+
+
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
 Sharder::Sharder(uint32_t deviceCount, std::string profilePath = "")
@@ -115,7 +153,6 @@ std::string Sharder::toStr(const ShardingDecision &sd) {
         res += axis.get().name;
         res.push_back(',');
       }
-      res.pop_back();
       res.push_back('}');
     }
     res.push_back('}');
@@ -124,41 +161,55 @@ std::string Sharder::toStr(const ShardingDecision &sd) {
   return res;
 };
 
+// Example: {{{axis-0,}{}{}}}
 ShardingDecision Sharder::toSD(const std::string &sdStr) {
+  size_t pos = 0;
+  auto expect = [&](char c) {
+    if (pos >= sdStr.size() || sdStr[pos] != c) {
+      llvm::report_fatal_error("Malformed sharding decision.");
+    } 
+    pos += 1;
+  };
+
+  auto at = [&](char c) {
+    return pos < sdStr.size() && sdStr[pos] == c;
+  };
+
   ShardingDecision sd;
-  int level = 0;
-  for (int i = 0; i < sdStr.size(); i++) {
-    if (sdStr[i] == '{') {
-      level += 1;
-      if (level == 2) {
-        ArgSharding argSd;
-        while (!(sdStr[i] == '}' && level == 2)) {
-          i += 1;
-          DimSharding dimSd;
-          if (sdStr[i] == '{') {
-            level += 1;
-          } else if (sdStr[i] == '}') {
-            level -= 1;
-          } else {
-            std::string axisName;
-            while (sdStr[i] != ',') {
-              axisName.push_back(sdStr[i]);
-              i += 1;
-            }
-            auto axisOptional = getMeshAxis(axisName);
-            if (!axisOptional.has_value()) {
-              llvm::errs() << "axis not found with name: " << axisName
-                           << ", parse fail!\n";
-              std::exit(EXIT_FAILURE);
-            }
-            dimSd.push_back(axisOptional.value());
-          }
-          argSd.push_back(std::move(dimSd));
+  expect('{');
+  while (!at('}')) {
+
+    ArgSharding argSd;
+    expect('{');
+
+    while(!at('}')) {
+
+      DimSharding dimSd;
+      expect('{');
+
+      while(!at('}')) {
+        const size_t start = pos;
+        while (pos < sdStr.size() && sdStr[pos] != ',' && sdStr[pos] != '{' && sdStr[pos] != '}') {
+          pos += 1;
         }
-        sd.push_back(std::move(argSd));
+        const std::string axisName = sdStr.substr(start, pos - start);
+        expect(',');
+
+        auto axis = getMeshAxis(axisName);
+        if (!axis) {
+          llvm::errs() << "Unknown mesh axis: " << axisName << "\n";
+          llvm::report_fatal_error("Invalid sharding decision.");
+        }
+        dimSd.push_back(*axis);
       }
+      expect('}');
+
+      argSd.push_back(dimSd);
     }
+    expect('}');
+    sd.push_back(argSd);
   }
+  expect('}');
   return sd;
 };
 
@@ -192,7 +243,6 @@ void Sharder::flushProfile() {
   for (const auto& entry: uncommitedRecords) {
     const auto& rec = entry.second;
     data.push_back({
-      {"id", rec.id},
       {"kernelFingerprint", rec.kernelFingerprint},
       {"devMeshFingerprint", rec.devMeshFingerprint},
       {"hwFingerprint", rec.hwFingerprint},
@@ -223,18 +273,22 @@ void Sharder::deserializeProfile() {
         llvm::errs() << "can not create corresponding profile file!\n";
         std::exit(EXIT_FAILURE);
       }
+      file << "[]\n";
     }
   }
 
   std::shared_lock<std::shared_mutex> rLock(profileMtx);
   std::ifstream in(profilePath, std::ios_base::in);
+  if (!in) {
+    llvm::report_fatal_error("Cannot open sharding profile.");
+  }
   nlohmann::json data = nlohmann::json::parse(in);
-  if (!data) {
-    llvm::errs() << "parse fail!\n";
+  if (data.is_discarded() || !data.is_array()) {
+    llvm::errs() << "Data should be a valid json file!\n";
     std::exit(EXIT_FAILURE);
   }
   assert(data.is_array());
-  this->profile = ShPGOProfile(std::move(data));
+  this->profile = ShPGOProfile(std::move(data), *this);
   return;
 }
 
@@ -254,7 +308,6 @@ Sharder::startRecordProfile(const ShardingDecision &sd,
   }
   devmeshFingerprint.push_back('}');
   ShPGORecord rec = {
-      .id = id,
       .kernelFingerprint = kernelFingerprint,
       .devMeshFingerprint = devmeshFingerprint,
       .hwFingerprint =

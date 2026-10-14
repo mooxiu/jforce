@@ -139,8 +139,7 @@ static TargetDeviceType getTargetDeviceFromEnv() {
 static std::string getProfileFileFromEnv() {
   const char *path = std::getenv("JFORCE_PROFILE_FILE");
   if (!path || *path == '\0') {
-    llvm::report_fatal_error("JFORCE_TARGET_DEVICE is not set; "
-                             "expected CPU, CUDA, ROCM, or TPU.");
+    llvm::report_fatal_error("JFORCE_PROFILE_FILE is missing, will use default!");
   }
   std::string name(path);
   return name;

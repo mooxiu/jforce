@@ -40,7 +40,6 @@ using ShardingDecision = std::vector<ArgSharding>;
 
 // Profile to be serialized or deserialized, inserted.
 struct ShPGORecord {
-  uint64_t id;
   size_t kernelFingerprint;
   std::string devMeshFingerprint;
   std::string hwFingerprint;
@@ -48,10 +47,12 @@ struct ShPGORecord {
   uint64_t exeTime;
 };
 
+class Sharder;
+
 struct ShPGOProfile {
   llvm::SmallVector<ShPGORecord> records;
-  ShPGOProfile();
-  ShPGOProfile(nlohmann::json &&json);
+  ShPGOProfile() = default;
+  ShPGOProfile(nlohmann::json &&json, Sharder& sharder);
 };
 
 struct L1JitMetas {
