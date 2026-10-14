@@ -124,6 +124,8 @@ struct TensorDesc {
   }
 };
 
+// TODO: inputArgs and outputArgs are actually array here, but were written in C style pointer for legacy reasons.
+// Should update them to vector so it is more clear.
 struct KernelArgs {
   unsigned int inputArgCount;
   TensorDesc *inputArgs;

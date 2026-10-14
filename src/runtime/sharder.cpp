@@ -30,15 +30,14 @@
 
 using namespace nlohmann;
 
-
 ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
   if (!data.is_array()) {
     llvm::report_fatal_error("Sharding profile must be an array");
   }
   records.reserve(data.size());
-    
-  for (const auto& entry: data) {
-    auto field = [&](const char* name) -> const nlohmann::json & {
+
+  for (const auto &entry : data) {
+    auto field = [&](const char *name) -> const nlohmann::json & {
       auto it = entry.find(name);
       if (it == entry.end()) {
         llvm::errs() << "Missing profile field: " << name << "\n";
@@ -46,18 +45,20 @@ ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
       return *it;
     };
 
-    auto number = [&](const char* name) -> uint64_t {
-      const auto& value = field(name);
+    auto number = [&](const char *name) -> uint64_t {
+      const auto &value = field(name);
       return value.get<uint64_t>();
     };
 
-    auto text = [&](const char* name) -> std::string {
-      const auto& value = field(name);
+    auto text = [&](const char *name) -> std::string {
+      const auto &value = field(name);
       return value.get<std::string>();
     };
-
+    
     ShPGORecord rec{};
     rec.kernelFingerprint = static_cast<size_t>(number("kernelFingerprint"));
+    rec.argShapes = field("argShapes").get<std::vector<std::vector<int64_t>>>();
+    rec.argDTypes = field("argDTypes").get<std::vector<DType>>();
     rec.devMeshFingerprint = text("devMeshFingerprint");
     rec.hwFingerprint = text("hwFingerprint");
     rec.sd = sharder.toSD(text("sd"));
@@ -66,7 +67,6 @@ ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
     this->records.push_back(std::move(rec));
   }
 }
-
 
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
@@ -166,13 +166,11 @@ ShardingDecision Sharder::toSD(const std::string &sdStr) {
   auto expect = [&](char c) {
     if (pos >= sdStr.size() || sdStr[pos] != c) {
       llvm::report_fatal_error("Malformed sharding decision.");
-    } 
+    }
     pos += 1;
   };
 
-  auto at = [&](char c) {
-    return pos < sdStr.size() && sdStr[pos] == c;
-  };
+  auto at = [&](char c) { return pos < sdStr.size() && sdStr[pos] == c; };
 
   ShardingDecision sd;
   expect('{');
@@ -181,14 +179,15 @@ ShardingDecision Sharder::toSD(const std::string &sdStr) {
     ArgSharding argSd;
     expect('{');
 
-    while(!at('}')) {
+    while (!at('}')) {
 
       DimSharding dimSd;
       expect('{');
 
-      while(!at('}')) {
+      while (!at('}')) {
         const size_t start = pos;
-        while (pos < sdStr.size() && sdStr[pos] != ',' && sdStr[pos] != '{' && sdStr[pos] != '}') {
+        while (pos < sdStr.size() && sdStr[pos] != ',' && sdStr[pos] != '{' &&
+               sdStr[pos] != '}') {
           pos += 1;
         }
         const std::string axisName = sdStr.substr(start, pos - start);
@@ -239,14 +238,16 @@ void Sharder::flushProfile() {
   if (file.peek() != std::char_traits<char>::eof()) {
     file >> data;
   }
-  for (const auto& entry: uncommitedRecords) {
-    const auto& rec = entry.second;
+  for (const auto &entry : uncommitedRecords) {
+    const auto &rec = entry.second;
     data.push_back({
-      {"kernelFingerprint", rec.kernelFingerprint},
-      {"devMeshFingerprint", rec.devMeshFingerprint},
-      {"hwFingerprint", rec.hwFingerprint},
-      {"sd", toStr(rec.sd)},
-      {"exeTime", rec.exeTime},
+        {"kernelFingerprint", rec.kernelFingerprint},
+        {"argShapes", rec.argShapes},
+        {"argDTypes", rec.argDTypes},
+        {"devMeshFingerprint", rec.devMeshFingerprint},
+        {"hwFingerprint", rec.hwFingerprint},
+        {"sd", toStr(rec.sd)},
+        {"exeTime", rec.exeTime},
     });
   }
   const std::filesystem::path tempPath = profilePath + ".tmp";
@@ -297,9 +298,18 @@ uint64_t Sharder::getNextID() {
 
 std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
 Sharder::startRecordProfile(const ShardingDecision &sd,
-                            size_t kernelFingerprint) {
+                            size_t kernelFingerprint, const KernelArgs &args) {
   auto start = std::chrono::steady_clock::now();
   uint64_t id = getNextID();
+
+  std::vector<std::vector<int64_t>> argShapes;
+  std::vector<DType> argDTypes;
+  for (int idx = 0; idx < args.inputArgCount; idx++) {
+    auto arg = args.inputArgs[idx];
+    argShapes.push_back(std::move(arg.shape));
+    argDTypes.push_back(std::move(arg.dtype));
+  }
+  
   std::string devmeshFingerprint = "{";
   for (const auto &s : this->deviceMesh) {
     devmeshFingerprint += s;
@@ -308,6 +318,8 @@ Sharder::startRecordProfile(const ShardingDecision &sd,
   devmeshFingerprint.push_back('}');
   ShPGORecord rec = {
       .kernelFingerprint = kernelFingerprint,
+      .argShapes = std::move(argShapes),
+      .argDTypes = std::move(argDTypes),
       .devMeshFingerprint = devmeshFingerprint,
       .hwFingerprint =
           "A100", // TODO: detect from the environment or by user input?
@@ -320,7 +332,9 @@ Sharder::startRecordProfile(const ShardingDecision &sd,
   return std::make_pair(id, start);
 };
 
-void Sharder::endRecordProfile(uint64_t ID, const std::chrono::time_point<std::chrono::steady_clock>&& start) {
+void Sharder::endRecordProfile(
+    uint64_t ID,
+    const std::chrono::time_point<std::chrono::steady_clock> &&start) {
   auto end = std::chrono::steady_clock::now();
 
   std::unique_lock<std::shared_mutex> lock(profileMtx);
@@ -329,9 +343,8 @@ void Sharder::endRecordProfile(uint64_t ID, const std::chrono::time_point<std::c
     llvm::errs() << "Record not found in uncommitedRecords!\n";
     std::exit(EXIT_FAILURE);
   }
-  auto& rec = it->second;
-  rec.exeTime = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  auto &rec = it->second;
+  rec.exeTime =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
   return;
 }
-
-

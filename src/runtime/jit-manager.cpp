@@ -779,7 +779,7 @@ void JitManager::manageOutBuffers(int inArgsCount,
 }
 
 void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
-  auto idAndStartPair = sharder.startRecordProfile(l2Cache->sd, l2Cache->kernelFingerprint);
+  auto idAndStartPair = sharder.startRecordProfile(l2Cache->sd, l2Cache->kernelFingerprint, *kernelArgs);
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
   // TODO: improve this when it becomes slow
   // InputBufs[deviceId][argIdx]

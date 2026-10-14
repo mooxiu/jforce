@@ -63,7 +63,7 @@ class Sharder;
 struct ShPGOProfile {
   llvm::SmallVector<ShPGORecord> records;
   ShPGOProfile() = default;
-  ShPGOProfile(nlohmann::json &&json, Sharder& sharder);
+  ShPGOProfile(nlohmann::json &&json, Sharder &sharder);
 };
 
 struct L1JitMetas {
@@ -189,8 +189,12 @@ public:
   // Return the id for uncommited profiling record
   uint64_t getNextID();
   // Return <ID, start time point>
-  std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>> startRecordProfile(const ShardingDecision& sd, size_t kernelFingerprint);
-  void endRecordProfile(uint64_t ID, const std::chrono::time_point<std::chrono::steady_clock>&& start);
+  std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
+  startRecordProfile(const ShardingDecision &sd, size_t kernelFingerprint,
+                     const KernelArgs &);
+  void endRecordProfile(
+      uint64_t ID,
+      const std::chrono::time_point<std::chrono::steady_clock> &&start);
 
 private:
   uint32_t deviceCount;
@@ -263,6 +267,6 @@ public:
   launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                const std::string &kernelFuncStr);
 
-  void launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs);
+  void launch(const L2JitMetas *l2Cache, KernelArgs *kernelArgs);
 };
 #endif
