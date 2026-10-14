@@ -24,7 +24,6 @@
 #include <optional>
 #include <shared_mutex>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>

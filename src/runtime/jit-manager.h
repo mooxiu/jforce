@@ -39,8 +39,19 @@ using ArgSharding = std::vector<DimSharding>;
 using ShardingDecision = std::vector<ArgSharding>;
 
 // Profile to be serialized or deserialized, inserted.
+// {
+//  "kernelFingerprint": 1234,
+//  "argShapes": [[1024, 64], [64], []],
+//  "argDTypes": ["f32", "f32", "i32"],
+//  "devMeshFingerprint": "...",
+//  "hwFingerprint": "...",
+//  "sd": "{{{axis-0,}{}}{{}}{}}",
+//  "exeTime": 123456
+// }
 struct ShPGORecord {
   size_t kernelFingerprint;
+  std::vector<std::vector<int64_t>> argShapes;
+  std::vector<DType> argDTypes;
   std::string devMeshFingerprint;
   std::string hwFingerprint;
   ShardingDecision sd;
