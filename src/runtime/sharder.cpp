@@ -36,35 +36,36 @@ ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
   }
   records.reserve(data.size());
 
+  auto field = [&](nlohmann::json entry,
+                   const char *name) -> const nlohmann::json & {
+    auto it = entry.find(name);
+    if (it == entry.end()) {
+      llvm::errs() << "Missing profile field: " << name << "\n";
+    }
+    return *it;
+  };
+
   for (const auto &entry : data) {
-    auto field = [&](const char *name) -> const nlohmann::json & {
-      auto it = entry.find(name);
-      if (it == entry.end()) {
-        llvm::errs() << "Missing profile field: " << name << "\n";
-      }
-      return *it;
-    };
-
-    auto number = [&](const char *name) -> uint64_t {
-      const auto &value = field(name);
-      return value.get<uint64_t>();
-    };
-
-    auto text = [&](const char *name) -> std::string {
-      const auto &value = field(name);
-      return value.get<std::string>();
-    };
-    
-    ShPGORecord rec{};
-    rec.kernelFingerprint = static_cast<size_t>(number("kernelFingerprint"));
-    rec.argShapes = field("argShapes").get<std::vector<std::vector<int64_t>>>();
-    rec.argDTypes = field("argDTypes").get<std::vector<DType>>();
-    rec.devMeshFingerprint = text("devMeshFingerprint");
-    rec.hwFingerprint = text("hwFingerprint");
-    rec.sd = sharder.toSD(text("sd"));
-    rec.exeTime = number("exeTime");
-
-    this->records.push_back(std::move(rec));
+    ShPGOProgramRecord programRec{};
+    programRec.devMeshFingerprint =
+        field(entry, "devMeshFingerprint").get<std::string>();
+    programRec.hwFingerprint = field(entry, "hwFingerprint").get<std::string>();
+    auto kernelRecordsField = field(entry, "kernelRecords");
+    std::vector<ShPGOKernelRecord> kernelRecords;
+    kernelRecords.reserve(kernelRecordsField.size());
+    for (const auto &kernelEntry : kernelRecordsField) {
+      ShPGOKernelRecord rec{};
+      rec.kernelFingerprint = static_cast<size_t>(
+          field(kernelEntry, "kernelFingerprint").get<uint64_t>());
+      rec.argShapes = field(kernelEntry, "argShapes")
+                          .get<std::vector<std::vector<int64_t>>>();
+      rec.argDTypes = field(kernelEntry, "argDTypes").get<std::vector<DType>>();
+      rec.sd = sharder.toSD(field(kernelEntry, "sd"));
+      rec.kernelExeTime =
+          field(kernelEntry, "kernelExeTime").get<std::uint64_t>();
+      kernelRecords.push_back(std::move(rec));
+    }
+    programRec.kernelRecords = std::move(kernelRecords);
   }
 }
 
@@ -100,7 +101,7 @@ Sharder::Sharder(uint32_t deviceCount, std::string profilePath = "")
 }
 
 Sharder::~Sharder() {
-  if (!uncommitedRecords.empty()) {
+  if (!uncommitedRecords_.empty()) {
     flushProfile();
   }
 }
@@ -238,18 +239,33 @@ void Sharder::flushProfile() {
   if (file.peek() != std::char_traits<char>::eof()) {
     file >> data;
   }
-  for (const auto &entry : uncommitedRecords) {
+
+  auto invocations = nlohmann::json::array();
+  for (const auto &entry : uncommitedRecords_) {
     const auto &rec = entry.second;
-    data.push_back({
+    invocations.push_back({
         {"kernelFingerprint", rec.kernelFingerprint},
         {"argShapes", rec.argShapes},
         {"argDTypes", rec.argDTypes},
-        {"devMeshFingerprint", rec.devMeshFingerprint},
-        {"hwFingerprint", rec.hwFingerprint},
         {"sd", toStr(rec.sd)},
-        {"exeTime", rec.exeTime},
+        {"kernelExeTime", rec.kernelExeTime},
     });
   }
+
+  std::string devMeshFingerprint = "{";
+  for (const auto &axis : this->deviceMesh) {
+    devMeshFingerprint += std::to_string(axis);
+    devMeshFingerprint.push_back(',');
+  }
+  devMeshFingerprint.push_back('}');
+
+  data.push_back({
+      {"devMeshFingerprint", devMeshFingerprint},
+      {"hwFingerprint", "A100"}, // TODO: update this
+      {"programExeTime:", this->totalExecutionTime_},
+      {"kernelRecords:", invocations},
+  });
+
   const std::filesystem::path tempPath = profilePath + ".tmp";
   {
     std::ofstream out(tempPath, std::ios::trunc);
@@ -261,7 +277,7 @@ void Sharder::flushProfile() {
     out.close();
   }
   std::filesystem::rename(tempPath, profilePath);
-  uncommitedRecords.clear();
+  uncommitedRecords_.clear();
 }
 
 void Sharder::deserializeProfile() {
@@ -309,25 +325,22 @@ Sharder::startRecordProfile(const ShardingDecision &sd,
     argShapes.push_back(std::move(arg.shape));
     argDTypes.push_back(std::move(arg.dtype));
   }
-  
+
   std::string devmeshFingerprint = "{";
   for (const auto &s : this->deviceMesh) {
     devmeshFingerprint += s;
     devmeshFingerprint.push_back(',');
   }
   devmeshFingerprint.push_back('}');
-  ShPGORecord rec = {
+  ShPGOKernelRecord rec = {
       .kernelFingerprint = kernelFingerprint,
       .argShapes = std::move(argShapes),
       .argDTypes = std::move(argDTypes),
-      .devMeshFingerprint = devmeshFingerprint,
-      .hwFingerprint =
-          "A100", // TODO: detect from the environment or by user input?
       .sd = sd,
   };
   {
     std::unique_lock<std::shared_mutex> lock(profileMtx);
-    this->uncommitedRecords[id] = std::move(rec);
+    this->uncommitedRecords_[id] = std::move(rec);
   }
   return std::make_pair(id, start);
 };
@@ -338,13 +351,14 @@ void Sharder::endRecordProfile(
   auto end = std::chrono::steady_clock::now();
 
   std::unique_lock<std::shared_mutex> lock(profileMtx);
-  auto it = this->uncommitedRecords.find(ID);
-  if (it == uncommitedRecords.end()) {
+  auto it = this->uncommitedRecords_.find(ID);
+  if (it == uncommitedRecords_.end()) {
     llvm::errs() << "Record not found in uncommitedRecords!\n";
     std::exit(EXIT_FAILURE);
   }
   auto &rec = it->second;
-  rec.exeTime =
+  rec.kernelExeTime =
       std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  totalExecutionTime_ += rec.kernelExeTime;
   return;
 }

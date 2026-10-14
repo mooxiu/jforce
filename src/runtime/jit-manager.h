@@ -40,28 +40,38 @@ using ShardingDecision = std::vector<ArgSharding>;
 
 // Profile to be serialized or deserialized, inserted.
 // {
-//  "kernelFingerprint": 1234,
-//  "argShapes": [[1024, 64], [64], []],
-//  "argDTypes": ["f32", "f32", "i32"],
 //  "devMeshFingerprint": "...",
 //  "hwFingerprint": "...",
-//  "sd": "{{{axis-0,}{}}{{}}{}}",
-//  "exeTime": 123456
+//  "programExeTime": 123456,
+//  {
+///   "kernelFingerprint": 1234,
+//    "argShapes": [[1024, 64], [64], []],
+//    "argDTypes": ["f32", "f32", "i32"],
+//    "sd": "{{{axis-0,}{}}{{}}{}}",
+//    "kernelExeTime": 123456
+//  },
+//  {
+//    ...
+//  },,
 // }
-struct ShPGORecord {
+struct ShPGOKernelRecord {
   size_t kernelFingerprint;
   std::vector<std::vector<int64_t>> argShapes;
   std::vector<DType> argDTypes;
+  ShardingDecision sd;
+  uint64_t kernelExeTime;
+};
+
+struct ShPGOProgramRecord {
   std::string devMeshFingerprint;
   std::string hwFingerprint;
-  ShardingDecision sd;
-  uint64_t exeTime;
+  std::vector<ShPGOKernelRecord> kernelRecords;
 };
 
 class Sharder;
 
 struct ShPGOProfile {
-  llvm::SmallVector<ShPGORecord> records;
+  llvm::SmallVector<ShPGOProgramRecord> records;
   ShPGOProfile() = default;
   ShPGOProfile(nlohmann::json &&json, Sharder &sharder);
 };
@@ -203,7 +213,8 @@ private:
   llvm::SmallVector<MeshAxis> meshAxes;
 
   std::atomic<std::uint64_t> nextId_{1};
-  llvm::DenseMap<uint64_t, ShPGORecord> uncommitedRecords;
+  uint64_t totalExecutionTime_; 
+  llvm::DenseMap<uint64_t, ShPGOKernelRecord> uncommitedRecords_;
 
   // Profile parsed
   ShPGOProfile profile;
