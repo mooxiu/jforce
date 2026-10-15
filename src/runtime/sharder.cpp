@@ -36,7 +36,7 @@ ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
   }
   records.reserve(data.size());
 
-  auto field = [&](nlohmann::json entry,
+  auto field = [&](const nlohmann::json& entry,
                    const char *name) -> const nlohmann::json & {
     auto it = entry.find(name);
     if (it == entry.end()) {
@@ -66,6 +66,7 @@ ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
       kernelRecords.push_back(std::move(rec));
     }
     programRec.kernelRecords = std::move(kernelRecords);
+    records.push_back(std::move(programRec));
   }
 }
 
@@ -262,8 +263,8 @@ void Sharder::flushProfile() {
   data.push_back({
       {"devMeshFingerprint", devMeshFingerprint},
       {"hwFingerprint", "A100"}, // TODO: update this
-      {"programExeTime:", this->totalExecutionTime_},
-      {"kernelRecords:", invocations},
+      {"programExeTime", this->totalExecutionTime_},
+      {"kernelRecords", invocations},
   });
 
   const std::filesystem::path tempPath = profilePath + ".tmp";
