@@ -9,8 +9,10 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
+#include "nlohmann/json_fwd.hpp"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -34,15 +36,44 @@ struct MeshAxis {
 // Because an argument has a
 using DimSharding = std::vector<std::reference_wrapper<const MeshAxis>>;
 using ArgSharding = std::vector<DimSharding>;
-// FIXME: do we have to assign the output sharding?
 using ShardingDecision = std::vector<ArgSharding>;
 
 // Profile to be serialized or deserialized, inserted.
-// TODO: currently, the key of decisions is written as a void*, this is wrong,
-// the pointer can be different in different invokes. I am considering something
-// like a hash(ModuleOp)...
-struct Profile {
-  llvm::DenseMap<void *, ShardingDecision> decisions;
+// {
+//  "devMeshFingerprint": "...",
+//  "hwFingerprint": "...",
+//  "programExeTime": 123456,
+//  {
+///   "kernelFingerprint": 1234,
+//    "argShapes": [[1024, 64], [64], []],
+//    "argDTypes": ["f32", "f32", "i32"],
+//    "sd": "{{{axis-0,}{}}{{}}{}}",
+//    "kernelExeTime": 123456
+//  },
+//  {
+//    ...
+//  },,
+// }
+struct ShPGOKernelRecord {
+  size_t kernelFingerprint;
+  std::vector<std::vector<int64_t>> argShapes;
+  std::vector<DType> argDTypes;
+  ShardingDecision sd;
+  uint64_t kernelExeTime;
+};
+
+struct ShPGOProgramRecord {
+  std::string devMeshFingerprint;
+  std::string hwFingerprint;
+  std::vector<ShPGOKernelRecord> kernelRecords;
+};
+
+class Sharder;
+
+struct ShPGOProfile {
+  llvm::SmallVector<ShPGOProgramRecord> records;
+  ShPGOProfile() = default;
+  ShPGOProfile(nlohmann::json &&json, Sharder &sharder);
 };
 
 struct L1JitMetas {
@@ -53,14 +84,19 @@ struct L2JitMetas {
   PJRT_LoadedExecutable *exe;
   std::vector<mlir::Type> kernelFuncTypes;
   std::string kernelFuncStr;
+
   ShardingDecision sd;
+  // Finger print of the original JITCode, without size specialization.
+  // Why: same code with different runtime size can be autotuned.
+  size_t kernelFingerprint;
 
   L2JitMetas() = delete;
   L2JitMetas(PJRT_LoadedExecutable *exe,
              std::vector<mlir::Type> kernelFuncTypes, std::string kernelFuncStr,
-             ShardingDecision sd)
+             ShardingDecision sd, size_t kernelFingerprint)
       : exe(exe), kernelFuncTypes(std::move(kernelFuncTypes)),
-        kernelFuncStr(std::move(kernelFuncStr)), sd(std::move(sd)) {};
+        kernelFuncStr(std::move(kernelFuncStr)), sd(std::move(sd)),
+        kernelFingerprint(kernelFingerprint) {};
 };
 
 class CacheManager {
@@ -147,7 +183,7 @@ class Sharder {
   friend class JitManager;
 
 public:
-  Sharder(uint32_t deviceSize);
+  Sharder(uint32_t deviceSize, std::string profilePath);
   ~Sharder();
   Sharder(const Sharder &) = delete;
   Sharder &operator=(const Sharder &) = delete;
@@ -155,6 +191,20 @@ public:
   // heuristicShard accept a moduleOp, and return a sharding decision.
   // The sharding decision is ideally made by using profilings.
   ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
+  std::string toStr(const ShardingDecision &sd);
+  ShardingDecision toSD(const std::string &sdStr);
+  std::optional<std::reference_wrapper<const MeshAxis>>
+  getMeshAxis(const std::string &axisName);
+
+  // Return the id for uncommited profiling record
+  uint64_t getNextID();
+  // Return <ID, start time point>
+  std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
+  startRecordProfile(const ShardingDecision &sd, size_t kernelFingerprint,
+                     const KernelArgs &);
+  void endRecordProfile(
+      uint64_t ID,
+      const std::chrono::time_point<std::chrono::steady_clock> &&start);
 
 private:
   uint32_t deviceCount;
@@ -162,13 +212,18 @@ private:
   llvm::SmallVector<uint32_t> deviceMesh;
   llvm::SmallVector<MeshAxis> meshAxes;
 
-  Profile *profile = nullptr;
-  bool profileChangeFlag = false;
-  std::string profilePath = "";
+  std::atomic<std::uint64_t> nextId_{1};
+  uint64_t totalExecutionTime_; 
+  llvm::DenseMap<uint64_t, ShPGOKernelRecord> uncommitedRecords_;
 
-  void addToProfile();
-  void serializeProfile();
-  Profile *deserializeProfile();
+  // Profile parsed
+  ShPGOProfile profile;
+  std::string profilePath = "";
+  // prevent two threads change the same profile file concurrently
+  std::shared_mutex profileMtx;
+
+  void flushProfile();
+  void deserializeProfile();
 };
 
 class JitManager {
@@ -182,7 +237,8 @@ private:
   DeviceManager deviceManager;
   Sharder sharder;
   L2JitMetas *createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
-                               mlir::func::FuncOp kernelFunc);
+                               mlir::func::FuncOp kernelFunc,
+                               size_t kernelFingerprint);
   mlir::OwningOpRef<mlir::ModuleOp>
   preprocessModuleOp(void *JitCode, int64_t NumArgs, void **TgtArgs,
                      void **ArgPtrs, int64_t *ArgSizes, int64_t *ArgTypes);
@@ -222,7 +278,6 @@ public:
   launchKernel(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
                const std::string &kernelFuncStr);
 
-  void launch(PJRT_LoadedExecutable *exec, KernelArgs *kernelArgs,
-              const std::string &kernelFuncStr, const ShardingDecision &sd);
+  void launch(const L2JitMetas *l2Cache, KernelArgs *kernelArgs);
 };
 #endif

@@ -71,6 +71,12 @@ include_directories(
   ${SHARDY_BUILD_PATH} 
 )
 
+# -------------------- Use for parse json --------------------  
+include(FetchContent)
+
+FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
+FetchContent_MakeAvailable(json)
+
 # -------------------- Compile CPP Runtime as A library --------------------  
 include(FetchContent)
 
@@ -83,6 +89,7 @@ FetchContent_Declare(
   protobuf
   GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
   GIT_TAG v29.5
+  # GIT_TAG v30.2
 )
 FetchContent_MakeAvailable(protobuf)
 
@@ -108,6 +115,7 @@ add_library(jit-code-executor SHARED
   src/runtime/jit-manager.cpp
   src/runtime/pipelines.cpp
   src/runtime/sharder.cpp
+
 )
 
 # already public in transforms
@@ -124,6 +132,7 @@ target_link_libraries(jit-code-executor PRIVATE
 
 target_link_libraries(jit-code-executor PRIVATE
   -Wl,--start-group ${shardy_all_libs}  -Wl,--end-group
+  nlohmann_json::nlohmann_json
 )
 
 # -DENABLE_PROFILING

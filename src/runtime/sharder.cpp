@@ -8,17 +8,74 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <ios>
+#include <istream>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+using namespace nlohmann;
+
+ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
+  if (!data.is_array()) {
+    llvm::report_fatal_error("Sharding profile must be an array");
+  }
+  records.reserve(data.size());
+
+  auto field = [&](const nlohmann::json& entry,
+                   const char *name) -> const nlohmann::json & {
+    auto it = entry.find(name);
+    if (it == entry.end()) {
+      llvm::errs() << "Missing profile field: " << name << "\n";
+    }
+    return *it;
+  };
+
+  for (const auto &entry : data) {
+    ShPGOProgramRecord programRec{};
+    programRec.devMeshFingerprint =
+        field(entry, "devMeshFingerprint").get<std::string>();
+    programRec.hwFingerprint = field(entry, "hwFingerprint").get<std::string>();
+    auto kernelRecordsField = field(entry, "kernelRecords");
+    std::vector<ShPGOKernelRecord> kernelRecords;
+    kernelRecords.reserve(kernelRecordsField.size());
+    for (const auto &kernelEntry : kernelRecordsField) {
+      ShPGOKernelRecord rec{};
+      rec.kernelFingerprint = static_cast<size_t>(
+          field(kernelEntry, "kernelFingerprint").get<uint64_t>());
+      rec.argShapes = field(kernelEntry, "argShapes")
+                          .get<std::vector<std::vector<int64_t>>>();
+      rec.argDTypes = field(kernelEntry, "argDTypes").get<std::vector<DType>>();
+      rec.sd = sharder.toSD(field(kernelEntry, "sd"));
+      rec.kernelExeTime =
+          field(kernelEntry, "kernelExeTime").get<std::uint64_t>();
+      kernelRecords.push_back(std::move(rec));
+    }
+    programRec.kernelRecords = std::move(kernelRecords);
+    records.push_back(std::move(programRec));
+  }
+}
+
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
-Sharder::Sharder(uint32_t deviceCount) {
-  DEBUG_PRINT(llvm::formatv("Initializing Sharder. We got {0} devices.", deviceCount));
+Sharder::Sharder(uint32_t deviceCount, std::string profilePath = "")
+    : profile() {
+  DEBUG_PRINT(
+      llvm::formatv("Initializing Sharder. We got {0} devices.", deviceCount));
   this->deviceCount = deviceCount;
   this->deviceMesh = {deviceCount};
 
@@ -39,14 +96,14 @@ Sharder::Sharder(uint32_t deviceCount) {
     std::exit(EXIT_FAILURE);
   }
   if (!profilePath.empty()) {
-    this->profile = this->deserializeProfile();
+    this->profilePath = profilePath;
+    this->deserializeProfile();
   }
 }
 
 Sharder::~Sharder() {
-  if (profileChangeFlag && !profilePath.empty()) {
-    serializeProfile();
-    return;
+  if (!uncommitedRecords_.empty()) {
+    flushProfile();
   }
 }
 
@@ -85,15 +142,224 @@ ShardingDecision Sharder::heuristicShard(mlir::ModuleOp moduleOp) {
   // addToProfile
 }
 
-void Sharder::serializeProfile() {
-  llvm_unreachable("serialize profile not omplemented");
+// {{{}, .., {}}, }
+std::string Sharder::toStr(const ShardingDecision &sd) {
+  std::string res;
+  res.push_back('{');
+  for (const auto &argSd : sd) {
+    res.push_back('{');
+    for (const auto &dimSd : argSd) {
+      res.push_back('{');
+      for (const auto &axis : dimSd) {
+        res += axis.get().name;
+        res.push_back(',');
+      }
+      res.push_back('}');
+    }
+    res.push_back('}');
+  }
+  res.push_back('}');
+  return res;
+};
+
+// Example: {{{axis-0,}{}{}}}
+ShardingDecision Sharder::toSD(const std::string &sdStr) {
+  size_t pos = 0;
+  auto expect = [&](char c) {
+    if (pos >= sdStr.size() || sdStr[pos] != c) {
+      llvm::report_fatal_error("Malformed sharding decision.");
+    }
+    pos += 1;
+  };
+
+  auto at = [&](char c) { return pos < sdStr.size() && sdStr[pos] == c; };
+
+  ShardingDecision sd;
+  expect('{');
+  while (!at('}')) {
+
+    ArgSharding argSd;
+    expect('{');
+
+    while (!at('}')) {
+
+      DimSharding dimSd;
+      expect('{');
+
+      while (!at('}')) {
+        const size_t start = pos;
+        while (pos < sdStr.size() && sdStr[pos] != ',' && sdStr[pos] != '{' &&
+               sdStr[pos] != '}') {
+          pos += 1;
+        }
+        const std::string axisName = sdStr.substr(start, pos - start);
+        expect(',');
+
+        auto axis = getMeshAxis(axisName);
+        if (!axis) {
+          llvm::errs() << "Unknown mesh axis: " << axisName << "\n";
+          llvm::report_fatal_error("Invalid sharding decision.");
+        }
+        dimSd.push_back(*axis);
+      }
+      expect('}');
+
+      argSd.push_back(dimSd);
+    }
+    expect('}');
+    sd.push_back(argSd);
+  }
+  expect('}');
+  return sd;
+};
+
+std::optional<std::reference_wrapper<const MeshAxis>>
+Sharder::getMeshAxis(const std::string &axisName) {
+  for (const auto &meshAxis : this->meshAxes) {
+    if (meshAxis.name == axisName) {
+      return std::make_optional(meshAxis);
+    }
+  }
+  return std::nullopt;
+};
+
+void Sharder::flushProfile() {
+  std::unique_lock<std::shared_mutex> wLock(profileMtx);
+  if (!std::filesystem::exists(profilePath)) {
+    llvm::errs() << "can not create corresponding profile file!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  std::ifstream file{profilePath};
+  if (!file) {
+    llvm::errs() << "cannot open profile: " << profilePath << "\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  auto data = nlohmann::json::array();
+  file >> std::ws;
+  if (file.peek() != std::char_traits<char>::eof()) {
+    file >> data;
+  }
+
+  auto invocations = nlohmann::json::array();
+  for (const auto &entry : uncommitedRecords_) {
+    const auto &rec = entry.second;
+    invocations.push_back({
+        {"kernelFingerprint", rec.kernelFingerprint},
+        {"argShapes", rec.argShapes},
+        {"argDTypes", rec.argDTypes},
+        {"sd", toStr(rec.sd)},
+        {"kernelExeTime", rec.kernelExeTime},
+    });
+  }
+
+  std::string devMeshFingerprint = "{";
+  for (const auto &axis : this->deviceMesh) {
+    devMeshFingerprint += std::to_string(axis);
+    devMeshFingerprint.push_back(',');
+  }
+  devMeshFingerprint.push_back('}');
+
+  data.push_back({
+      {"devMeshFingerprint", devMeshFingerprint},
+      {"hwFingerprint", "A100"}, // TODO: update this
+      {"programExeTime", this->totalExecutionTime_},
+      {"kernelRecords", invocations},
+  });
+
+  const std::filesystem::path tempPath = profilePath + ".tmp";
+  {
+    std::ofstream out(tempPath, std::ios::trunc);
+    if (!out) {
+      llvm::errs() << "Cannot create temporary profile\n";
+      std::exit(EXIT_FAILURE);
+    }
+    out << data.dump(2);
+    out.close();
+  }
+  std::filesystem::rename(tempPath, profilePath);
+  uncommitedRecords_.clear();
 }
 
-Profile *Sharder::deserializeProfile() {
-  llvm_unreachable("deserialize profile not implemented");
+void Sharder::deserializeProfile() {
+  {
+    std::unique_lock<std::shared_mutex> wLock(profileMtx);
+    if (!std::filesystem::exists(profilePath)) {
+      std::ofstream file{profilePath};
+      if (!file) {
+        llvm::errs() << "can not create corresponding profile file!\n";
+        std::exit(EXIT_FAILURE);
+      }
+      file << "[]\n";
+    }
+  }
+
+  std::shared_lock<std::shared_mutex> rLock(profileMtx);
+  std::ifstream in(profilePath, std::ios_base::in);
+  if (!in) {
+    llvm::report_fatal_error("Cannot open sharding profile.");
+  }
+  nlohmann::json data = nlohmann::json::parse(in);
+  if (data.is_discarded() || !data.is_array()) {
+    llvm::errs() << "Data should be a valid json file!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  assert(data.is_array());
+  this->profile = ShPGOProfile(std::move(data), *this);
+  return;
 }
 
-void addToProfile(ShardingDecision *decsion) {
-  // TODO: maybe we can do topK etc.
-  llvm_unreachable("add to profile not implemented");
+uint64_t Sharder::getNextID() {
+  return this->nextId_.fetch_add(1, std::memory_order_relaxed);
+};
+
+std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
+Sharder::startRecordProfile(const ShardingDecision &sd,
+                            size_t kernelFingerprint, const KernelArgs &args) {
+  auto start = std::chrono::steady_clock::now();
+  uint64_t id = getNextID();
+
+  std::vector<std::vector<int64_t>> argShapes;
+  std::vector<DType> argDTypes;
+  for (int idx = 0; idx < args.inputArgCount; idx++) {
+    auto arg = args.inputArgs[idx];
+    argShapes.push_back(std::move(arg.shape));
+    argDTypes.push_back(std::move(arg.dtype));
+  }
+
+  std::string devmeshFingerprint = "{";
+  for (const auto &s : this->deviceMesh) {
+    devmeshFingerprint += s;
+    devmeshFingerprint.push_back(',');
+  }
+  devmeshFingerprint.push_back('}');
+  ShPGOKernelRecord rec = {
+      .kernelFingerprint = kernelFingerprint,
+      .argShapes = std::move(argShapes),
+      .argDTypes = std::move(argDTypes),
+      .sd = sd,
+  };
+  {
+    std::unique_lock<std::shared_mutex> lock(profileMtx);
+    this->uncommitedRecords_[id] = std::move(rec);
+  }
+  return std::make_pair(id, start);
+};
+
+void Sharder::endRecordProfile(
+    uint64_t ID,
+    const std::chrono::time_point<std::chrono::steady_clock> &&start) {
+  auto end = std::chrono::steady_clock::now();
+
+  std::unique_lock<std::shared_mutex> lock(profileMtx);
+  auto it = this->uncommitedRecords_.find(ID);
+  if (it == uncommitedRecords_.end()) {
+    llvm::errs() << "Record not found in uncommitedRecords!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  auto &rec = it->second;
+  rec.kernelExeTime =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  totalExecutionTime_ += rec.kernelExeTime;
+  return;
 }
