@@ -9,10 +9,8 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
-#include "nlohmann/json_fwd.hpp"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -21,60 +19,8 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-struct MeshAxis {
-  std::string name;
-  int ordinal;
-  int64_t size;
-
-  MeshAxis(std::string name_, int ordinal_, int64_t size_)
-      : name(name_), ordinal(ordinal_), size(size_) {};
-};
-
-// Each arg is a nested dimenisonal arrary.
-// ArgSharding[i] means how the i-th dimension of the arg sharded or replicaed.
-// Because an argument has a
-using DimSharding = std::vector<std::reference_wrapper<const MeshAxis>>;
-using ArgSharding = std::vector<DimSharding>;
-using ShardingDecision = std::vector<ArgSharding>;
-
-// Profile to be serialized or deserialized, inserted.
-// {
-//  "devMeshFingerprint": "...",
-//  "hwFingerprint": "...",
-//  "programExeTime": 123456,
-//  {
-///   "kernelFingerprint": 1234,
-//    "argShapes": [[1024, 64], [64], []],
-//    "argDTypes": ["f32", "f32", "i32"],
-//    "sd": "{{{axis-0,}{}}{{}}{}}",
-//    "kernelExeTime": 123456
-//  },
-//  {
-//    ...
-//  },,
-// }
-struct ShPGOKernelRecord {
-  size_t kernelFingerprint;
-  std::vector<std::vector<int64_t>> argShapes;
-  std::vector<DType> argDTypes;
-  ShardingDecision sd;
-  uint64_t kernelExeTime;
-};
-
-struct ShPGOProgramRecord {
-  std::string devMeshFingerprint;
-  std::string hwFingerprint;
-  std::vector<ShPGOKernelRecord> kernelRecords;
-};
-
-class Sharder;
-
-struct ShPGOProfile {
-  llvm::SmallVector<ShPGOProgramRecord> records;
-  ShPGOProfile() = default;
-  ShPGOProfile(nlohmann::json &&json, Sharder &sharder);
-};
+#include "sharding/sharding-types.h"
+#include "sharding/sharder.h"
 
 struct L1JitMetas {
   llvm::DenseMap<uint32_t, bool> shapeArgInfoMap;
@@ -177,53 +123,6 @@ public:
   void moveOutBuffersToDeviceBufferMap(int devIdx, void *argPtr, int argIdx,
                                        PJRT_Buffer **const *outsBuffersList);
   PJRT_Buffer *createLiteralBuffer(int devIdx, const TensorDesc &inputArg);
-};
-
-class Sharder {
-  friend class JitManager;
-
-public:
-  Sharder(uint32_t deviceSize, std::string profilePath);
-  ~Sharder();
-  Sharder(const Sharder &) = delete;
-  Sharder &operator=(const Sharder &) = delete;
-
-  // heuristicShard accept a moduleOp, and return a sharding decision.
-  // The sharding decision is ideally made by using profilings.
-  ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
-  std::string toStr(const ShardingDecision &sd);
-  ShardingDecision toSD(const std::string &sdStr);
-  std::optional<std::reference_wrapper<const MeshAxis>>
-  getMeshAxis(const std::string &axisName);
-
-  // Return the id for uncommited profiling record
-  uint64_t getNextID();
-  // Return <ID, start time point>
-  std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
-  startRecordProfile(const ShardingDecision &sd, size_t kernelFingerprint,
-                     const KernelArgs &);
-  void endRecordProfile(
-      uint64_t ID,
-      const std::chrono::time_point<std::chrono::steady_clock> &&start);
-
-private:
-  uint32_t deviceCount;
-  std::string meshName;
-  llvm::SmallVector<uint32_t> deviceMesh;
-  llvm::SmallVector<MeshAxis> meshAxes;
-
-  std::atomic<std::uint64_t> nextId_{1};
-  uint64_t totalExecutionTime_; 
-  llvm::DenseMap<uint64_t, ShPGOKernelRecord> uncommitedRecords_;
-
-  // Profile parsed
-  ShPGOProfile profile;
-  std::string profilePath = "";
-  // prevent two threads change the same profile file concurrently
-  std::shared_mutex profileMtx;
-
-  void flushProfile();
-  void deserializeProfile();
 };
 
 class JitManager {

@@ -1,74 +1,14 @@
-#include "jit-manager.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Value.h"
+#include "runtime/sharding/sharding-codec.h"
 #include "support/utilities.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/raw_ostream.h"
-#include <atomic>
 #include <cassert>
-#include <chrono>
-#include <cstdint>
 #include <cstdlib>
-#include <ctime>
-#include <filesystem>
 #include <fstream>
-#include <ios>
-#include <istream>
-#include <mutex>
 #include <nlohmann/json.hpp>
-#include <optional>
-#include <shared_mutex>
-#include <sstream>
-#include <string>
-#include <utility>
-#include <vector>
+#include "sharder.h"
 
 using namespace nlohmann;
-
-ShPGOProfile::ShPGOProfile(nlohmann::json &&data, Sharder &sharder) {
-  if (!data.is_array()) {
-    llvm::report_fatal_error("Sharding profile must be an array");
-  }
-  records.reserve(data.size());
-
-  auto field = [&](const nlohmann::json& entry,
-                   const char *name) -> const nlohmann::json & {
-    auto it = entry.find(name);
-    if (it == entry.end()) {
-      llvm::errs() << "Missing profile field: " << name << "\n";
-    }
-    return *it;
-  };
-
-  for (const auto &entry : data) {
-    ShPGOProgramRecord programRec{};
-    programRec.devMeshFingerprint =
-        field(entry, "devMeshFingerprint").get<std::string>();
-    programRec.hwFingerprint = field(entry, "hwFingerprint").get<std::string>();
-    auto kernelRecordsField = field(entry, "kernelRecords");
-    std::vector<ShPGOKernelRecord> kernelRecords;
-    kernelRecords.reserve(kernelRecordsField.size());
-    for (const auto &kernelEntry : kernelRecordsField) {
-      ShPGOKernelRecord rec{};
-      rec.kernelFingerprint = static_cast<size_t>(
-          field(kernelEntry, "kernelFingerprint").get<uint64_t>());
-      rec.argShapes = field(kernelEntry, "argShapes")
-                          .get<std::vector<std::vector<int64_t>>>();
-      rec.argDTypes = field(kernelEntry, "argDTypes").get<std::vector<DType>>();
-      rec.sd = sharder.toSD(field(kernelEntry, "sd"));
-      rec.kernelExeTime =
-          field(kernelEntry, "kernelExeTime").get<std::uint64_t>();
-      kernelRecords.push_back(std::move(rec));
-    }
-    programRec.kernelRecords = std::move(kernelRecords);
-    records.push_back(std::move(programRec));
-  }
-}
 
 // TODO: currently we only do 1D sharding, the deviceCount is automatically be
 // comes the mesh
@@ -141,87 +81,6 @@ ShardingDecision Sharder::heuristicShard(mlir::ModuleOp moduleOp) {
 
   // addToProfile
 }
-
-// {{{}, .., {}}, }
-std::string Sharder::toStr(const ShardingDecision &sd) {
-  std::string res;
-  res.push_back('{');
-  for (const auto &argSd : sd) {
-    res.push_back('{');
-    for (const auto &dimSd : argSd) {
-      res.push_back('{');
-      for (const auto &axis : dimSd) {
-        res += axis.get().name;
-        res.push_back(',');
-      }
-      res.push_back('}');
-    }
-    res.push_back('}');
-  }
-  res.push_back('}');
-  return res;
-};
-
-// Example: {{{axis-0,}{}{}}}
-ShardingDecision Sharder::toSD(const std::string &sdStr) {
-  size_t pos = 0;
-  auto expect = [&](char c) {
-    if (pos >= sdStr.size() || sdStr[pos] != c) {
-      llvm::report_fatal_error("Malformed sharding decision.");
-    }
-    pos += 1;
-  };
-
-  auto at = [&](char c) { return pos < sdStr.size() && sdStr[pos] == c; };
-
-  ShardingDecision sd;
-  expect('{');
-  while (!at('}')) {
-
-    ArgSharding argSd;
-    expect('{');
-
-    while (!at('}')) {
-
-      DimSharding dimSd;
-      expect('{');
-
-      while (!at('}')) {
-        const size_t start = pos;
-        while (pos < sdStr.size() && sdStr[pos] != ',' && sdStr[pos] != '{' &&
-               sdStr[pos] != '}') {
-          pos += 1;
-        }
-        const std::string axisName = sdStr.substr(start, pos - start);
-        expect(',');
-
-        auto axis = getMeshAxis(axisName);
-        if (!axis) {
-          llvm::errs() << "Unknown mesh axis: " << axisName << "\n";
-          llvm::report_fatal_error("Invalid sharding decision.");
-        }
-        dimSd.push_back(*axis);
-      }
-      expect('}');
-
-      argSd.push_back(dimSd);
-    }
-    expect('}');
-    sd.push_back(argSd);
-  }
-  expect('}');
-  return sd;
-};
-
-std::optional<std::reference_wrapper<const MeshAxis>>
-Sharder::getMeshAxis(const std::string &axisName) {
-  for (const auto &meshAxis : this->meshAxes) {
-    if (meshAxis.name == axisName) {
-      return std::make_optional(meshAxis);
-    }
-  }
-  return std::nullopt;
-};
 
 void Sharder::flushProfile() {
   std::unique_lock<std::shared_mutex> wLock(profileMtx);
@@ -305,7 +164,7 @@ void Sharder::deserializeProfile() {
     std::exit(EXIT_FAILURE);
   }
   assert(data.is_array());
-  this->profile = ShPGOProfile(std::move(data), *this);
+  this->profile = ShPGOProfile(std::move(data), this->meshAxes);
   return;
 }
 
