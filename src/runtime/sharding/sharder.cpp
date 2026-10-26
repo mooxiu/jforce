@@ -1,11 +1,12 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "runtime/sharding/sharding-codec.h"
 #include "support/utilities.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include "sharder.h"
+#include "sharding-codec.h"
 
 using namespace nlohmann;
 
