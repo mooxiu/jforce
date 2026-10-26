@@ -19,6 +19,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "runtime/sharding/sharding-tuner.h"
 #include "sharding/sharding-types.h"
 #include "sharding/sharder.h"
 
@@ -135,6 +136,7 @@ private:
   CacheManager cacheManager;
   DeviceManager deviceManager;
   Sharder sharder;
+  ShardingTuner tuner;
   L2JitMetas *createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
                                mlir::func::FuncOp kernelFunc,
                                size_t kernelFingerprint);
@@ -178,5 +180,7 @@ public:
                const std::string &kernelFuncStr);
 
   void launch(const L2JitMetas *l2Cache, KernelArgs *kernelArgs);
+
+  void tune();
 };
 #endif

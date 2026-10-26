@@ -1,22 +1,17 @@
 #ifndef SHARDING_TUNER_H
 #define SHARDING_TUNER_H
 
-#include "sharding-evaluator.h"
-#include "sharding-types.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
+using namespace mlir;
 
 class ShardingTuner {
 public:
-  virtual ~ShardingTuner() = default;
-
-  virtual ShardingDecision tune(const ShardingDecision &lastSD,
-                                ShardingEvaluator &se) = 0;
-};
-
-class DFSTuner : public ShardingTuner {
-public:
-  ShardingDecision tune(const ShardingDecision &initial,
-                        ShardingEvaluator &evaluator) override;
+  void tune(MLIRContext &ctx,
+            const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
+            const llvm::SmallVector<size_t> &series);
 };
 
 #endif

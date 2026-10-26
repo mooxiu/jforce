@@ -21,6 +21,7 @@
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
@@ -826,3 +827,10 @@ void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
   sharder.endRecordProfile(idAndStartPair.first, std::move(idAndStartPair.second));
   return;
 }
+
+
+void JitManager::tune() {
+  llvm::DenseMap<size_t, func::FuncOp> map;
+  llvm::SmallVector<size_t> series;
+  this->tuner.tune(this->context, map, series);
+};

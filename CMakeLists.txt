@@ -88,8 +88,8 @@ set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   protobuf
   GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
-  GIT_TAG v29.5
-  # GIT_TAG v30.2
+  # GIT_TAG v29.5
+  GIT_TAG v30.2
 )
 FetchContent_MakeAvailable(protobuf)
 
@@ -109,13 +109,18 @@ add_subdirectory(src/tool)
 
 
 add_library(jit-code-executor SHARED 
+  src/runtime/tracker/tracker.cpp
+  src/runtime/tracker/tracker-codec.cpp
+
+  src/runtime/sharding/sharder.cpp
+  src/runtime/sharding/sharding-profile.cpp
+  src/runtime/sharding/sharding-tuner.cpp
+
   src/runtime/jit-code-executor.cpp
   src/runtime/cache-manager.cpp
   src/runtime/device-manager.cpp
   src/runtime/jit-manager.cpp
   src/runtime/pipelines.cpp
-  src/runtime/sharder.cpp
-
 )
 
 # already public in transforms
@@ -149,3 +154,17 @@ if(JFORCE_INCLUDE_TESTS)
   enable_testing()
   add_subdirectory(test)
 endif()
+
+# tests that are not related to compiler transformation 
+add_executable(test-sharding test/sharding-test.cpp)
+
+target_include_directories(test-sharding PRIVATE
+  ${LLVM_INCLUDE_DIRS}
+  ${MLIR_INCLUDE_DIRS}
+)
+
+target_link_libraries(test-sharding PRIVATE
+  jit-code-executor
+  MLIRIR
+)
+

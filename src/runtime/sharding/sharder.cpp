@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include "sharder.h"
 
 using namespace nlohmann;
 
