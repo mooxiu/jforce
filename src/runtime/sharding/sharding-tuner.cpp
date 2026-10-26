@@ -19,6 +19,16 @@
 #include <shardy/dialect/sdy/transforms/propagation/passes.h>
 #include <utility>
 
+///
+/// module {
+///   sdy.mesh @dummy = <["x"=2, "y"=2]>
+///   func.func @main(%arg0: tensor<8x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {}]>}, %arg1: tensor<8x16xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {"x"}]>}, %arg2: tensor<16x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{"x"}, {}]>}) -> (tensor<8x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {}]>}, tensor<8x16xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {"x"}]>}, tensor<16x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{"x"}, {}]>}) {
+///     %0 = stablehlo.dot_general %arg1, %arg2, contracting_dims = [1] x [0] {sdy.sharding = #sdy.sharding_per_value<[<@dummy, [{}, {}]>]>} : (tensor<8x16xf64>, tensor<16x8xf64>) -> tensor<8x8xf64>
+///     %1 = sdy.all_reduce {"x"} %0 out_sharding=<@dummy, [{}, {}]> : tensor<8x8xf64>
+///     return %1, %arg1, %arg2 : tensor<8x8xf64>, tensor<8x16xf64>, tensor<16x8xf64>
+///   }
+/// }
+///
 mlir::OwningOpRef<mlir::ModuleOp> createMatmulExample(mlir::MLIRContext &ctx) {
   ctx.getOrLoadDialect<mlir::func::FuncDialect>();
   ctx.getOrLoadDialect<stablehlo::StablehloDialect>();
