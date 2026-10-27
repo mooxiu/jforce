@@ -57,6 +57,9 @@ getKernelCandidates(func::FuncOp kernel, llvm::ArrayRef<MeshAxis> meshAxes) {
 }
 
 // Generate strategies for an ordinary 2D matmul A[M,K] x B[K,N].
+// Consider the device mesh to be m-dimensional, then the sharding space for this operator is 3^m.
+// - 3: there are 3 unique dimension in Matmul inputs: M, K, N; and as we know it can be written as a 3 layer nested loop
+// - m: for each M, K, N, it can be sharded by one of the device dimension, and we have to apply all of the device dimension (else there will be repeated computation).
 llvm::SmallVector<OperationShardingStrategy> getMatmulStrategies(
     mlir::RankedTensorType lhsType, mlir::RankedTensorType rhsType,
     llvm::ArrayRef<MeshAxis> meshAxes) {
@@ -116,6 +119,91 @@ llvm::SmallVector<OperationShardingStrategy> getMatmulStrategies(
   return strategies;
 }
 
+// Element-wise, binary operation.
+// For example: add, multiply, etc.
+// They are lightweight, operations.
+// Replica is allowed.
+llvm::SmallVector<OperationShardingStrategy> getEleBinaryOpStrategies(
+    mlir::RankedTensorType lhsType, mlir::RankedTensorType rhsType,
+    llvm::ArrayRef<MeshAxis> meshAxes) {
+  // This version handles elementwise operations with equal, static shapes.
+  if (!lhsType || !rhsType || !lhsType.hasStaticShape() ||
+      !rhsType.hasStaticShape() || lhsType.getShape() != rhsType.getShape())
+    return {};
+
+  // Both operands and the result start fully replicated.
+  ArgSharding replicated(lhsType.getRank());
+  OperationShardingStrategy initial;
+  initial.operands = {replicated, replicated};
+  initial.results = {replicated};
+  llvm::SmallVector<OperationShardingStrategy> strategies{initial};
+
+  for (const MeshAxis &axis : meshAxes) {
+    if (axis.size <= 0)
+      return {};
+    if (axis.size == 1)
+      continue;
+
+    llvm::SmallVector<OperationShardingStrategy> next;
+    for (const auto &strategy : strategies) {
+      // An unused axis remains replicated.
+      next.push_back(strategy);
+
+      for (int64_t dim = 0; dim < lhsType.getRank(); ++dim) {
+        int64_t remainingSize = lhsType.getDimSize(dim);
+        for (const auto &previousAxis : strategy.results[0][dim])
+          remainingSize /= previousAxis.get().size;
+        if (remainingSize % axis.size != 0)
+          continue;
+
+        auto sharded = strategy;
+        sharded.operands[0][dim].push_back(axis);
+        sharded.operands[1][dim].push_back(axis);
+        sharded.results[0][dim].push_back(axis);
+        next.push_back(std::move(sharded));
+      }
+    }
+    strategies = std::move(next);
+  }
+
+  return strategies;
+}
+
+
+bool keepEleBinaryOpStrategy(const OperationShardingStrategy &candidate,
+                              const ArgSharding *lhsProducerLayout,
+                              const ArgSharding *rhsProducerLayout) {
+  if (!lhsProducerLayout && !rhsProducerLayout)
+    return true;
+  if (candidate.results.size() != 1)
+    return false;
+  const auto &inherited = lhsProducerLayout ? *lhsProducerLayout
+                                            : *rhsProducerLayout;
+  const auto &result = candidate.results[0];
+  if (result.size() != inherited.size() ||
+      (rhsProducerLayout && rhsProducerLayout->size() != inherited.size()))
+    return false;
+
+  auto sameDimension = [](const DimSharding &a, const DimSharding &b) {
+    if (a.size() != b.size())
+      return false;
+    for (size_t i = 0; i < a.size(); ++i)
+      if (a[i].get().name != b[i].get().name ||
+          a[i].get().size != b[i].get().size)
+        return false;
+    return true;
+  };
+  const DimSharding replicated;
+  for (size_t dim = 0; dim < result.size(); ++dim) {
+    const DimSharding *target = &inherited[dim];
+    if (lhsProducerLayout && rhsProducerLayout &&
+        !sameDimension((*lhsProducerLayout)[dim], (*rhsProducerLayout)[dim]))
+      target = &replicated;
+    if (!sameDimension(result[dim], *target))
+      return false;
+  }
+  return true;
+}
 
 void ShardingTuner::tune(MLIRContext &ctx,
                          const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
