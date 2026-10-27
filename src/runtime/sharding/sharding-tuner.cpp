@@ -1,99 +1,14 @@
 #include "sharding-tuner.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/OwningOpRef.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "runtime/sharding/sharding-types.h"
-#include "shardy/dialect/sdy/ir/dialect.h"
-#include "shardy/dialect/sdy/ir/utils.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
-#include <shardy/dialect/sdy/transforms/propagation/passes.h>
 #include <utility>
-
-///
-/// module {
-///   sdy.mesh @dummy = <["x"=2, "y"=2]>
-///   func.func @main(%arg0: tensor<8x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {}]>}, %arg1: tensor<8x16xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {"x"}]>}, %arg2: tensor<16x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{"x"}, {}]>}) -> (tensor<8x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {}]>}, tensor<8x16xf64> {sdy.sharding = #sdy.sharding<@dummy, [{}, {"x"}]>}, tensor<16x8xf64> {sdy.sharding = #sdy.sharding<@dummy, [{"x"}, {}]>}) {
-///     %0 = stablehlo.dot_general %arg1, %arg2, contracting_dims = [1] x [0] {sdy.sharding = #sdy.sharding_per_value<[<@dummy, [{}, {}]>]>} : (tensor<8x16xf64>, tensor<16x8xf64>) -> tensor<8x8xf64>
-///     %1 = sdy.all_reduce {"x"} %0 out_sharding=<@dummy, [{}, {}]> : tensor<8x8xf64>
-///     return %1, %arg1, %arg2 : tensor<8x8xf64>, tensor<8x16xf64>, tensor<16x8xf64>
-///   }
-/// }
-///
-mlir::OwningOpRef<mlir::ModuleOp> createMatmulExample(mlir::MLIRContext &ctx) {
-  ctx.getOrLoadDialect<mlir::func::FuncDialect>();
-  ctx.getOrLoadDialect<stablehlo::StablehloDialect>();
-  ctx.getOrLoadDialect<sdy::SdyDialect>();
-  OpBuilder opBuilder(&ctx);
-  auto loc = opBuilder.getUnknownLoc();
-  mlir::OwningOpRef<mlir::ModuleOp> module(
-      mlir::ModuleOp::create(opBuilder, loc));
-
-  opBuilder.setInsertionPointToEnd(module->getBody());
-  // add device mesh
-  llvm::SmallVector<sdy::MeshAxisAttr> axes(2);
-  axes[0] = sdy::MeshAxisAttr::get(&ctx, "x", 2);
-  axes[1] = sdy::MeshAxisAttr::get(&ctx, "y", 2);
-  sdy::MeshOp::create(opBuilder, loc, "dummy", ::mlir::sdy::MeshAttr::get(&ctx, axes)); 
-
-  // define the function
-  auto op0Type = mlir::RankedTensorType::get({8, 16}, opBuilder.getF64Type());
-  auto op1Type = mlir::RankedTensorType::get({16, 8}, opBuilder.getF64Type());
-  auto res0Type = mlir::RankedTensorType::get({8, 8}, opBuilder.getF64Type());
-  auto funcType = opBuilder.getFunctionType({res0Type, op0Type, op1Type},
-                                            {res0Type, op0Type, op1Type});
-  auto function = func::FuncOp::create(opBuilder, loc, "main", funcType);
-  auto *entry = function.addEntryBlock();
-  opBuilder.setInsertionPointToStart(entry);
-  auto dims =
-      stablehlo::DotDimensionNumbersAttr::get(&ctx,
-                                              /*lhsBatchingDimensions=*/{},
-                                              /*rhsBatchingDimensions=*/{},
-                                              /*lhsContractingDimensions=*/{1},
-                                              /*rhsContractingDimensions=*/{0});
-
-  auto gemmOp = stablehlo::DotGeneralOp::create(
-      opBuilder, loc, res0Type, entry->getArgument(1), entry->getArgument(2),
-      dims,
-      /*precision_config=*/mlir::ArrayAttr{},
-      /*algorithm=*/stablehlo::DotAlgorithmAttr{});
-  func::ReturnOp::create(
-      opBuilder, loc, ValueRange{gemmOp.getResult(), gemmOp.getLhs(), gemmOp.getRhs()});
-
-  // Each dimension is closed: unused mesh axes remain replicated.
-  auto replicatedDim = sdy::DimensionShardingAttr::get(&ctx, {}, true);
-  auto splitDim = sdy::DimensionShardingAttr::get(
-      &ctx, {sdy::AxisRefAttr::get(&ctx, "x")}, true);
-
-  auto replicated = sdy::TensorShardingAttr::get(
-      &ctx, "dummy", {replicatedDim, replicatedDim}, {}, {});
-  auto lhsSharding = sdy::TensorShardingAttr::get(
-      &ctx, "dummy", {replicatedDim, splitDim}, {}, {});
-  auto rhsSharding = sdy::TensorShardingAttr::get(
-      &ctx, "dummy", {splitDim, replicatedDim}, {}, {});
-
-  // Function arguments and writeback results are ordered C, A, B.
-  llvm::SmallVector<sdy::TensorShardingAttr> shardings{
-      replicated, lhsSharding, rhsSharding};
-  for (unsigned i = 0; i < shardings.size(); ++i) {
-    function.setArgAttr(i, "sdy.sharding", shardings[i]);
-    function.setResultAttr(i, "sdy.sharding", shardings[i]);
-  }
-
-  // Split K produces partial sums; returning replicated C needs an all-reduce.
-  sdy::setSharding(gemmOp.getResult(), replicated);
-
-  return module;
-}
 
 llvm::SmallVector<ArgSharding>
 getCandidates(mlir::RankedTensorType type, llvm::ArrayRef<MeshAxis> meshAxes) {
@@ -141,6 +56,67 @@ getKernelCandidates(func::FuncOp kernel, llvm::ArrayRef<MeshAxis> meshAxes) {
   return plans;
 }
 
+// Generate strategies for an ordinary 2D matmul A[M,K] x B[K,N].
+llvm::SmallVector<OperationShardingStrategy> getMatmulStrategies(
+    mlir::RankedTensorType lhsType, mlir::RankedTensorType rhsType,
+    llvm::ArrayRef<MeshAxis> meshAxes) {
+  if (!lhsType || !rhsType || lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
+      !lhsType.hasStaticShape() || !rhsType.hasStaticShape() ||
+      lhsType.getDimSize(1) != rhsType.getDimSize(0))
+    return {};
+
+  const int64_t M = lhsType.getDimSize(0);
+  const int64_t K = lhsType.getDimSize(1);
+  const int64_t N = rhsType.getDimSize(1);
+
+  // Start with one unsharded strategy, then assign every mesh axis.
+  OperationShardingStrategy initial;
+  initial.operands = {ArgSharding(2), ArgSharding(2)}; // A and B
+  initial.results = {ArgSharding(2)};                 // C
+  llvm::SmallVector<OperationShardingStrategy> strategies{initial};
+
+  // Previous axes have already divided the dimension evenly.
+  auto canSplit = [](int64_t size, const DimSharding &previousAxes,
+                     int64_t axisSize) {
+    for (const auto &previousAxis : previousAxes)
+      size /= previousAxis.get().size;
+    return size % axisSize == 0;
+  };
+
+  for (const MeshAxis &axis : meshAxes) {
+    if (axis.size <= 0)
+      return {};
+    if (axis.size == 1)
+      continue;
+
+    llvm::SmallVector<OperationShardingStrategy> next;
+    for (const auto &strategy : strategies) {
+      if (canSplit(M, strategy.operands[0][0], axis.size)) {
+        auto splitM = strategy;
+        splitM.operands[0][0].push_back(axis); // A's M dimension
+        splitM.results[0][0].push_back(axis);  // C's M dimension
+        next.push_back(std::move(splitM));
+      }
+      if (canSplit(N, strategy.operands[1][1], axis.size)) {
+        auto splitN = strategy;
+        splitN.operands[1][1].push_back(axis); // B's N dimension
+        splitN.results[0][1].push_back(axis);  // C's N dimension
+        next.push_back(std::move(splitN));
+      }
+      if (canSplit(K, strategy.operands[0][1], axis.size)) {
+        auto splitK = strategy;
+        splitK.operands[0][1].push_back(axis); // A's K dimension
+        splitK.operands[1][0].push_back(axis); // B's K dimension
+        next.push_back(std::move(splitK));
+      }
+    }
+    strategies = std::move(next);
+  }
+
+  return strategies;
+}
+
+
 void ShardingTuner::tune(MLIRContext &ctx,
                          const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
                          const llvm::SmallVector<size_t> &series) {
@@ -155,17 +131,5 @@ void ShardingTuner::tune(MLIRContext &ctx,
     executionKernelTrace.push_back(it->getSecond());
   }
 
-  auto module = createMatmulExample(ctx);
-  mlir::sdy::PropagationOptions options;
-  // make it easier for me to estimate the collectives
-  options.enableInsertExplicitCollectives = true;
-
-  mlir::PassManager pm(&ctx);
-  mlir::sdy::addPropagationPipeline(pm, options);
-
-  if (mlir::failed(pm.run(module.get()))) {
-    return;
-  }
-
-  module->print(llvm::outs());
+  (void)ctx; // Tuning is not implemented yet.
 }

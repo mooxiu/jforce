@@ -160,12 +160,15 @@ endif()
 add_executable(test-sharding test/sharding-test.cpp)
 
 target_include_directories(test-sharding PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${LLVM_INCLUDE_DIRS}
   ${MLIR_INCLUDE_DIRS}
 )
 
 target_link_libraries(test-sharding PRIVATE
   jit-code-executor
+  -Wl,--start-group ${shardy_all_libs} -Wl,--end-group
+  MLIRTransforms
   MLIRIR
 )
 
