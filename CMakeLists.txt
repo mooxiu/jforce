@@ -157,7 +157,11 @@ if(JFORCE_INCLUDE_TESTS)
 endif()
 
 # tests that are not related to compiler transformation 
-add_executable(test-sharding test/sharding-test.cpp)
+add_executable(test-sharding
+  test/sharding-test.cpp
+  test/sharding-examples.cpp
+  test/sharding-test-utils.cpp
+)
 
 target_include_directories(test-sharding PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
