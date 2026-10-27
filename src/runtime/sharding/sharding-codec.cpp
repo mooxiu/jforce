@@ -1,8 +1,8 @@
 #include "sharding-codec.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-
 
 std::optional<std::reference_wrapper<const MeshAxis>>
 getMeshAxis(const std::string &axisName, llvm::ArrayRef<MeshAxis> meshAxes) {
@@ -35,7 +35,8 @@ std::string toStr(const ShardingDecision &sd) {
 };
 
 // Example: {{{axis-0,}{}{}}}
-ShardingDecision toSD(const std::string &sdStr, llvm::ArrayRef<MeshAxis> meshAxes) {
+ShardingDecision toSD(const std::string &sdStr,
+                      llvm::ArrayRef<MeshAxis> meshAxes) {
   size_t pos = 0;
   auto expect = [&](char c) {
     if (pos >= sdStr.size() || sdStr[pos] != c) {
@@ -85,3 +86,26 @@ ShardingDecision toSD(const std::string &sdStr, llvm::ArrayRef<MeshAxis> meshAxe
   return sd;
 };
 
+mlir::sdy::TensorShardingAttr toShardingAttr(mlir::MLIRContext &ctx,
+                                             llvm::StringRef meshName,
+                                             const ArgSharding &layout) {
+  llvm::SmallVector<sdy::DimensionShardingAttr> dimShardingAttrs;
+  for (int i = 0; i < layout.size(); i++) {
+
+    llvm::SmallVector<sdy::AxisRefAttr> axesAttrs;
+    for (const auto &axisRef : layout[i]) {
+      // SubAxis is designed to be not set for simplicity
+      axesAttrs.push_back(sdy::AxisRefAttr::get(&ctx, axisRef.get().name, {}));
+    }
+    dimShardingAttrs.push_back(sdy::DimensionShardingAttr::get(
+        &ctx, axesAttrs,
+        /*is_closed=*/true, // prevent from further sharding
+        /*priority=*/{} // related with the propagation rule, we totally rely on
+                        // shardy's propagation, so this remains to be empty
+        ));
+  }
+  // Some axes not set because dimSahrding is already set to be closed.
+  return mlir::sdy::TensorShardingAttr::get(&ctx, meshName, dimShardingAttrs,
+                                            /*replicated_axes=*/{},
+                                            /*unreduced_axes=*/{});
+};

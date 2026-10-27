@@ -18,6 +18,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/WalkResult.h"
 #include "pipelines.h"
+#include "runtime/sharding/sharding-codec.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/pjrt/proto/compile_options.pb.h"
@@ -433,26 +434,11 @@ mlir::ModuleOp JitManager::annoateShardyInfo(mlir::ModuleOp moduleOp,
   llvm::SmallVector<Attribute> attrs(kernelFunc.getNumArguments(),
                                      opBuilder.getDictionaryAttr({}));
   for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {
-    llvm::SmallVector<sdy::DimensionShardingAttr> dimShardings;
-    dimShardings.reserve(sd[i].size());
-    for (const auto &tensorDimSharding : sd[i]) {
-      llvm::SmallVector<sdy::AxisRefAttr> axes;
-      for (const auto &axis : tensorDimSharding) {
-        axes.push_back(sdy::AxisRefAttr::get(&context, axis.get().name));
-      }
-      auto dimShardingAttr =
-          sdy::DimensionShardingAttr::get(&context, axes, true); // is closed
-      dimShardings.push_back(dimShardingAttr);
-    }
-
-    attrs[i] = opBuilder.getDictionaryAttr(opBuilder.getNamedAttr(
+    attrs[i] = opBuilder.getDictionaryAttr(
+      opBuilder.getNamedAttr(
         mlir::sdy::TensorShardingAttr::name,
-        mlir::sdy::TensorShardingAttr::get(
-            &context, sharder.meshName,
-            /*dim_shardings=*/dimShardings,
-            /*replicated_axes=*/{}, // WARNING: how to deal with this?
-            /*unreduced_axes=*/{}   // WARANING: and this?
-            )));
+        toShardingAttr(context, sharder.meshName, sd[i])
+      ));
   }
   kernelFunc.setArgAttrsAttr(opBuilder.getArrayAttr(attrs));
   return moduleOp;
