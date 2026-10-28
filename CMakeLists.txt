@@ -99,6 +99,20 @@ else()
     message(WARNING "Could not find protobuf-generate.cmake via direct path")
 endif()
 
+# -------------------- ILP solver for sharding tuner --------------------
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+# Only the library is needed, not the highs executable or examples.
+set(BUILD_CXX_EXE OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  highs
+  GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
+  GIT_TAG v1.15.1
+)
+FetchContent_MakeAvailable(highs)
+# HiGHS throws internally; override the global -fno-exceptions for it only.
+target_compile_options(highs PRIVATE -fexceptions)
+
 get_property(LLVM_LIBS GLOBAL PROPERTY LLVM_ALL_LIBS)
 get_property(MLIR_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
 
@@ -139,6 +153,7 @@ target_link_libraries(jit-code-executor PRIVATE
 target_link_libraries(jit-code-executor PRIVATE
   -Wl,--start-group ${shardy_all_libs}  -Wl,--end-group
   nlohmann_json::nlohmann_json
+  highs::highs
 )
 
 # -DENABLE_PROFILING
