@@ -5,7 +5,9 @@
 #include "runtime/sharding/sharding-types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include <utility>
 
 using namespace mlir;
 
@@ -28,7 +30,33 @@ bool keepEleBinaryOpStrategy(const OperationShardingStrategy &candidate,
                               const ArgSharding *lhsProducerLayout,
                               const ArgSharding *rhsProducerLayout);
 
+/// Edge is defined between operations.
+/// - srcOp: source operation.
+/// - tgtOp: target opertaion.
+/// - valuePairs: a pair of source operation's result idx to target operand's idx.
+struct Edge {
+  Operation* srcOp;
+  Operation* tgtOp;
+  llvm::SmallVector<std::pair<int, int>> valuePairs;
+};
+
+struct Graph {
+  llvm::DenseSet<Operation*> opSet;
+  // Keyed by srcOp: all outgoing edges of that operation.
+  llvm::DenseMap<Operation*, llvm::SmallVector<Edge>> edgeMap;
+
+  // Solve the ILP over this graph and return the chosen strategy of each op.
+  // Returned layouts reference meshAxes; its storage must outlive them.
+  llvm::DenseMap<Operation*, OperationShardingStrategy>
+  tune(llvm::ArrayRef<MeshAxis> meshAxes);
+};
+
 class ShardingTuner {
+private:
+  Graph graph;
+  void addEdge(Operation* srcOp, Operation* tgtOp, std::pair<int, int> valuePair);
+  void addOp(Operation* op);
+
 public:
   void tune(MLIRContext &ctx,
             const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
