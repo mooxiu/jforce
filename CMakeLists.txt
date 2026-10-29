@@ -130,6 +130,7 @@ add_library(jit-code-executor SHARED
   src/runtime/sharding/sharding-profile.cpp
   src/runtime/sharding/sharding-tuner.cpp
   src/runtime/sharding/sharding-codec.cpp
+  src/runtime/sharding/sharding-types.cpp
 
   src/runtime/jit-code-executor.cpp
   src/runtime/cache-manager.cpp
