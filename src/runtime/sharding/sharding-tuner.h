@@ -25,7 +25,8 @@ getEleBinaryOpStrategies(mlir::RankedTensorType lhsType,
                          llvm::ArrayRef<MeshAxis> meshAxes);
 
 // Optional heuristic: nullptr means the operand has no selected producer.
-// Inherit one producer, or keep equal dimensions and replicate conflicts.
+// Keep the candidate whose result is the producer's layout, or the join of
+// both producers' layouts (see the sharding lattice in sharding-types.h).
 bool keepEleBinaryOpStrategy(const OperationShardingStrategy &candidate,
                               const ArgSharding *lhsProducerLayout,
                               const ArgSharding *rhsProducerLayout);
@@ -45,6 +46,9 @@ struct Graph {
   // Keyed by srcOp: all outgoing edges of that operation.
   llvm::DenseMap<Operation*, llvm::SmallVector<Edge>> edgeMap;
 
+  void addOp(Operation* op);
+  void addEdge(Operation* srcOp, Operation* tgtOp, std::pair<int, int> valuePair);
+
   // Solve the ILP over this graph and return the chosen strategy of each op.
   // Returned layouts reference meshAxes; its storage must outlive them.
   llvm::DenseMap<Operation*, OperationShardingStrategy>
@@ -52,15 +56,15 @@ struct Graph {
 };
 
 class ShardingTuner {
-private:
-  Graph graph;
-  void addEdge(Operation* srcOp, Operation* tgtOp, std::pair<int, int> valuePair);
-  void addOp(Operation* op);
-
 public:
-  void tune(MLIRContext &ctx,
-            const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
-            const llvm::SmallVector<size_t> &series);
+  // Tune each kernel in series once, one graph per kernel.
+  // Returns the chosen strategy of every op, per kernel hash.
+  // Returned layouts reference meshAxes; its storage must outlive them.
+  llvm::DenseMap<size_t, llvm::DenseMap<Operation*, OperationShardingStrategy>>
+  tune(MLIRContext &ctx,
+       const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
+       const llvm::SmallVector<size_t> &series,
+       llvm::ArrayRef<MeshAxis> meshAxes);
 };
 
 #endif

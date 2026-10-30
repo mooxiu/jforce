@@ -818,5 +818,5 @@ void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
 void JitManager::tune() {
   llvm::DenseMap<size_t, func::FuncOp> map;
   llvm::SmallVector<size_t> series;
-  this->tuner.tune(this->context, map, series);
+  this->tuner.tune(this->context, map, series, sharder.meshAxes);
 };
