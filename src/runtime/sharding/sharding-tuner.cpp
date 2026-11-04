@@ -233,6 +233,8 @@ getOpStrategies(Operation *op, llvm::ArrayRef<MeshAxis> meshAxes) {
 static double getCommCost(Operation *op,
                           const OperationShardingStrategy &strategy) {
 
+  // TODO: this only considers the situation where one GPU can hold all the data.
+  // For the situation where one GPU cannot hold all the data, consider Cannon's algorithm.
   auto getDotGeneralCost = [&](Operation *op) -> double {
     if (!isMatmul(op) || strategy.operands.size() != 2) {
       return 0;
@@ -440,6 +442,42 @@ Graph::tune(llvm::ArrayRef<MeshAxis> meshAxes) {
   return chosen;
 }
 
+Graph buildGraph(func::FuncOp kernel) {
+  // Ops in a block are already in topological order. Collect ops and edges.
+  Graph graph;
+  for (Operation &op : kernel.getBody().getOps()) {
+    if (llvm::isa<func::ReturnOp>(op)) {
+      break;
+    }
+    graph.addOp(&op);
+    for (OpOperand &operand : op.getOpOperands()) {
+      auto result = llvm::dyn_cast<OpResult>(operand.get());
+      if (!result) { // block argument, no producer op
+        continue;
+      }
+      graph.addEdge(result.getOwner(), &op,
+                    {static_cast<int>(result.getResultNumber()),
+                     static_cast<int>(operand.getOperandNumber())});
+    }
+  }
+  return graph;
+}
+
+double getPlanCost(
+    const Graph &graph,
+    const llvm::DenseMap<Operation *, OperationShardingStrategy> &plan) {
+  double cost = 0;
+  for (Operation *op : graph.opSet) {
+    cost += getCommCost(op, plan.at(op));
+  }
+  for (const auto &entry : graph.edgeMap) {
+    for (const Edge &edge : entry.second) {
+      cost += getReshardCost(edge, plan.at(edge.srcOp), plan.at(edge.tgtOp));
+    }
+  }
+  return cost;
+}
+
 ///
 ///
 /// Sharding Tuner
@@ -463,26 +501,7 @@ ShardingTuner::tune(MLIRContext &ctx,
       llvm::errs() << "Hash not found in kernels Map!\n";
       std::exit(EXIT_FAILURE);
     }
-    func::FuncOp kernel = it->getSecond();
-
-    // Ops in a block are already in topological order. Collect ops and edges.
-    Graph graph;
-    for (Operation &op : kernel.getBody().getOps()) {
-      if (llvm::isa<func::ReturnOp>(op)) {
-        break;
-      }
-      graph.addOp(&op);
-      for (OpOperand &operand : op.getOpOperands()) {
-        auto result = llvm::dyn_cast<OpResult>(operand.get());
-        if (!result) { // block argument, no producer op
-          continue;
-        }
-        graph.addEdge(result.getOwner(), &op,
-                      {static_cast<int>(result.getResultNumber()),
-                       static_cast<int>(operand.getOperandNumber())});
-      }
-    }
-    chosenPerKernel[hash] = graph.tune(meshAxes);
+    chosenPerKernel[hash] = buildGraph(it->getSecond()).tune(meshAxes);
   }
 
   (void)ctx;

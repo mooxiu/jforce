@@ -55,6 +55,16 @@ struct Graph {
   tune(llvm::ArrayRef<MeshAxis> meshAxes);
 };
 
+// One graph per kernel: every op before func.return, and the edges between
+// them. Block arguments have no producer op, so they add no edge.
+Graph buildGraph(func::FuncOp kernel);
+
+// Objective value of a plan: sum of c_v over ops plus R_vu over edges.
+// The plan must contain every op of the graph.
+double getPlanCost(
+    const Graph &graph,
+    const llvm::DenseMap<Operation*, OperationShardingStrategy> &plan);
+
 class ShardingTuner {
 public:
   // Tune each kernel in series once, one graph per kernel.

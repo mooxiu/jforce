@@ -9,7 +9,20 @@ cmake --build build --target test-sharding -j2
 ./build/test-sharding --example=chain --prune
 ./build/test-sharding --example=branch --prune
 ./build/test-sharding --example=chain 1234
+./build/test-sharding --check-tune
+./build/test-sharding --check-tune --example=layers
 ```
+
+`--check-tune` runs `Graph::tune` (the ILP) on every example, or only on the
+one named by `--example=`. For each it prints the cost and time of the ILP, of
+exhaustive search and of pruned search, then the strategy the ILP chose for
+every op. It fails if the ILP cost differs from the exhaustive minimum under the
+same cost model. Examples with more than 10^6 combinations skip both searches,
+so their ILP result is printed but not verified; the normal runner refuses them.
+
+Times are wall-clock in milliseconds and include generating strategies and
+building the ILP, not only the HiGHS solve. Measure in a Release build
+(`-DCMAKE_BUILD_TYPE=Release`); a Debug build also compiles HiGHS unoptimized.
 
 The default example is `chain`. Without `--prune`, every operator chooses its
 strategy independently. A trailing number selects one combination for inspection.
@@ -22,6 +35,9 @@ For the default 2x2 mesh:
 | addition | add | 9 | 9 |
 | chain | matmul, multiply, add, subtract | 6,561 | 9 |
 | branch | matmul, multiply, add, subtract, add | 59,049 | 81 |
+| square | matmul, matmul | 81 | 81 |
+| conflict | matmul, matmul, add | 729 | 81 |
+| layers | 10 matmuls, 10 add/multiply/subtract | 1.15e18 | not enumerated |
 
 ## File responsibilities
 

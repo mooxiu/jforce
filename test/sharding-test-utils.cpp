@@ -9,7 +9,12 @@
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <limits>
 
 using namespace mlir;
 
@@ -148,6 +153,14 @@ enumerateAssignments(llvm::ArrayRef<OperationChoices> choices, bool prune) {
   Assignment current(choices.size(), 0);
   enumerateFrom(choices, prune, 0, current, assignments);
   return assignments;
+}
+
+double countAssignments(llvm::ArrayRef<OperationChoices> choices) {
+  double count = 1;
+  for (const auto &choice : choices) {
+    count *= choice.strategies.size();
+  }
+  return count;
 }
 
 OwningOpRef<ModuleOp> applyAssignment(ModuleOp source,
@@ -308,6 +321,94 @@ LogicalResult checkStrategyGenerators(MLIRContext &ctx) {
     }
   if (kept != 1) {
     llvm::errs() << "Expected one merged elementwise strategy\n";
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult checkTuner(llvm::StringRef example, func::FuncOp function,
+                         llvm::ArrayRef<MeshAxis> axes) {
+  using Clock = std::chrono::steady_clock;
+  auto elapsedMs = [](Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start)
+        .count();
+  };
+
+  Graph graph = buildGraph(function);
+  auto ilpStart = Clock::now();
+  auto plan = graph.tune(axes);
+  double ilpMs = elapsedMs(ilpStart);
+  for (Operation *op : graph.opSet) {
+    if (!plan.contains(op)) {
+      op->emitError("the ILP plan has no strategy for this operation");
+      return failure();
+    }
+  }
+  double ilpCost = getPlanCost(graph, plan);
+
+  // Same strategies and cost model as the ILP, evaluated on every combination.
+  llvm::SmallVector<OperationChoices> choices;
+  if (failed(collectChoices(function, axes, choices))) {
+    return failure();
+  }
+  auto search = [&](bool prune) {
+    auto start = Clock::now();
+    auto assignments = enumerateAssignments(choices, prune);
+    double best = std::numeric_limits<double>::infinity();
+    for (const auto &assignment : assignments) {
+      llvm::DenseMap<Operation *, OperationShardingStrategy> candidate;
+      for (size_t i = 0; i < choices.size(); ++i) {
+        candidate[choices[i].operation] =
+            choices[i].strategies[assignment[i]];
+      }
+      best = std::min(best, getPlanCost(graph, candidate));
+    }
+    llvm::outs() << llvm::formatv("  {0,-10} cost {1,6} bytes, {2,6} plans, "
+                                  "{3,8:f2} ms\n",
+                                  prune ? "pruned" : "exhaustive", best,
+                                  assignments.size(), elapsedMs(start));
+    return best;
+  };
+
+  llvm::outs() << "=== " << example << " ===\n";
+  llvm::outs() << llvm::formatv("  {0,-10} cost {1,6} bytes, {2,6} plans, "
+                                "{3,8:f2} ms\n",
+                                "ILP", ilpCost, 1, ilpMs);
+  double total = countAssignments(choices);
+  bool enumerable = total <= maxEnumeratedAssignments;
+  double exhaustiveCost = ilpCost;
+  if (enumerable) {
+    exhaustiveCost = search(/*prune=*/false);
+    search(/*prune=*/true);
+  } else {
+    llvm::outs() << llvm::formatv("  exhaustive and pruned search skipped: "
+                                  "{0:e2} plans; optimality not verified\n",
+                                  total);
+  }
+
+  // The chosen strategy of every op, in program order.
+  llvm::outs() << "  ILP plan:\n";
+  for (size_t i = 0; i < choices.size(); ++i) {
+    Operation *op = choices[i].operation;
+    const auto &strategy = plan.at(op);
+    llvm::outs() << "    op" << i << ": " << op->getName() << "\n";
+    for (size_t j = 0; j < strategy.operands.size(); ++j) {
+      llvm::outs() << "      operand " << j << ": "
+                   << toShardingAttr(*op->getContext(), meshName,
+                                     strategy.operands[j])
+                   << "\n";
+    }
+    for (size_t j = 0; j < strategy.results.size(); ++j) {
+      llvm::outs() << "      result " << j << ": "
+                   << toShardingAttr(*op->getContext(), meshName,
+                                     strategy.results[j])
+                   << "\n";
+    }
+  }
+  // The ILP must reach the exhaustive optimum; pruning can only match or lose.
+  if (enumerable && std::abs(ilpCost - exhaustiveCost) >
+      1e-6 * std::max(1.0, exhaustiveCost)) {
+    llvm::errs() << example << ": the ILP plan is not optimal\n";
     return failure();
   }
   return success();
