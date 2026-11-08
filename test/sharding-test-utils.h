@@ -14,7 +14,7 @@ namespace sharding_test {
 // Operation pointers belong to the unchanged source module.
 struct OperationChoices {
   mlir::Operation *operation;
-  llvm::SmallVector<OperationShardingStrategy> strategies;
+  llvm::SmallVector<OpStrategy> strategies;
 };
 using Assignment = llvm::SmallVector<size_t>;
 

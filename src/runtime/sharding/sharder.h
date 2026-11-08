@@ -16,15 +16,11 @@ public:
   Sharder(const Sharder &) = delete;
   Sharder &operator=(const Sharder &) = delete;
 
-  // heuristicShard accept a moduleOp, and return a sharding decision.
-  // The sharding decision is ideally made by using profilings.
-  ShardingDecision heuristicShard(mlir::ModuleOp moduleOp);
-
   // Return the id for uncommited profiling record
   uint64_t getNextID();
   // Return <ID, start time point>
   std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
-  startRecordProfile(const ShardingDecision &sd, size_t kernelFingerprint,
+  startRecordProfile(const TensorShardings &sd, size_t kernelFingerprint,
                      const KernelArgs &);
   void endRecordProfile(
       uint64_t ID,

@@ -15,7 +15,7 @@ getMeshAxis(const std::string &axisName, llvm::ArrayRef<MeshAxis> meshAxes) {
 };
 
 // {{{}, .., {}}, }
-std::string toStr(const ShardingDecision &sd) {
+std::string toStr(const TensorShardings &sd) {
   std::string res;
   res.push_back('{');
   for (const auto &argSd : sd) {
@@ -35,7 +35,7 @@ std::string toStr(const ShardingDecision &sd) {
 };
 
 // Example: {{{axis-0,}{}{}}}
-ShardingDecision toSD(const std::string &sdStr,
+TensorShardings toSD(const std::string &sdStr,
                       llvm::ArrayRef<MeshAxis> meshAxes) {
   size_t pos = 0;
   auto expect = [&](char c) {
@@ -47,11 +47,11 @@ ShardingDecision toSD(const std::string &sdStr,
 
   auto at = [&](char c) { return pos < sdStr.size() && sdStr[pos] == c; };
 
-  ShardingDecision sd;
+  TensorShardings sd;
   expect('{');
   while (!at('}')) {
 
-    ArgSharding argSd;
+    TensorSharding argSd;
     expect('{');
 
     while (!at('}')) {
@@ -88,12 +88,12 @@ ShardingDecision toSD(const std::string &sdStr,
 
 mlir::sdy::TensorShardingAttr toShardingAttr(mlir::MLIRContext &ctx,
                                              llvm::StringRef meshName,
-                                             const ArgSharding &layout) {
+                                             const TensorSharding &sharding) {
   llvm::SmallVector<sdy::DimensionShardingAttr> dimShardingAttrs;
-  for (int i = 0; i < layout.size(); i++) {
+  for (int i = 0; i < sharding.size(); i++) {
 
     llvm::SmallVector<sdy::AxisRefAttr> axesAttrs;
-    for (const auto &axisRef : layout[i]) {
+    for (const auto &axisRef : sharding[i]) {
       // SubAxis is designed to be not set for simplicity
       axesAttrs.push_back(sdy::AxisRefAttr::get(&ctx, axisRef.get().name, {}));
     }

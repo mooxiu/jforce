@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -62,35 +63,30 @@ std::optional<DeviceBufferSlot> DeviceBuffersCache::getBuffer(void *dataSrc,
 DeviceBufferSlot DeviceBuffersCache::tryInsertOrUpdate(const PJRT_Api *api,
                                                        void *dataSrc,
                                                        int devIdx, int devCount,
-                                                       PJRT_Buffer *buffer) {
+                                                       DeviceBufferSlot slot) {
   if (devIdx > devCount - 1) {
     llvm::errs() << "Invalid devIdx and devCount.\n";
     std::exit(EXIT_FAILURE);
   }
-  std::optional<DeviceBufferSlot> bufferOptional = getBuffer(dataSrc, devIdx);
-  if (bufferOptional.has_value() &&
-      bufferOptional.value().bufferPtr == buffer) {
-    return bufferOptional.value();
-  }
 
   std::unique_lock<std::shared_mutex> wLock(this->mtx);
   auto it = deviceBuffersMap.find(dataSrc);
-  if (it != deviceBuffersMap.end()) {
-    auto &buffers = it->second;
-    assert(buffers.size() == devCount);
-    if (buffers[devIdx].bufferPtr == buffer) {
-      return buffers[devIdx];
-    }
-    destroyPJRTBuffer(api, buffers[devIdx].bufferPtr);
-    buffers[devIdx].bufferPtr = buffer;
-    return buffers[devIdx];
-  } else {
+  if (it == deviceBuffersMap.end()) {
     // cache not exist
-    std::vector<DeviceBufferSlot> buffers(devCount, DeviceBufferSlot{nullptr});
-    deviceBuffersMap[dataSrc] = std::move(buffers);
-    deviceBuffersMap[dataSrc][devIdx] = DeviceBufferSlot{std::move(buffer)};
-    return deviceBuffersMap[dataSrc][devIdx];
+    it = deviceBuffersMap
+             .emplace(dataSrc, std::vector<DeviceBufferSlot>(
+                                   devCount, DeviceBufferSlot{nullptr}))
+             .first;
   }
+  auto &buffers = it->second;
+  assert(buffers.size() == devCount);
+  // The same buffer may come back with a new shard description: keep it.
+  if (buffers[devIdx].bufferPtr != nullptr &&
+      buffers[devIdx].bufferPtr != slot.bufferPtr) {
+    destroyPJRTBuffer(api, buffers[devIdx].bufferPtr);
+  }
+  buffers[devIdx] = std::move(slot);
+  return buffers[devIdx];
 }
 
 void DeviceBuffersCache::deleteEntry(void *dataSrc, const PJRT_Api *api_) {
@@ -211,10 +207,15 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
     int deviceIdx,
     // const TensorDesc &inputArg,
     void *dataSrc, DType elementDType, llvm::ArrayRef<int64_t> subtensorDims,
-    llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte = 0) {
+    llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte,
+    llvm::ArrayRef<int64_t> fullShape, const ShardSlices &slices) {
   size_t rank = subtensorDims.size();
   // pointing to a memory on host, host does not know the size
   // To make it work on TPU, we have to do it here
+  // FIXME(sharding-cache): the cached buffer is reused without checking its
+  // sharding. It may be a previous kernel's output in a different sharding than
+  // this kernel's input (per-kernel ILP, or outputs != inputs), so the local
+  // shard may have the wrong shape or hold the wrong part of the tensor.
   auto cache = deviceBuffersCache.getBuffer(dataSrc, deviceIdx);
   if (cache.has_value() && cache.value().bufferPtr != nullptr) {
     return cache.value().bufferPtr;
@@ -236,8 +237,11 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
                  << JitManager::getErrMsg(api_, err) << "\n";
     std::abort();
   }
+  DeviceBufferSlot slot{args.buffer, slices,
+                        llvm::SmallVector<int64_t>(fullShape),
+                        getDTypeSizeInByte(elementDType)};
   auto updated = deviceBuffersCache.tryInsertOrUpdate(
-      api_, dataSrc, deviceIdx, pjrtDevices_.size(), args.buffer);
+      api_, dataSrc, deviceIdx, pjrtDevices_.size(), std::move(slot));
   return updated.bufferPtr;
 }
 
@@ -522,7 +526,7 @@ DeviceManager::DeviceManager(const PJRT_Api *api, PJRT_Client *client,
 // void DeviceManager::manageMultiDevicesInputBuffers(
 //     const TensorDesc *inputArgs, const int32_t inputArgCount,
 //     std::vector<std::vector<PJRT_Buffer *>> &buffers,
-//     const ShardingDecision &sd) {
+//     const TensorShardings &sd) {
 //   // PROFILE_SCOPE("manageInputBuffers", Phase::EXECUTION_BUFFER_PREPARE);
 //   assert(buffers.size() == this->pjrtDevices_.size() &&
 //          "Buffer size should be the same with devices size");
@@ -586,65 +590,154 @@ PJRT_Buffer *DeviceManager::moveDataSegsToDevice(
     offsetInByte += tensorSlices[i].first * byteStrides[i];
   }
   return createBufferFromForgedTgtPointers(devIdx, dataSrc, elementDType, dims,
-                                           byteStrides, offsetInByte);
+                                           byteStrides, offsetInByte,
+                                           tensorShape, ShardSlices(tensorSlices));
 };
 
 void DeviceManager::moveOutBuffersToDeviceBufferMap(
-    int devIdx, void *argPtr, int argIdx,
-    PJRT_Buffer **const *outsBuffersList) {
+    int devIdx, void *argPtr, int argIdx, PJRT_Buffer **const *outsBuffersList,
+    llvm::ArrayRef<int64_t> fullShape, const ShardSlices &slices,
+    size_t elementSize) {
   assert(outsBuffersList[devIdx][argIdx] &&
          "buffer not exists in outsBuffersList!");
-  auto outsBuffer = outsBuffersList[devIdx][argIdx];
+  DeviceBufferSlot slot{outsBuffersList[devIdx][argIdx], slices,
+                        llvm::SmallVector<int64_t>(fullShape), elementSize};
   deviceBuffersCache.tryInsertOrUpdate(api_, argPtr, devIdx,
-                                       pjrtDevices_.size(), outsBuffer);
+                                       pjrtDevices_.size(), std::move(slot));
 }
 
+// Copy a dense row-major shard into its place in the full row-major tensor:
+// one memcpy per contiguous run along the innermost dim.
+static void scatterShardToHost(const std::byte *shard, std::byte *full,
+                               llvm::ArrayRef<int64_t> fullShape,
+                               const ShardSlices &slices, size_t elementSize) {
+  const size_t rank = fullShape.size();
+  if (rank == 0) {
+    std::memcpy(full, shard, elementSize);
+    return;
+  }
+  // Strides in elements of the full tensor and of the shard.
+  llvm::SmallVector<size_t> fullStride(rank, 1), shardStride(rank, 1);
+  for (int dim = static_cast<int>(rank) - 2; dim >= 0; --dim) {
+    fullStride[dim] = fullStride[dim + 1] * fullShape[dim + 1];
+    shardStride[dim] = shardStride[dim + 1] *
+                       (slices[dim + 1].second - slices[dim + 1].first);
+  }
+  for (size_t dim = 0; dim < rank; ++dim) {
+    if (slices[dim].second <= slices[dim].first) {
+      return; // empty shard
+    }
+  }
+  const size_t runBytes =
+      (slices[rank - 1].second - slices[rank - 1].first) * elementSize;
+
+  // idx: position inside the shard over dims [0, rank - 1).
+  llvm::SmallVector<size_t> idx(rank, 0);
+  while (true) {
+    size_t fullOffset = slices[rank - 1].first; // innermost start
+    size_t shardOffset = 0;
+    for (size_t dim = 0; dim + 1 < rank; ++dim) {
+      fullOffset += (slices[dim].first + idx[dim]) * fullStride[dim];
+      shardOffset += idx[dim] * shardStride[dim];
+    }
+    std::memcpy(full + fullOffset * elementSize,
+                shard + shardOffset * elementSize, runBytes);
+
+    // Advance the odometer over the outer dims.
+    int dim = static_cast<int>(rank) - 2;
+    for (; dim >= 0; --dim) {
+      if (++idx[dim] < slices[dim].second - slices[dim].first) {
+        break;
+      }
+      idx[dim] = 0;
+    }
+    if (dim < 0) {
+      return;
+    }
+  }
+}
+
+// Read every distinct shard into a temporary dense buffer, then scatter it to
+// its place in hostPtr. Devices holding the same shard (replicated axes) are
+// read once.
 void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
   auto buffersOptional = deviceBuffersCache.getBuffers(hostPtr);
   if (!buffersOptional.has_value()) {
     llvm::errs() << "Can not find related buffer!\n";
     return;
   }
+  const std::vector<DeviceBufferSlot> &buffers = buffersOptional.value();
+  if (buffers.empty() || buffers[0].bufferPtr == nullptr) {
+    llvm::errs() << "Device buffer of " << hostPtr << " is missing!\n";
+    std::exit(EXIT_FAILURE);
+  }
+  llvm::ArrayRef<int64_t> fullShape = buffers[0].fullShape;
+  const size_t elementSize = buffers[0].elementSize;
+  size_t fullBytes = elementSize;
+  for (int64_t dimSize : fullShape) {
+    fullBytes *= dimSize;
+  }
+  if (elementSize == 0 || fullBytes != size) {
+    llvm::errs() << "Readback of " << hostPtr << ": expected " << size
+                 << " bytes, the cached tensor has " << fullBytes
+                 << " bytes (partial readback is not supported).\n";
+    std::exit(EXIT_FAILURE);
+  }
 
-  auto buffers = buffersOptional.value();
-  llvm::SmallVector<PJRT_Event *> events;
-  events.reserve(buffers.size());
-  size_t offset = 0;
-  int currIdx = 0;
-  while (offset < size) {
-    auto buffer = buffers[currIdx];
-    assert(buffer.bufferPtr != nullptr);
-    PJRT_Buffer_OnDeviceSizeInBytes_Args getSizeArg = {
-        .struct_size = PJRT_Buffer_OnDeviceSizeInBytes_Args_STRUCT_SIZE,
-        .buffer = buffer.bufferPtr};
-    auto err = api_->PJRT_Buffer_OnDeviceSizeInBytes(&getSizeArg);
-    if (err) {
-      llvm::errs() << "Error in getting buffer's size: "
-                   << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+  llvm::SmallVector<const DeviceBufferSlot *> toRead;
+  for (const DeviceBufferSlot &slot : buffers) {
+    if (slot.bufferPtr == nullptr || slot.fullShape != buffers[0].fullShape ||
+        slot.slices.size() != fullShape.size()) {
+      llvm::errs() << "Device buffers of " << hostPtr
+                   << " are inconsistent!\n";
       std::exit(EXIT_FAILURE);
     }
+    bool seen = llvm::any_of(toRead, [&](const DeviceBufferSlot *other) {
+      return other->slices == slot.slices;
+    });
+    if (!seen) {
+      toRead.push_back(&slot);
+    }
+  }
 
+  std::vector<std::vector<std::byte>> shards(toRead.size());
+  llvm::SmallVector<PJRT_Event *> events;
+  for (size_t i = 0; i < toRead.size(); ++i) {
+    size_t shardBytes = elementSize;
+    for (const auto &[start, end] : toRead[i]->slices) {
+      shardBytes *= end - start;
+    }
+    shards[i].resize(shardBytes);
     PJRT_Buffer_ToHostBuffer_Args toHostArg = {
         .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
-        .src = buffer.bufferPtr,
-        .dst = static_cast<void *>(static_cast<std::byte *>(hostPtr) + offset),
-        .dst_size = getSizeArg.on_device_size_in_bytes};
-    err = api_->PJRT_Buffer_ToHostBuffer(&toHostArg);
+        .src = toRead[i]->bufferPtr,
+        .dst = shards[i].data(),
+        .dst_size = shardBytes};
+    auto *err = api_->PJRT_Buffer_ToHostBuffer(&toHostArg);
     if (err) {
       llvm::errs() << "Error in moving buffer to host: "
                    << JitManager::getInstance().getErrMsg(api_, err) << "\n";
       std::exit(EXIT_FAILURE);
     }
-    events.push_back(std::move(toHostArg.event));
-    offset += getSizeArg.on_device_size_in_bytes;
-    currIdx += 1;
+    events.push_back(toHostArg.event);
   }
-  for (int eventIdx = 0; eventIdx < events.size(); eventIdx++) {
-    auto awaitArgs =
-        PJRT_Event_Await_Args{.struct_size = PJRT_Event_Await_Args_STRUCT_SIZE,
-                              .event = events[eventIdx]};
-    auto *err2 = api_->PJRT_Event_Await(&awaitArgs);
-    assert(!err2);
+  for (PJRT_Event *event : events) {
+    auto awaitArgs = PJRT_Event_Await_Args{
+        .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE, .event = event};
+    auto *err = api_->PJRT_Event_Await(&awaitArgs);
+    if (err) {
+      llvm::errs() << "Error in waiting for readback: "
+                   << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+      std::exit(EXIT_FAILURE);
+    }
+    PJRT_Event_Destroy_Args destroyArgs = {
+        .struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE, .event = event};
+    api_->PJRT_Event_Destroy(&destroyArgs);
+  }
+
+  for (size_t i = 0; i < toRead.size(); ++i) {
+    scatterShardToHost(shards[i].data(), static_cast<std::byte *>(hostPtr),
+                       fullShape, toRead[i]->slices, elementSize);
   }
 }
 

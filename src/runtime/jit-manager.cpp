@@ -280,6 +280,8 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
       .compile_options = (char *)buf.c_str(),
       .compile_options_size = (size_t)buf.size()};
 
+  DEBUG_PRINT("This is the function we're going to compile: " + func_code);
+
   auto error = this->pjrtApi->PJRT_Client_Compile(&compile_args);
   if (error) {
     llvm::errs() << "Fail to compile XLA Executable: "
@@ -406,13 +408,9 @@ JitManager::preprocessModuleOp(void *JitCode, int64_t NumArgs, void **TgtArgs,
   return moduleOpRef;
 }
 
-mlir::ModuleOp JitManager::annoateShardyInfo(mlir::ModuleOp moduleOp,
-                                             const ShardingDecision &sd) {
+mlir::ModuleOp JitManager::annotateDeviceMeshInfo(mlir::ModuleOp moduleOp) {
   OpBuilder opBuilder(&context);
   context.getOrLoadDialect<mlir::sdy::SdyDialect>();
-
-  auto kernelFunc = moduleOp.lookupSymbol<mlir::func::FuncOp>("main");
-  assert(kernelFunc && "There should exist a kernel function called main");
 
   mlir::OpBuilder::InsertionGuard lock(opBuilder);
   opBuilder.setInsertionPointToStart(moduleOp.getBody(0));
@@ -426,21 +424,6 @@ mlir::ModuleOp JitManager::annoateShardyInfo(mlir::ModuleOp moduleOp,
   }
   mlir::sdy::MeshOp::create(opBuilder, moduleOp.getLoc(), sharder.meshName,
                             mlir::sdy::MeshAttr::get(&context, axes));
-
-  // Sharding strategy on each argument
-  assert(sd.size() == kernelFunc.getNumArguments() &&
-         "Sharding Decision does not have the same size as the function "
-         "arguments count.");
-  llvm::SmallVector<Attribute> attrs(kernelFunc.getNumArguments(),
-                                     opBuilder.getDictionaryAttr({}));
-  for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {
-    attrs[i] = opBuilder.getDictionaryAttr(
-      opBuilder.getNamedAttr(
-        mlir::sdy::TensorShardingAttr::name,
-        toShardingAttr(context, sharder.meshName, sd[i])
-      ));
-  }
-  kernelFunc.setArgAttrsAttr(opBuilder.getArrayAttr(attrs));
   return moduleOp;
 }
 
@@ -450,15 +433,17 @@ JitManager::createL2JitMetas(const llvm::SmallVector<uint64_t, 128> &key,
                              size_t kernelFingerprint) {
   mlir::OpBuilder opBuilder(&this->context);
   auto moduleOp = kernelFunc->getParentOfType<mlir::ModuleOp>();
-  ShardingDecision sd = sharder.heuristicShard(moduleOp);
-  moduleOp = annoateShardyInfo(moduleOp, sd);
+  moduleOp = annotateDeviceMeshInfo(moduleOp);
+  auto plan = buildGraph(kernelFunc).tune(sharder.meshAxes);
+  KernelIOShardings ioShardings =
+      annotatePlan(kernelFunc, plan, sharder.meshName);
   auto kernelFuncStr = getMLIROperationAsString(moduleOp);
   auto exec = this->compilePJRTExecutable(kernelFuncStr);
 
   auto funcTypes = kernelFunc.getFunctionType().getInputs();
   std::vector<mlir::Type> argTypesVec(funcTypes.begin(), funcTypes.end());
   L2JitMetas l2Cache(exec, std::move(argTypesVec), std::move(kernelFuncStr),
-                     std::move(sd), kernelFingerprint);
+                     std::move(ioShardings), kernelFingerprint);
   return cacheManager.insertL2CacheAndReturn(
       key, std::move(l2Cache),
       [this](PJRT_LoadedExecutable *e) { this->destroyLoadedExecutable(e); });
@@ -528,172 +513,63 @@ bool JitManager::invalidateCachedDeviceBuffers(void *forgedTgtPtr,
   return deviceManager.invalidateDeviceBuffers(forgedTgtPtr, size);
 }
 
-// TODO: for each device, we probably should use thread to do the IO
-static void prepareInputBuffersForSingleDevice(
-    int devIdx, DeviceManager &devManager, const TensorDesc *args,
-    const unsigned int count,
-    std::vector<std::vector<PJRT_Buffer *>> &inBuffers,
-    const ShardingDecision &sd, const llvm::SmallVector<size_t> &devPos) {
-
-  for (int argIdx = 0; argIdx < count; argIdx++) {
-    auto arg = args[argIdx];
-    auto argSD = sd[argIdx];
-
-    if (arg.rank == 0) {
-      inBuffers[devIdx][argIdx] = devManager.createLiteralBuffer(devIdx, arg);
-      continue;
-    }
-
-    // slices of the tensor on each dimension for this argument tensor
-    llvm::SmallVector<std::pair<size_t, size_t>> tensorSlices(arg.rank);
-    for (int argDimIdx = 0; argDimIdx < arg.rank; argDimIdx++) {
-      const auto &dimSD = argSD[argDimIdx];
-      if (dimSD.empty()) {
-        // not sharding this dimension
-        tensorSlices[argDimIdx] = std::make_pair(0, arg.shape[argDimIdx]);
-      } else {
-        auto prod = 1;
-        auto offset = 0;
-        auto multiplier = 1;
-        // loop for right to left for computing offset at the same time
-        for (int i = dimSD.size() - 1; i >= 0; i--) {
-          const auto &meshAxis = dimSD[i];
-          prod *= meshAxis.get().size;
-          if (i == dimSD.size() - 1) {
-            multiplier = 1;
-          } else {
-            multiplier = multiplier * dimSD[i + 1].get().size;
-          }
-          offset += devPos[i] * multiplier;
-        }
-        assert(prod > 0 && "sharding prod should be greater than 0.");
-        auto sliceStep = arg.shape[argDimIdx] / prod;
-
-        // in most cases, we only have 1 or 2 dims, no need to cache the prefix
-        // prod
-        auto start = offset * sliceStep;
-        tensorSlices[argDimIdx] = std::make_pair(start, start + sliceStep);
-      }
-    }
-    inBuffers[devIdx][argIdx] = devManager.moveDataSegsToDevice(
-        devIdx, arg.data, arg.shape, tensorSlices, arg.dtype);
-
-    /**
-     * No need to map to 1-dimensional memory as API can help us.
-     *
-    // We have to mapping from a tensor's representation: T(s_0, s_1, ...
-    // s_{n-1}) to 1 dimensional memory, Each s_i is a continuous slice,
-    // represented as a pair of [start, end). For an n-dimensional tensor like
-    // T, it will correspond to $\prod_{i=0}^{n-2}(s[i][1] - s[i][0])$ segments.
-    // This is likely a horrifying number but in most cases we only have
-    // 2-dimensional tensors. Furthermore, we have an optimization: if the slice
-    // can be something like T(s_0, s_1, ..., s_k, :,..., :), The memory after
-    // dim-k is continuous.
-    //
-    // memSegs are memory segements start with void* and length uint32_t
-    llvm::SmallVector<std::pair<void *, size_t>> memSegs;
-    int pivot = -1;
-    // find pivot dim where arg.shape[pivot] > tensorSlices[pivot]
-    for (int i = arg.rank - 1; i >= 0; i--) {
-      const auto sliceSize = tensorSlices[i].second - tensorSlices[i].first;
-      if (arg.shape[i] != sliceSize) {
-        pivot = i;
-        break;
-      }
-    }
-
-    if (pivot != -1) {
-      // This works like a prefix production.
-      // For example, if we have 2-dimensional matrix of [6, 4], with float64
-      // Then byteStrides is [32, 8]
-      // Becuse now, any change in dim0 will bring size(dim1) * size(float64)
-      // bytes changes, and change in dim1 will bring size(float64) changes.
-      llvm::SmallVector<size_t> byteStrides(arg.rank);
-      size_t stride = arg.getDTypeSize();
-      for (int i = arg.rank - 1; i >= 0; i--) {
-        byteStrides[i] = stride;
-        stride *= static_cast<size_t>(arg.shape[i]);
-      }
-      // granularity of continuous memory
-      const size_t segBytes =
-          (tensorSlices[pivot].second - tensorSlices[pivot].first) *
-          byteStrides[pivot];
-
-      llvm::SmallVector<size_t> coords(pivot);
-      for (int i = 0; i < pivot; i++) {
-        coords[i] = tensorSlices[i].first;
-      }
-
-      auto *base = static_cast<char *>(arg.data);
-      while (true) {
-        size_t byteOffset = tensorSlices[pivot].first * byteStrides[pivot];
-        for (int i = 0; i < pivot; i++) {
-          byteOffset += coords[i] * byteStrides[pivot];
-        }
-
-        memSegs.emplace_back(base + byteOffset, segBytes);
-
-        // advance in coords, if exceed slices.second, carry
-        int i = pivot - 1;
-        for (; i >= 0; i--) {
-          coords[i] += 1;
-          if (coords[i] < tensorSlices[i].second) {
-            // no need to carry
-            break;
-          }
-          coords[i] = tensorSlices[i].first;
-        }
-        if (i < 0) {
-          break;
-        }
-      }
-    } else {
-      // There is no data sharding at all, just move the whole segment
-      assert(pivot == -1);
-      memSegs.push_back(
-          std::make_pair(arg.data, arg.getEleCount() * arg.getDTypeSize()));
-    }
-    deviceManager.moveDataToDevice(std::move(memSegs));
-   */
+// Coordinates of a device in the mesh; devices are numbered row-major (the
+// last mesh axis varies fastest), as in Shardy's default device order.
+// e.g. mesh {2, 3}: device 4 -> (1, 1).
+static llvm::SmallVector<size_t>
+getDevPosInMesh(size_t devIdx, llvm::ArrayRef<uint32_t> deviceMesh) {
+  llvm::SmallVector<size_t> devPos(deviceMesh.size());
+  for (int i = static_cast<int>(deviceMesh.size()) - 1; i >= 0; i--) {
+    devPos[i] = devIdx % deviceMesh[i];
+    devIdx /= deviceMesh[i];
   }
+  return devPos;
+}
+
+// The shard a device at devPos holds: [start, end) on each dim. The axes of a
+// dim sharding go from major to minor, so the shard index along that dim is
+// mixed-radix over them, indexed by each axis's position in the mesh.
+// e.g. mesh {a: 2, b: 3}, dim sharding {b, a}: shard = pos[b] * 2 + pos[a].
+static ShardSlices getShardSlices(llvm::ArrayRef<int64_t> shape,
+                                  const TensorSharding &sharding,
+                                  llvm::ArrayRef<size_t> devPos) {
+  assert(sharding.size() == shape.size() && "sharding rank mismatch");
+  ShardSlices slices(shape.size());
+  for (size_t dim = 0; dim < shape.size(); dim++) {
+    size_t shardIdx = 0;
+    size_t numShards = 1;
+    for (const MeshAxis &axis : sharding[dim]) {
+      shardIdx = shardIdx * axis.size + devPos[axis.ordinal];
+      numShards *= axis.size;
+    }
+    size_t step = shape[dim] / numShards;
+    slices[dim] = {shardIdx * step, (shardIdx + 1) * step};
+  }
+  return slices;
 }
 
 void JitManager::prepareInputBuffers(
     const TensorDesc *args, const unsigned int count,
     std::vector<std::vector<PJRT_Buffer *>> &inBuffers,
-    const ShardingDecision &sd) {
+    const TensorShardings &sd) {
   // TODO: be compatible with existing plugins.
   // currently only consider TPU runtime plugin
 
-  llvm::SmallVector<uint32_t> meshPrefixProd(sharder.deviceMesh.size());
-  for (int i = sharder.deviceMesh.size() - 1; i >= 0; i--) {
-    if (i == sharder.deviceMesh.size() - 1) {
-      meshPrefixProd[i] = sharder.deviceMesh[i];
-    } else {
-      meshPrefixProd[i] *= sharder.deviceMesh[i];
-    }
-  }
-  auto getDevPosInMesh = [&](size_t devIdx) {
-    llvm::SmallVector<size_t> devPos(sharder.deviceMesh.size());
-    size_t offset = 0;
-    for (int i = 0; i < sharder.deviceMesh.size(); i++) {
-      if (i < sharder.deviceMesh.size() - 1) {
-        devPos[i] = (devIdx - offset) / meshPrefixProd[i + 1];
-        offset += devPos[i] * meshPrefixProd[i + 1];
-      } else {
-        devPos[i] = devIdx - offset;
-      }
-    }
-    return devPos;
-  };
-
   // TODO: this should be parallelized
   for (size_t devIdx = 0; devIdx < sharder.deviceCount; devIdx++) {
-    auto devPos = getDevPosInMesh(devIdx);
-    prepareInputBuffersForSingleDevice(devIdx, deviceManager, args, count,
-                                       inBuffers, sd, devPos);
+    auto devPos = getDevPosInMesh(devIdx, sharder.deviceMesh);
+    for (unsigned argIdx = 0; argIdx < count; argIdx++) {
+      const TensorDesc &arg = args[argIdx];
+      if (arg.rank == 0) {
+        inBuffers[devIdx][argIdx] =
+            deviceManager.createLiteralBuffer(devIdx, arg);
+        continue;
+      }
+      ShardSlices slices = getShardSlices(arg.shape, sd[argIdx], devPos);
+      inBuffers[devIdx][argIdx] = deviceManager.moveDataSegsToDevice(
+          devIdx, arg.data, arg.shape, slices, arg.dtype);
+    }
   }
-  return;
 }
 
 void JitManager::executeOnMultiDevices(PJRT_LoadedExecutable *exe,
@@ -745,10 +621,12 @@ void JitManager::executeOnMultiDevices(PJRT_LoadedExecutable *exe,
 void JitManager::manageOutBuffers(int inArgsCount,
                                   PJRT_Buffer **const *outsBuffersList,
                                   TensorDesc *inputArgs,
-                                  TensorDesc *outputArgs) {
+                                  TensorDesc *outputArgs,
+                                  const TensorShardings &outputShardings) {
 
   for (int devIdx = 0; devIdx < this->deviceManager.pjrtDevices_.size();
        devIdx++) {
+    auto devPos = getDevPosInMesh(devIdx, sharder.deviceMesh);
     for (int argIdx = 0; argIdx < inArgsCount; argIdx++) {
       auto inputArg = inputArgs[argIdx];
       if (inputArg.isLiteral) {
@@ -756,8 +634,12 @@ void JitManager::manageOutBuffers(int inArgsCount,
                                         outsBuffersList[devIdx][argIdx]);
         continue;
       }
-      deviceManager.moveOutBuffersToDeviceBufferMap(devIdx, inputArg.data,
-                                                    argIdx, outsBuffersList);
+      // Result i is written back to argument i, so it has argument i's shape.
+      ShardSlices slices =
+          getShardSlices(inputArg.shape, outputShardings[argIdx], devPos);
+      deviceManager.moveOutBuffersToDeviceBufferMap(
+          devIdx, inputArg.data, argIdx, outsBuffersList, inputArg.shape,
+          slices, getDTypeSizeInByte(inputArg.dtype));
       // FIXME: delete after debugging
       printBufferShape(pjrtApi, outsBuffersList[devIdx][argIdx], "[DEBUG OUT]",
                        devIdx, argIdx);
@@ -766,7 +648,7 @@ void JitManager::manageOutBuffers(int inArgsCount,
 }
 
 void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
-  auto idAndStartPair = sharder.startRecordProfile(l2Cache->sd, l2Cache->kernelFingerprint, *kernelArgs);
+  auto idAndStartPair = sharder.startRecordProfile(l2Cache->ioShardings.inputs, l2Cache->kernelFingerprint, *kernelArgs);
   DEBUG_PRINT("Enter launchKernelOnMultiDevices");
   // TODO: improve this when it becomes slow
   // InputBufs[deviceId][argIdx]
@@ -778,7 +660,7 @@ void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
   // InputBufs are buffers in each devices.
   DEBUG_PRINT("Before manage input buffers");
   prepareInputBuffers(kernelArgs->inputArgs, kernelArgs->inputArgCount,
-                      inputBufs, l2Cache->sd);
+                      inputBufs, l2Cache->ioShardings.inputs);
   DEBUG_PRINT("Finish manage input buffers");
 
   PJRT_Buffer ***inputBufsList;
@@ -808,7 +690,8 @@ void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
 
   // move data back to the host
   manageOutBuffers(kernelArgs->inputArgCount, outputBufsList,
-                   kernelArgs->inputArgs, kernelArgs->outputArgs);
+                   kernelArgs->inputArgs, kernelArgs->outputArgs,
+                   l2Cache->ioShardings.outputs);
   DEBUG_PRINT("Finish manage out buffers");
   sharder.endRecordProfile(idAndStartPair.first, std::move(idAndStartPair.second));
   return;

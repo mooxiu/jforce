@@ -30,7 +30,7 @@ struct ShPGOKernelRecord {
   size_t kernelFingerprint;
   std::vector<std::vector<int64_t>> argShapes;
   std::vector<DType> argDTypes;
-  ShardingDecision sd;
+  TensorShardings sd;
   uint64_t kernelExeTime;
 };
 

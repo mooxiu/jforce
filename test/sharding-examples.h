@@ -12,7 +12,7 @@ namespace sharding_test {
 
 inline constexpr llvm::StringLiteral meshName = "mesh";
 
-// Builders create unannotated IR. The search applies layouts separately.
+// Builders create unannotated IR. The search applies shardings separately.
 mlir::OwningOpRef<mlir::ModuleOp> createModule(mlir::MLIRContext &ctx,
                                                llvm::ArrayRef<MeshAxis> axes);
 mlir::func::FuncOp addFunction(mlir::OpBuilder &builder, mlir::ModuleOp module,

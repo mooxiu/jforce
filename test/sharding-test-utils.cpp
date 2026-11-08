@@ -28,7 +28,7 @@ bool isElementwise(Operation *op) {
   return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::SubtractOp>(op);
 }
 
-const ArgSharding *producerLayout(Value value,
+const TensorSharding *producerSharding(Value value,
                                   llvm::ArrayRef<OperationChoices> choices,
                                   llvm::ArrayRef<size_t> assignment,
                                   size_t consumer) {
@@ -55,8 +55,8 @@ void enumerateFrom(llvm::ArrayRef<OperationChoices> choices, bool prune,
     if (prune && isElementwise(op) &&
         !keepEleBinaryOpStrategy(
             choices[next].strategies[i],
-            producerLayout(op->getOperand(0), choices, current, next),
-            producerLayout(op->getOperand(1), choices, current, next)))
+            producerSharding(op->getOperand(0), choices, current, next),
+            producerSharding(op->getOperand(1), choices, current, next)))
       continue;
     current[next] = i;
     enumerateFrom(choices, prune, next + 1, current, assignments);
@@ -71,10 +71,10 @@ Value reshardForUse(OpBuilder &builder, Value value,
       .getResult();
 }
 
-bool matchesStrategy(Operation *op, const OperationShardingStrategy &strategy) {
-  auto matches = [&](Value value, const ArgSharding &layout) {
+bool matchesStrategy(Operation *op, const OpStrategy &strategy) {
+  auto matches = [&](Value value, const TensorSharding &sharding) {
     auto actual = sdy::getSharding(value);
-    auto expected = toShardingAttr(*op->getContext(), meshName, layout);
+    auto expected = toShardingAttr(*op->getContext(), meshName, sharding);
     // A matmul's intermediate result may additionally carry unreduced axes.
     return actual && actual.getDimShardings() == expected.getDimShardings();
   };
@@ -111,7 +111,7 @@ LogicalResult collectChoices(func::FuncOp function,
     auto *op = &operation;
     if (isa<func::ReturnOp>(op))
       continue;
-    llvm::SmallVector<OperationShardingStrategy> strategies;
+    llvm::SmallVector<OpStrategy> strategies;
     if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
       auto dims = dot.getDotDimensionNumbers();
       if (!dims.getLhsBatchingDimensions().empty() ||
@@ -190,7 +190,7 @@ OwningOpRef<ModuleOp> applyAssignment(ModuleOp source,
         auto index = argument.getArgNumber();
         if (!assigned[index]) {
           function.setArgAttr(index, shardingName, target);
-          assigned[index] = true; // Boundary layout follows the first consumer.
+          assigned[index] = true; // Boundary sharding follows the first consumer.
         }
       }
       op->setOperand(j, reshardForUse(builder, value, target));
@@ -202,13 +202,13 @@ OwningOpRef<ModuleOp> applyAssignment(ModuleOp source,
     op->setAttr(operationId, builder.getI64IntegerAttr(i));
   }
 
-  // Unused arguments are replicated. Returns may have any order or layout.
+  // Unused arguments are replicated. Returns may have any order or sharding.
   for (unsigned i = 0; i < assigned.size(); ++i)
     if (!assigned[i]) {
       auto type = cast<RankedTensorType>(function.getArgument(i).getType());
       function.setArgAttr(i, shardingName,
                           toShardingAttr(*function.getContext(), meshName,
-                                         ArgSharding(type.getRank())));
+                                         TensorSharding(type.getRank())));
     }
   auto terminator = cast<func::ReturnOp>(entry.getTerminator());
   builder.setInsertionPoint(terminator);
@@ -258,7 +258,7 @@ LogicalResult lowerAndCheck(ModuleOp module,
     }
   });
   if (!valid || labelled.size() != choices.size()) {
-    module.emitError("not all selected operations/layouts survived lowering");
+    module.emitError("not all selected operations/shardings survived lowering");
     return failure();
   }
   for (auto *op : labelled)
@@ -306,7 +306,7 @@ LogicalResult checkStrategyGenerators(MLIRContext &ctx) {
     llvm::errs() << "Strategy generator checks failed\n";
     return failure();
   }
-  ArgSharding lhs(2), rhs(2);
+  TensorSharding lhs(2), rhs(2);
   lhs[0].push_back(axes[0]);
   lhs[1].push_back(axes[1]);
   rhs[0].push_back(axes[0]);
@@ -314,7 +314,7 @@ LogicalResult checkStrategyGenerators(MLIRContext &ctx) {
   for (const auto &candidate : getEleBinaryOpStrategies(a, a, axes))
     if (keepEleBinaryOpStrategy(candidate, &lhs, &rhs)) {
       ++kept;
-      if (toStr(candidate.results) != toStr(ShardingDecision{rhs})) {
+      if (toStr(candidate.results) != toStr(TensorShardings{rhs})) {
         llvm::errs() << "Elementwise conflict-dimension pruning failed\n";
         return failure();
       }
@@ -356,7 +356,7 @@ LogicalResult checkTuner(llvm::StringRef example, func::FuncOp function,
     auto assignments = enumerateAssignments(choices, prune);
     double best = std::numeric_limits<double>::infinity();
     for (const auto &assignment : assignments) {
-      llvm::DenseMap<Operation *, OperationShardingStrategy> candidate;
+      ShardingPlan candidate;
       for (size_t i = 0; i < choices.size(); ++i) {
         candidate[choices[i].operation] =
             choices[i].strategies[assignment[i]];

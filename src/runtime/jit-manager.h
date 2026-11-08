@@ -32,7 +32,9 @@ struct L2JitMetas {
   std::vector<mlir::Type> kernelFuncTypes;
   std::string kernelFuncStr;
 
-  ShardingDecision sd;
+  // inputs: how arguments are uploaded; outputs: how results come back.
+  KernelIOShardings ioShardings;
+
   // Finger print of the original JITCode, without size specialization.
   // Why: same code with different runtime size can be autotuned.
   size_t kernelFingerprint;
@@ -40,9 +42,10 @@ struct L2JitMetas {
   L2JitMetas() = delete;
   L2JitMetas(PJRT_LoadedExecutable *exe,
              std::vector<mlir::Type> kernelFuncTypes, std::string kernelFuncStr,
-             ShardingDecision sd, size_t kernelFingerprint)
+             KernelIOShardings ioShardings, size_t kernelFingerprint)
       : exe(exe), kernelFuncTypes(std::move(kernelFuncTypes)),
-        kernelFuncStr(std::move(kernelFuncStr)), sd(std::move(sd)),
+        kernelFuncStr(std::move(kernelFuncStr)),
+        ioShardings(std::move(ioShardings)),
         kernelFingerprint(kernelFingerprint) {};
 };
 
@@ -74,8 +77,15 @@ public:
       std::function<void(PJRT_LoadedExecutable *)> destroyExecCallback);
 };
 
+// The shard one device holds: [start, end) on each dim of the full tensor.
+using ShardSlices = llvm::SmallVector<std::pair<size_t, size_t>>;
+
 struct DeviceBufferSlot {
   PJRT_Buffer *bufferPtr;
+  // Where this shard sits in the full (row-major) tensor, used by readback.
+  ShardSlices slices;
+  llvm::SmallVector<int64_t> fullShape;
+  size_t elementSize = 0;
 };
 
 class DeviceBuffersCache {
@@ -88,7 +98,7 @@ public:
   std::optional<DeviceBufferSlot> getBuffer(void *dataSrc, int devIdx);
   DeviceBufferSlot tryInsertOrUpdate(const PJRT_Api *api, void *dataSrc,
                                      int devIdx, int devCount,
-                                     PJRT_Buffer *buffer);
+                                     DeviceBufferSlot slot);
   void deleteEntry(void *dataSrc, const PJRT_Api *api_);
 };
 
@@ -107,7 +117,8 @@ private:
   PJRT_Buffer *createBufferFromForgedTgtPointers(
       int deviceIdx, void *dataSrc, DType elementDType,
       llvm::ArrayRef<int64_t> subtensorDims,
-      llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte);
+      llvm::ArrayRef<int64_t> byteStrides, uint32_t offsetInByte,
+      llvm::ArrayRef<int64_t> fullShape, const ShardSlices &slices);
 
 public:
   DeviceManager(const PJRT_Api *api, PJRT_Client *client,
@@ -122,7 +133,10 @@ public:
       DType elementDType);
   void moveDataToHostBuffer(void *hostPtr, size_t size);
   void moveOutBuffersToDeviceBufferMap(int devIdx, void *argPtr, int argIdx,
-                                       PJRT_Buffer **const *outsBuffersList);
+                                       PJRT_Buffer **const *outsBuffersList,
+                                       llvm::ArrayRef<int64_t> fullShape,
+                                       const ShardSlices &slices,
+                                       size_t elementSize);
   PJRT_Buffer *createLiteralBuffer(int devIdx, const TensorDesc &inputArg);
 };
 
@@ -144,18 +158,20 @@ private:
   preprocessModuleOp(void *JitCode, int64_t NumArgs, void **TgtArgs,
                      void **ArgPtrs, int64_t *ArgSizes, int64_t *ArgTypes);
   void destroyLoadedExecutable(PJRT_LoadedExecutable *exe);
-  mlir::ModuleOp annoateShardyInfo(mlir::ModuleOp moduleOp,
-                                   const ShardingDecision &sd);
+  // Add the device mesh to the module.
+  mlir::ModuleOp annotateDeviceMeshInfo(mlir::ModuleOp moduleOp);
   PJRT_LoadedExecutable *compilePJRTExecutable(const std::string &func_code);
   void prepareInputBuffers(const TensorDesc *args, const unsigned int count,
                            std::vector<std::vector<PJRT_Buffer *>> &inBuffers,
-                           const ShardingDecision &sd);
+                           const TensorShardings &sd);
   void executeOnMultiDevices(PJRT_LoadedExecutable *exe,
                              PJRT_Buffer ***argLists,
                              PJRT_Buffer **const *outLists,
                              const int in_args_count);
+  // outputShardings[i]: how output i is split, to record each device's shard.
   void manageOutBuffers(int inArgsCount, PJRT_Buffer **const *outsBuffersList,
-                        TensorDesc *inputArgs, TensorDesc *outputArgs);
+                        TensorDesc *inputArgs, TensorDesc *outputArgs,
+                        const TensorShardings &outputShardings);
 
 public:
   // Making JitManager a singleton

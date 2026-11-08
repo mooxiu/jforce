@@ -140,7 +140,7 @@ OwningOpRef<ModuleOp> createConflict(MLIRContext &ctx,
   auto function = addFunction(builder, module.get(), {a, b}, {c});
 
   // P = A @ B; Q = P @ P; R = P + Q. The add's inputs come from two matmuls
-  // that prefer different layouts, so pruning must join conflicting inputs.
+  // that prefer different shardings, so pruning must join conflicting inputs.
   Value p =
       addMatmul(builder, function.getArgument(0), function.getArgument(1));
   Value q = addMatmul(builder, p, p);

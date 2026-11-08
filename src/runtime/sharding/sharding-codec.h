@@ -9,13 +9,13 @@
 
 using namespace mlir;
 
-std::string toStr(const ShardingDecision &sd);
+std::string toStr(const TensorShardings &sd);
 
-ShardingDecision toSD(const std::string &sdStr,
+TensorShardings toSD(const std::string &sdStr,
                       llvm::ArrayRef<MeshAxis> meshAxes);
 
 mlir::sdy::TensorShardingAttr toShardingAttr(mlir::MLIRContext &ctx,
                                              llvm::StringRef meshName,
-                                             const ArgSharding &layout);
+                                             const TensorSharding &sharding);
 
 #endif

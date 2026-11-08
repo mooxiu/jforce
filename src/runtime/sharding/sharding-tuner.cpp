@@ -4,7 +4,10 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LLVM.h"
+#include "runtime/sharding/sharding-codec.h"
 #include "runtime/sharding/sharding-types.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
+#include "shardy/dialect/sdy/ir/utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -24,7 +27,7 @@
 // - m: for each M, K, N, it can be sharded by one of the device dimension, and
 // we have to apply all of the device dimension (else there will be repeated
 // computation).
-llvm::SmallVector<OperationShardingStrategy>
+llvm::SmallVector<OpStrategy>
 getMatmulStrategies(mlir::RankedTensorType lhsType,
                     mlir::RankedTensorType rhsType,
                     llvm::ArrayRef<MeshAxis> meshAxes) {
@@ -35,24 +38,12 @@ getMatmulStrategies(mlir::RankedTensorType lhsType,
     return {};
   }
 
-  const int64_t M = lhsType.getDimSize(0);
-  const int64_t K = lhsType.getDimSize(1);
-  const int64_t N = rhsType.getDimSize(1);
-
   // Start with one unsharded strategy, then assign every mesh axis.
-  OperationShardingStrategy initial;
-  initial.operands = {ArgSharding(2), ArgSharding(2)}; // A and B
-  initial.results = {ArgSharding(2)};                  // C
-  llvm::SmallVector<OperationShardingStrategy> strategies{initial};
-
-  // Previous axes have already divided the dimension evenly.
-  auto canSplit = [](int64_t size, const DimSharding &previousAxes,
-                     int64_t axisSize) {
-    for (const auto &previousAxis : previousAxes) {
-      size /= previousAxis.get().size;
-    }
-    return size % axisSize == 0;
-  };
+  // Dimension sizes are assumed divisible by the axis sizes (padding later).
+  OpStrategy initial;
+  initial.operands = {TensorSharding(2), TensorSharding(2)}; // A and B
+  initial.results = {TensorSharding(2)};                     // C
+  llvm::SmallVector<OpStrategy> strategies{initial};
 
   for (const MeshAxis &axis : meshAxes) {
     if (axis.size <= 0) {
@@ -62,26 +53,22 @@ getMatmulStrategies(mlir::RankedTensorType lhsType,
       continue;
     }
 
-    llvm::SmallVector<OperationShardingStrategy> next;
+    llvm::SmallVector<OpStrategy> next;
     for (const auto &strategy : strategies) {
-      if (canSplit(M, strategy.operands[0][0], axis.size)) {
-        auto splitM = strategy;
-        splitM.operands[0][0].push_back(axis); // A's M dimension
-        splitM.results[0][0].push_back(axis);  // C's M dimension
-        next.push_back(std::move(splitM));
-      }
-      if (canSplit(N, strategy.operands[1][1], axis.size)) {
-        auto splitN = strategy;
-        splitN.operands[1][1].push_back(axis); // B's N dimension
-        splitN.results[0][1].push_back(axis);  // C's N dimension
-        next.push_back(std::move(splitN));
-      }
-      if (canSplit(K, strategy.operands[0][1], axis.size)) {
-        auto splitK = strategy;
-        splitK.operands[0][1].push_back(axis); // A's K dimension
-        splitK.operands[1][0].push_back(axis); // B's K dimension
-        next.push_back(std::move(splitK));
-      }
+      auto splitM = strategy;
+      splitM.operands[0][0].push_back(axis); // A's M dimension
+      splitM.results[0][0].push_back(axis);  // C's M dimension
+      next.push_back(std::move(splitM));
+
+      auto splitN = strategy;
+      splitN.operands[1][1].push_back(axis); // B's N dimension
+      splitN.results[0][1].push_back(axis);  // C's N dimension
+      next.push_back(std::move(splitN));
+
+      auto splitK = strategy;
+      splitK.operands[0][1].push_back(axis); // A's K dimension
+      splitK.operands[1][0].push_back(axis); // B's K dimension
+      next.push_back(std::move(splitK));
     }
     strategies = std::move(next);
   }
@@ -89,11 +76,36 @@ getMatmulStrategies(mlir::RankedTensorType lhsType,
   return strategies;
 }
 
-// Element-wise, binary operation.
-// For example: add, multiply, etc.
-// They are lightweight, operations.
-// Replica is allowed.
-llvm::SmallVector<OperationShardingStrategy>
+// Listing all shardings for a single tensor.
+// Every sharding of one tensor: each mesh axis is either unused (replicated) or
+// assigned to one dimension. Includes the fully replicated one; a scalar has
+// only that one. Dimension sizes are assumed divisible by the axis sizes
+// (padding later).
+// Returned shardings reference meshAxes; its storage must outlive them.
+static llvm::SmallVector<TensorSharding>
+getShardings(mlir::RankedTensorType type, llvm::ArrayRef<MeshAxis> meshAxes) {
+  // Start fully replicated.
+  llvm::SmallVector<TensorSharding> shardings{TensorSharding(type.getRank())};
+
+  for (const MeshAxis &axis : meshAxes) {
+    llvm::SmallVector<TensorSharding> next;
+    for (const auto &sharding : shardings) {
+      // An unused axis remains replicated.
+      next.push_back(sharding);
+
+      for (int64_t dim = 0; dim < type.getRank(); ++dim) {
+        auto sharded = sharding;
+        sharded[dim].push_back(axis);
+        next.push_back(std::move(sharded));
+      }
+    }
+    shardings = std::move(next);
+  }
+
+  return shardings;
+}
+
+llvm::SmallVector<OpStrategy>
 getEleBinaryOpStrategies(mlir::RankedTensorType lhsType,
                          mlir::RankedTensorType rhsType,
                          llvm::ArrayRef<MeshAxis> meshAxes) {
@@ -103,65 +115,34 @@ getEleBinaryOpStrategies(mlir::RankedTensorType lhsType,
     return {};
   }
 
-  // Both operands and the result start fully replicated.
-  ArgSharding replicated(lhsType.getRank());
-  OperationShardingStrategy initial;
-  initial.operands = {replicated, replicated};
-  initial.results = {replicated};
-  llvm::SmallVector<OperationShardingStrategy> strategies{initial};
-
-  for (const MeshAxis &axis : meshAxes) {
-    if (axis.size <= 0) {
-      return {};
-    }
-    if (axis.size == 1) {
-      continue;
-    }
-
-    llvm::SmallVector<OperationShardingStrategy> next;
-    for (const auto &strategy : strategies) {
-      // An unused axis remains replicated.
-      next.push_back(strategy);
-
-      for (int64_t dim = 0; dim < lhsType.getRank(); ++dim) {
-        int64_t remainingSize = lhsType.getDimSize(dim);
-        for (const auto &previousAxis : strategy.results[0][dim]) {
-          remainingSize /= previousAxis.get().size;
-        }
-        if (remainingSize % axis.size != 0) {
-          continue;
-        }
-
-        auto sharded = strategy;
-        sharded.operands[0][dim].push_back(axis);
-        sharded.operands[1][dim].push_back(axis);
-        sharded.results[0][dim].push_back(axis);
-        next.push_back(std::move(sharded));
-      }
-    }
-    strategies = std::move(next);
+  // Both operands and the result use the same sharding.
+  llvm::SmallVector<OpStrategy> strategies;
+  for (const TensorSharding &sharding : getShardings(lhsType, meshAxes)) {
+    OpStrategy strategy;
+    strategy.operands = {sharding, sharding};
+    strategy.results = {sharding};
+    strategies.push_back(std::move(strategy));
   }
-
   return strategies;
 }
 
-bool keepEleBinaryOpStrategy(const OperationShardingStrategy &candidate,
-                             const ArgSharding *lhsProducerLayout,
-                             const ArgSharding *rhsProducerLayout) {
-  if (!lhsProducerLayout && !rhsProducerLayout) {
+bool keepEleBinaryOpStrategy(const OpStrategy &candidate,
+                             const TensorSharding *lhsProducerSharding,
+                             const TensorSharding *rhsProducerSharding) {
+  if (!lhsProducerSharding && !rhsProducerSharding) {
     return true;
   }
   if (candidate.results.size() != 1) {
     return false;
   }
-  // One producer: inherit its layout. Two producers: their join.
-  ArgSharding target =
-      lhsProducerLayout ? *lhsProducerLayout : *rhsProducerLayout;
-  if (lhsProducerLayout && rhsProducerLayout) {
-    if (lhsProducerLayout->size() != rhsProducerLayout->size()) {
+  // One producer: inherit its sharding. Two producers: their join.
+  TensorSharding target =
+      lhsProducerSharding ? *lhsProducerSharding : *rhsProducerSharding;
+  if (lhsProducerSharding && rhsProducerSharding) {
+    if (lhsProducerSharding->size() != rhsProducerSharding->size()) {
       return false;
     }
-    target = join(*lhsProducerLayout, *rhsProducerLayout);
+    target = join(*lhsProducerSharding, *rhsProducerSharding);
   }
   return compare(candidate.results[0], target) == 0;
 }
@@ -191,24 +172,24 @@ static bool isMatmul(Operation *op) {
 }
 
 // Fallback for unsupported ops: every operand and result replicated.
-static OperationShardingStrategy getReplicatedStrategy(Operation *op) {
-  auto layoutOf = [](Type type) {
+static OpStrategy getReplicatedStrategy(Operation *op) {
+  auto shardingOf = [](Type type) {
     auto tensorType = llvm::dyn_cast<RankedTensorType>(type);
-    return ArgSharding(tensorType ? tensorType.getRank() : 0);
+    return TensorSharding(tensorType ? tensorType.getRank() : 0);
   };
-  OperationShardingStrategy strategy;
+  OpStrategy strategy;
   for (Type type : op->getOperandTypes()) {
-    strategy.operands.push_back(layoutOf(type));
+    strategy.operands.push_back(shardingOf(type));
   }
   for (Type type : op->getResultTypes()) {
-    strategy.results.push_back(layoutOf(type));
+    strategy.results.push_back(shardingOf(type));
   }
   return strategy;
 }
 
-static llvm::SmallVector<OperationShardingStrategy>
+static llvm::SmallVector<OpStrategy>
 getOpStrategies(Operation *op, llvm::ArrayRef<MeshAxis> meshAxes) {
-  llvm::SmallVector<OperationShardingStrategy> strategies;
+  llvm::SmallVector<OpStrategy> strategies;
   if (isMatmul(op)) {
     strategies = getMatmulStrategies(
         llvm::dyn_cast<RankedTensorType>(op->getOperand(0).getType()),
@@ -231,7 +212,7 @@ getOpStrategies(Operation *op, llvm::ArrayRef<MeshAxis> meshAxes) {
 // c_v: a sharded K dimension leaves partial sums of C, which need an
 // all-reduce over those axes: 2(n-1)/n * bytes of the local C shard.
 static double getCommCost(Operation *op,
-                          const OperationShardingStrategy &strategy) {
+                          const OpStrategy &strategy) {
 
   // TODO: this only considers the situation where one GPU can hold all the data.
   // For the situation where one GPU cannot hold all the data, consider Cannon's algorithm.
@@ -283,17 +264,17 @@ static double getCommCost(Operation *op,
   return cost;
 }
 
-// Cost of converting one tensor of `type` from layout `from` to layout `to`.
+// Cost of converting one tensor of `type` from sharding `from` to sharding `to`.
 // 1. Go up to joined = join(from, to): all-gather the axes `from` has beyond
 //    `joined`. This is the only step with communication.
 // 2. Go down from `joined` to `to`: every device already holds the data, so
 //    it slices locally.
 // A ring all-gather over n devices sends (n-1)/n of the joined shard.
-static double getLayoutReshardCost(const ArgSharding &from,
-                                   const ArgSharding &to, Type type) {
-  ArgSharding joined = join(from, to);
+static double getReshardCost(const TensorSharding &from,
+                                   const TensorSharding &to, Type type) {
+  TensorSharding joined = join(from, to);
   int64_t groupSize = 1;    // devices in one all-gather group
-  int64_t joinedShards = 1; // shards of the tensor at the joined layout
+  int64_t joinedShards = 1; // shards of the tensor at the joined sharding
   for (size_t dim = 0; dim < from.size(); ++dim) {
     // joined[dim] is a prefix of from[dim]; the remaining axes are gathered.
     for (size_t i = 0; i < from[dim].size(); ++i) {
@@ -314,12 +295,12 @@ static double getLayoutReshardCost(const ArgSharding &from,
 }
 
 // R_vu[i][j]: reshard cost of every value the edge carries.
-static double getReshardCost(const Edge &edge,
-                             const OperationShardingStrategy &src,
-                             const OperationShardingStrategy &tgt) {
+static double getEdgeReshardCost(const Edge &edge,
+                             const OpStrategy &src,
+                             const OpStrategy &tgt) {
   double cost = 0;
   for (auto [resultIdx, operandIdx] : edge.valuePairs) {
-    cost += getLayoutReshardCost(
+    cost += getReshardCost(
         src.results[resultIdx], tgt.operands[operandIdx],
         edge.srcOp->getResult(resultIdx).getType());
   }
@@ -340,87 +321,104 @@ void Graph::addEdge(Operation *srcOp, Operation *tgtOp,
   edges.push_back(Edge{srcOp, tgtOp, {valuePair}});
 }
 
+// Add one node to the ILP: one binary column s_v,i per choice with cost
+// costs[i], and the one-hot row sum_i s_v,i = 1. Returns the first column.
+static HighsInt addIlpNode(Highs &highs, llvm::ArrayRef<double> costs) {
+  HighsInt first = highs.getNumCol();
+  for (double cost : costs) {
+    HighsInt col = highs.getNumCol();
+    highs.addCol(cost, 0, 1, 0, nullptr, nullptr);
+    highs.changeColIntegrality(col, HighsVarType::kInteger);
+  }
+  std::vector<HighsInt> idx(costs.size());
+  std::iota(idx.begin(), idx.end(), first);
+  std::vector<double> ones(idx.size(), 1);
+  highs.addRow(1, 1, idx.size(), idx.data(), ones.data());
+  return first;
+}
+
+// Add the edge term sum_ij R_ij e_ij between node v (kv choices, columns from
+// firstV) and node u (ku choices, columns from firstU). R is kv x ku, row-major.
+// e_ij is continuous in [0, 1]; the constraints force e_ij = s_v,i * s_u,j.
+static void addIlpEdge(Highs &highs, HighsInt firstV, size_t kv,
+                       HighsInt firstU, size_t ku, llvm::ArrayRef<double> R) {
+  // No resharding cost for any pair: the edge adds nothing.
+  if (llvm::all_of(R, [](double c) { return c == 0; })) {
+    return;
+  }
+
+  HighsInt firstE = highs.getNumCol();
+  for (double cost : R) {
+    highs.addCol(cost, 0, 1, 0, nullptr, nullptr);
+  }
+
+  // sum_ij e_ij = 1
+  std::vector<HighsInt> idx(R.size());
+  std::iota(idx.begin(), idx.end(), firstE);
+  std::vector<double> ones(idx.size(), 1);
+  highs.addRow(1, 1, idx.size(), idx.data(), ones.data());
+
+  // Row i: sum_j e_ij - s_v,i <= 0
+  for (size_t i = 0; i < kv; ++i) {
+    std::vector<HighsInt> rowIdx;
+    std::vector<double> rowVal(ku + 1, 1);
+    for (size_t j = 0; j < ku; ++j) {
+      rowIdx.push_back(firstE + i * ku + j);
+    }
+    rowIdx.push_back(firstV + i);
+    rowVal.back() = -1;
+    highs.addRow(-kHighsInf, 0, rowIdx.size(), rowIdx.data(), rowVal.data());
+  }
+  // Column j: sum_i e_ij - s_u,j <= 0
+  for (size_t j = 0; j < ku; ++j) {
+    std::vector<HighsInt> colIdx;
+    std::vector<double> colVal(kv + 1, 1);
+    for (size_t i = 0; i < kv; ++i) {
+      colIdx.push_back(firstE + i * ku + j);
+    }
+    colIdx.push_back(firstU + j);
+    colVal.back() = -1;
+    highs.addRow(-kHighsInf, 0, colIdx.size(), colIdx.data(), colVal.data());
+  }
+}
+
+// Run ILP model to find the best sharding strategy for each operation.
 // min sum_v c_v^T s_v + sum_(v,u) sum_ij R_vu,ij e_vu,ij
+// - v ranges over ops. Kernel arguments are replicated, so slicing them for any
+//   user is local and costs nothing: they have no nodes or edges.
 // - s_v binary and one-hot.
-// - e_vu continuous in [0, 1]; the constraints below force e_vu = s_v s_u^T.
-llvm::DenseMap<Operation *, OperationShardingStrategy>
+// - e_vu continuous in [0, 1]; the constraints force e_vu = s_v s_u^T.
+ShardingPlan
 Graph::tune(llvm::ArrayRef<MeshAxis> meshAxes) {
   Highs highs;
   highs.setOptionValue("output_flag", false);
 
-  // s_v: one column per strategy, first column index kept per op.
-  llvm::DenseMap<Operation *, llvm::SmallVector<OperationShardingStrategy>>
+  // Op nodes: one column per strategy, cost c_v.
+  llvm::DenseMap<Operation *, llvm::SmallVector<OpStrategy>>
       strategies;
   llvm::DenseMap<Operation *, HighsInt> firstCol;
   for (Operation *op : opSet) {
     strategies[op] = getOpStrategies(op, meshAxes);
-    const auto &opStrategies = strategies[op];
-    HighsInt first = highs.getNumCol();
-    firstCol[op] = first;
-    for (const auto &strategy : opStrategies) {
-      HighsInt col = highs.getNumCol();
-      highs.addCol(getCommCost(op, strategy), 0, 1, 0, nullptr, nullptr);
-      highs.changeColIntegrality(col, HighsVarType::kInteger);
+    llvm::SmallVector<double> costs;
+    for (const auto &strategy : strategies[op]) {
+      costs.push_back(getCommCost(op, strategy));
     }
-    // sum_i s_v,i = 1
-    std::vector<HighsInt> idx(opStrategies.size());
-    std::iota(idx.begin(), idx.end(), first);
-    std::vector<double> ones(idx.size(), 1);
-    highs.addRow(1, 1, idx.size(), idx.data(), ones.data());
+    firstCol[op] = addIlpNode(highs, costs);
   }
 
+  // Op -> op edges.
   for (const auto &entry : edgeMap) {
     for (const Edge &edge : entry.second) {
       const auto &src = strategies[edge.srcOp];
       const auto &tgt = strategies[edge.tgtOp];
-      const size_t kv = src.size(), ku = tgt.size();
-
-      std::vector<double> R(kv * ku);
-      for (size_t i = 0; i < kv; ++i) {
-        for (size_t j = 0; j < ku; ++j) {
-          R[i * ku + j] = getReshardCost(edge, src[i], tgt[j]);
+      std::vector<double> R(src.size() * tgt.size());
+      for (size_t i = 0; i < src.size(); ++i) {
+        for (size_t j = 0; j < tgt.size(); ++j) {
+          R[i * tgt.size() + j] = getEdgeReshardCost(edge, src[i], tgt[j]);
         }
       }
-      // No resharding cost for any pair: the edge adds nothing.
-      if (llvm::all_of(R, [](double c) { return c == 0; })) {
-        continue;
-      }
-
-      HighsInt firstE = highs.getNumCol();
-      for (double cost : R) {
-        highs.addCol(cost, 0, 1, 0, nullptr, nullptr);
-      }
-
-      // sum_ij e_ij = 1
-      std::vector<HighsInt> idx(R.size());
-      std::iota(idx.begin(), idx.end(), firstE);
-      std::vector<double> ones(idx.size(), 1);
-      highs.addRow(1, 1, idx.size(), idx.data(), ones.data());
-
-      // Row i: sum_j e_ij - s_v,i <= 0
-      for (size_t i = 0; i < kv; ++i) {
-        std::vector<HighsInt> rowIdx;
-        std::vector<double> rowVal(ku + 1, 1);
-        for (size_t j = 0; j < ku; ++j) {
-          rowIdx.push_back(firstE + i * ku + j);
-        }
-        rowIdx.push_back(firstCol[edge.srcOp] + i);
-        rowVal.back() = -1;
-        highs.addRow(-kHighsInf, 0, rowIdx.size(), rowIdx.data(),
-                     rowVal.data());
-      }
-      // Column j: sum_i e_ij - s_u,j <= 0
-      for (size_t j = 0; j < ku; ++j) {
-        std::vector<HighsInt> colIdx;
-        std::vector<double> colVal(kv + 1, 1);
-        for (size_t i = 0; i < kv; ++i) {
-          colIdx.push_back(firstE + i * ku + j);
-        }
-        colIdx.push_back(firstCol[edge.tgtOp] + j);
-        colVal.back() = -1;
-        highs.addRow(-kHighsInf, 0, colIdx.size(), colIdx.data(),
-                     colVal.data());
-      }
+      addIlpEdge(highs, firstCol[edge.srcOp], src.size(),
+                 firstCol[edge.tgtOp], tgt.size(), R);
     }
   }
 
@@ -431,7 +429,7 @@ Graph::tune(llvm::ArrayRef<MeshAxis> meshAxes) {
   }
 
   const auto &value = highs.getSolution().col_value;
-  llvm::DenseMap<Operation *, OperationShardingStrategy> chosen;
+  ShardingPlan chosen;
   for (Operation *op : opSet) {
     for (size_t i = 0; i < strategies[op].size(); ++i) {
       if (value[firstCol[op] + i] > 0.5) {
@@ -463,19 +461,73 @@ Graph buildGraph(func::FuncOp kernel) {
   return graph;
 }
 
-double getPlanCost(
-    const Graph &graph,
-    const llvm::DenseMap<Operation *, OperationShardingStrategy> &plan) {
+double getPlanCost(const Graph &graph, const ShardingPlan &plan) {
   double cost = 0;
   for (Operation *op : graph.opSet) {
     cost += getCommCost(op, plan.at(op));
   }
   for (const auto &entry : graph.edgeMap) {
     for (const Edge &edge : entry.second) {
-      cost += getReshardCost(edge, plan.at(edge.srcOp), plan.at(edge.tgtOp));
+      cost += getEdgeReshardCost(edge, plan.at(edge.srcOp), plan.at(edge.tgtOp));
     }
   }
   return cost;
+}
+
+KernelIOShardings annotatePlan(func::FuncOp kernel, const ShardingPlan &plan,
+                               llvm::StringRef meshName) {
+  MLIRContext &ctx = *kernel.getContext();
+  Block &entry = kernel.getBody().front();
+  const unsigned numArgs = kernel.getNumArguments();
+  auto ret = llvm::cast<func::ReturnOp>(entry.getTerminator());
+  if (ret.getNumOperands() != numArgs) {
+    kernel.emitError("expected one result per argument");
+    std::exit(EXIT_FAILURE);
+  }
+
+  // Op results: the shardings chosen by the plan.
+  for (Operation &op : entry.without_terminator()) {
+    auto it = plan.find(&op);
+    if (it == plan.end()) {
+      op.emitError("the sharding plan has no strategy for this operation");
+      std::exit(EXIT_FAILURE);
+    }
+    const OpStrategy &strategy = it->second;
+    for (unsigned j = 0; j < op.getNumResults(); j++) {
+      sdy::setSharding(op.getResult(j),
+                       toShardingAttr(ctx, meshName, strategy.results[j]));
+    }
+  }
+
+  // Inputs are replicated: each user slices its operand locally, at no cost.
+  // Outputs take the sharding of the value returned (the last write); an
+  // argument returned as is stays replicated.
+  KernelIOShardings ioShardings;
+  for (unsigned i = 0; i < numArgs; i++) {
+    auto type = llvm::cast<RankedTensorType>(kernel.getArgument(i).getType());
+    TensorSharding output(type.getRank());
+    if (auto result = llvm::dyn_cast<OpResult>(ret.getOperand(i))) {
+      output = plan.at(result.getOwner()).results[result.getResultNumber()];
+    }
+    ioShardings.inputs.push_back(TensorSharding(type.getRank()));
+    ioShardings.outputs.push_back(std::move(output));
+  }
+
+  // Annotate value shardings only; reshards to operand shardings are left to
+  // Shardy/XLA.
+  for (unsigned i = 0; i < numArgs; i++) {
+    sdy::setSharding(kernel.getArgument(i),
+                     toShardingAttr(ctx, meshName, ioShardings.inputs[i]));
+    kernel.setResultAttr(
+        i, sdy::TensorShardingAttr::name,
+        toShardingAttr(ctx, meshName, ioShardings.outputs[i]));
+    // Donation (set by AliasingPass) needs the input and output shards to have
+    // the same size on each device, so drop it when their shardings differ.
+    if (compare(ioShardings.inputs[i], ioShardings.outputs[i]) != 0) {
+      kernel.removeArgAttr(i, "tf.aliasing_output");
+    }
+  }
+  return ioShardings;
 }
 
 ///
@@ -484,12 +536,12 @@ double getPlanCost(
 ///
 ///
 
-llvm::DenseMap<size_t, llvm::DenseMap<Operation *, OperationShardingStrategy>>
+llvm::DenseMap<size_t, ShardingPlan>
 ShardingTuner::tune(MLIRContext &ctx,
                     const llvm::DenseMap<size_t, func::FuncOp> &kernelsMap,
                     const llvm::SmallVector<size_t> &series,
                     llvm::ArrayRef<MeshAxis> meshAxes) {
-  llvm::DenseMap<size_t, llvm::DenseMap<Operation *, OperationShardingStrategy>>
+  llvm::DenseMap<size_t, ShardingPlan>
       chosenPerKernel;
   for (const size_t &hash : series) {
     // A kernel repeated in the series is the same function: tune it once.

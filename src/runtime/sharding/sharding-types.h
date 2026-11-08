@@ -18,10 +18,12 @@ struct MeshAxis {
 
 // Mesh axes assigned to one tensor dimension; empty means replicated.
 using DimSharding = std::vector<std::reference_wrapper<const MeshAxis>>;
-// One complete tensor layout, indexed by tensor dimension.
-using ArgSharding = std::vector<DimSharding>;
-// One chosen layout per operand, result, or function argument.
-using ShardingDecision = std::vector<ArgSharding>;
+// How one tensor is split over the mesh, indexed by tensor dimension.
+// See TERMINOLOGY.md: a value has one value sharding (what devices hold); an
+// operand sharding is what one use of it requires.
+using TensorSharding = std::vector<DimSharding>;
+// One sharding per operand, result, or kernel argument.
+using TensorShardings = std::vector<TensorSharding>;
 
 
 /// Sharding lattice: fewer axes is coarser, replicated {} is the top.
@@ -29,48 +31,49 @@ using ShardingDecision = std::vector<ArgSharding>;
 /// a < b when b is a prefix of a; a becomes b by all-gathering the dropped axes.
 
 // Partial order of DimShardings.
-// return 1: dimPlacement0 is coarser than dimPlacement1
-// return -1: dimPlacement0 is finer than dimPlacement1
-// return 0: both placements are the same
+// return 1: dimSharding0 is coarser than dimSharding1
+// return -1: dimSharding0 is finer than dimSharding1
+// return 0: both shardings are the same
 // nullopt: not comparable, e.g. {x} and {y}
 std::optional<int> compare(
-  const DimSharding& dimPlacement0,
-  const DimSharding& dimPlacement1
+  const DimSharding& dimSharding0,
+  const DimSharding& dimSharding1
 );
 
-// Finest placement both can reach by coarsening: their longest common prefix.
+// Finest sharding both can reach by coarsening: their longest common prefix.
 // e.g. join({x, y}, {x}) = {x}, join({x}, {y}) = {}
 DimSharding join(
-  const DimSharding& dimPlacement0,
-  const DimSharding& dimPlacement1
+  const DimSharding& dimSharding0,
+  const DimSharding& dimSharding1
 );
 
 // Coarser if every dim is coarser or the same; nullopt if ranks differ.
 std::optional<int> compare(
-  const ArgSharding &argPlacement0,
-  const ArgSharding &argPlacement1
+  const TensorSharding &sharding0,
+  const TensorSharding &sharding1
 );
 
-// Join of each dim; both placements must have the same rank.
-ArgSharding join(
-  const ArgSharding& argPlacement0,
-  const ArgSharding& argPlacement1
+// Join of each dim; both shardings must have the same rank.
+TensorSharding join(
+  const TensorSharding& sharding0,
+  const TensorSharding& sharding1
 );
 
 
-// One compatible combination of operand and result layouts for an operation.
-// This is one strategy, not the Cartesian product of independent layouts.
-// Internal communication and cost information will be added in the next step.
-struct OperationShardingStrategy {
-  ShardingDecision operands;
-  ShardingDecision results;
+// One candidate way to run an operation: the operand shardings it requires and
+// the result shardings it produces (its communication cost is computed from
+// these). This is one strategy, not the Cartesian product of shardings.
+struct OpStrategy {
+  TensorShardings operands;
+  TensorShardings results;
 };
 
-// Boundary layouts of a kernel; outputs need not match inputs.
-// Internal operation strategies will be recorded separately.
-struct KernelShardingPlan {
-  ShardingDecision inputs;
-  ShardingDecision outputs;
+// Shardings at the kernel boundary, indexed by argument: inputs[i] is how
+// argument i is read in, outputs[i] how it is written back (result i is
+// written back to argument i); outputs need not match inputs.
+struct KernelIOShardings {
+  TensorShardings inputs;
+  TensorShardings outputs;
 };
 
 #endif

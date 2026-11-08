@@ -47,41 +47,6 @@ Sharder::~Sharder() {
   }
 }
 
-ShardingDecision Sharder::heuristicShard(mlir::ModuleOp moduleOp) {
-  auto kernelFunc = moduleOp.lookupSymbol<mlir::func::FuncOp>("main");
-  assert(kernelFunc && "sharder should be able to find the main function");
-  for (unsigned int i = 0; i < kernelFunc.getNumArguments(); i++) {
-    ::mlir::BlockArgument arg = kernelFunc.getArgument(i);
-    // kernelFunc.setArgAttr(i, "");
-  }
-
-  assert(kernelFunc.getNumArguments() == kernelFunc.getNumResults());
-  std::vector<ArgSharding> argShardings;
-  argShardings.resize(kernelFunc.getNumArguments());
-  for (unsigned i = 0; i < kernelFunc.getNumArguments(); i++) {
-    ArgSharding argSharding;
-    auto arg = kernelFunc.getArgument(i);
-    auto ty = llvm::dyn_cast<mlir::RankedTensorType>(arg.getType());
-    if (ty.getRank() == 0) {
-      // scale, just copy, set sharding as empty
-      argShardings[i] = std::move(argSharding);
-    } else {
-      // Sharding dimension 0 in 0th-axis
-      DimSharding dimSharding;
-      dimSharding.push_back(meshAxes[0]);
-
-      ArgSharding argSharding;
-      argSharding.resize(ty.getRank());
-      argSharding[0] = dimSharding;
-
-      argShardings[i] = std::move(argSharding);
-    }
-  }
-  return argShardings;
-
-  // addToProfile
-}
-
 void Sharder::flushProfile() {
   std::unique_lock<std::shared_mutex> wLock(profileMtx);
   if (!std::filesystem::exists(profilePath)) {
@@ -173,7 +138,7 @@ uint64_t Sharder::getNextID() {
 };
 
 std::pair<uint64_t, std::chrono::time_point<std::chrono::steady_clock>>
-Sharder::startRecordProfile(const ShardingDecision &sd,
+Sharder::startRecordProfile(const TensorShardings &sd,
                             size_t kernelFingerprint, const KernelArgs &args) {
   auto start = std::chrono::steady_clock::now();
   uint64_t id = getNextID();
