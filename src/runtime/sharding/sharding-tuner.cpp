@@ -1,6 +1,7 @@
 #include "sharding-tuner.h"
 #include "Highs.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LLVM.h"
@@ -485,7 +486,11 @@ KernelIOShardings annotatePlan(func::FuncOp kernel, const ShardingPlan &plan,
     std::exit(EXIT_FAILURE);
   }
 
-  // Op results: the shardings chosen by the plan.
+  // Op results: the shardings chosen by the plan. XLA drops the sdy.sharding of
+  // op results when it imports the module into Shardy; only returned values
+  // keep theirs, as output shardings. So temporaries (not returned) get a
+  // sharding constraint instead, added below because it inserts new ops.
+  llvm::SmallVector<OpResult> temporaries;
   for (Operation &op : entry.without_terminator()) {
     auto it = plan.find(&op);
     if (it == plan.end()) {
@@ -494,9 +499,29 @@ KernelIOShardings annotatePlan(func::FuncOp kernel, const ShardingPlan &plan,
     }
     const OpStrategy &strategy = it->second;
     for (unsigned j = 0; j < op.getNumResults(); j++) {
-      sdy::setSharding(op.getResult(j),
+      OpResult result = op.getResult(j);
+      // Scalars are always replicated, so they need no constraint.
+      if (!strategy.results[j].empty() &&
+        // TODO: currently the return operation use keep the last sharding by default,
+        // So we do not add constraint before.
+        // this might not be the best though. Check this decision later.
+          !llvm::is_contained(result.getUsers(), ret.getOperation())) {
+        temporaries.push_back(result);
+        continue;
+      }
+      sdy::setSharding(result,
                        toShardingAttr(ctx, meshName, strategy.results[j]));
     }
+  }
+
+  OpBuilder builder(&ctx);
+  for (OpResult result : temporaries) {
+    builder.setInsertionPointAfter(result.getOwner());
+    auto sharding = plan.at(result.getOwner()).results[result.getResultNumber()];
+    auto constraint = sdy::ShardingConstraintOp::create(
+        builder, result.getLoc(), result,
+        toShardingAttr(ctx, meshName, sharding));
+    result.replaceAllUsesExcept(constraint, constraint);
   }
 
   // Inputs are replicated: each user slices its operand locally, at no cost.

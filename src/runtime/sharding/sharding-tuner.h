@@ -74,8 +74,9 @@ Graph buildGraph(func::FuncOp kernel);
 // The plan must contain every op of the graph.
 double getPlanCost(const Graph &graph, const ShardingPlan &plan);
 
-// Annotate the value sharding of every value as sdy.sharding: op results,
-// kernel arguments (inputs, all replicated), and kernel results (outputs, the
+// Annotate the value sharding of every value: op results (sdy.sharding, or a
+// sdy.sharding_constraint for temporaries, i.e. results not returned), kernel
+// arguments (inputs, all replicated), and kernel results (outputs, the
 // sharding of the value returned). It is done in a declarative way: operand
 // shardings are not annotated, and the reshards they need are left to
 // Shardy/XLA.
