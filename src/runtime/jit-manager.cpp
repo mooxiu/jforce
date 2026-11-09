@@ -53,23 +53,6 @@
 #define PRINT_PASS()
 #endif
 
-// FIXME: used for debugging only, delete this after usage
-static void printBufferShape(const PJRT_Api *api, PJRT_Buffer *buffer,
-                             const char *label, int device, int arg) {
-  PJRT_Buffer_Dimensions_Args q{};
-  q.struct_size = PJRT_Buffer_Dimensions_Args_STRUCT_SIZE;
-  q.buffer = buffer;
-  if (auto *err = api->PJRT_Buffer_Dimensions(&q)) {
-    llvm::errs() << JitManager::getErrMsg(api, err) << "\n";
-    return;
-  }
-  llvm::errs() << label << " device=" << device << " arg=" << arg << " [";
-  for (size_t d = 0; d < q.num_dims; ++d) {
-    llvm::errs() << (d ? "," : "") << q.dims[d];
-    llvm::errs() << "]\n";
-  }
-}
-
 static std::string getPluginPath() {
   const char *path = std::getenv("PJRT_PLUGIN_PATH");
 
@@ -640,9 +623,6 @@ void JitManager::manageOutBuffers(int inArgsCount,
       deviceManager.moveOutBuffersToDeviceBufferMap(
           devIdx, inputArg.data, argIdx, outsBuffersList, inputArg.shape,
           slices, getDTypeSizeInByte(inputArg.dtype));
-      // FIXME: delete after debugging
-      printBufferShape(pjrtApi, outsBuffersList[devIdx][argIdx], "[DEBUG OUT]",
-                       devIdx, argIdx);
     }
   }
 }

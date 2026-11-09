@@ -554,8 +554,6 @@ DeviceManager::DeviceManager(const PJRT_Api *api, PJRT_Client *client,
 //           createBufferFromForgedTgtPointersWithSlice(devIdx, );
 //         }
 //       }
-//       // FIXME: delete after debugging
-//       printBufferShape(api_, buffers[devIdx][i], "[DEBUG IN]", devIdx, i);
 //     }
 //   }
 //   return;
