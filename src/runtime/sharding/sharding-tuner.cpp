@@ -265,34 +265,55 @@ static double getCommCost(Operation *op,
   return cost;
 }
 
-// Cost of converting one tensor of `type` from sharding `from` to sharding `to`.
-// 1. Go up to joined = join(from, to): all-gather the axes `from` has beyond
-//    `joined`. This is the only step with communication.
-// 2. Go down from `joined` to `to`: every device already holds the data, so
-//    it slices locally.
-// A ring all-gather over n devices sends (n-1)/n of the joined shard.
-static double getReshardCost(const TensorSharding &from,
-                                   const TensorSharding &to, Type type) {
-  TensorSharding joined = join(from, to);
-  int64_t groupSize = 1;    // devices in one all-gather group
-  int64_t joinedShards = 1; // shards of the tensor at the joined sharding
-  for (size_t dim = 0; dim < from.size(); ++dim) {
-    // joined[dim] is a prefix of from[dim]; the remaining axes are gathered.
-    for (size_t i = 0; i < from[dim].size(); ++i) {
-      int64_t axisSize = from[dim][i].get().size;
-      if (i < joined[dim].size()) {
-        joinedShards *= axisSize;
-      } else {
-        groupSize *= axisSize;
+// True if `to` shards a dimension other than `dim` with `axis`.
+static bool isOnOtherDim(const MeshAxis &axis, size_t dim,
+                         const TensorSharding &to) {
+  for (size_t d = 0; d < to.size(); ++d) {
+    if (d == dim) {
+      continue;
+    }
+    for (const auto &toAxis : to[d]) {
+      if (toAxis.get().name == axis.name) {
+        return true;
       }
     }
   }
-  // `to` is the same as or finer than `from`: local slicing only.
-  if (groupSize == 1) {
-    return 0;
+  return false;
+}
+
+// Cost of converting one tensor of `type` from sharding `from` to sharding `to`.
+// Each axis of `from` beyond joined = join(from, to) leaves its dimension:
+// - moved: `to` uses it on another dimension, so an all-to-all over the moved
+//   axes (m devices) sends (m-1)/m of the local shard.
+// - gathered: `to` does not use it, so an all-gather over the gathered axes
+//   (g devices) receives (g-1) local shards.
+// The all-to-all goes first, while shards are small. Axes `to` adds are
+// sliced locally, with no communication.
+// e.g. a 12x12 f64 tensor on 3 devices, [{x}, {}] -> [{}, {x}]: x moves,
+// m = 3, local shard 384 bytes, cost 2/3 * 384 = 256 bytes.
+static double getReshardCost(const TensorSharding &from,
+                                   const TensorSharding &to, Type type) {
+  TensorSharding joined = join(from, to);
+  int64_t moved = 1;    // devices in one all-to-all group
+  int64_t gathered = 1; // devices in one all-gather group
+  int64_t shards = 1;   // shards of the tensor at `from`
+  for (size_t dim = 0; dim < from.size(); ++dim) {
+    for (size_t i = 0; i < from[dim].size(); ++i) {
+      const MeshAxis &axis = from[dim][i].get();
+      shards *= axis.size;
+      // joined[dim] is a prefix of from[dim]; those axes stay.
+      if (i < joined[dim].size()) {
+        continue;
+      }
+      if (isOnOtherDim(axis, dim, to)) {
+        moved *= axis.size;
+      } else {
+        gathered *= axis.size;
+      }
+    }
   }
-  double joinedShardBytes = getBytes(type) / joinedShards;
-  return (groupSize - 1.0) / groupSize * joinedShardBytes;
+  double shardBytes = getBytes(type) / shards;
+  return (moved - 1.0) / moved * shardBytes + (gathered - 1.0) * shardBytes;
 }
 
 // R_vu[i][j]: reshard cost of every value the edge carries.
