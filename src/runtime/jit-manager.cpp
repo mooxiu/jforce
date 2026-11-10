@@ -26,7 +26,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -215,31 +214,9 @@ JitManager::compilePJRTExecutable(const std::string &func_code) {
 
     build_opts->set_device_memory_size(40LL << 30); // 40 GB
 
-    // ref: https://openxla.org/xla/hlo_dumps
-    auto *debug = build_opts->mutable_debug_options();
-    debug->set_xla_gpu_executable_warn_stuck_timeout_seconds(10);
-    debug->set_xla_gpu_executable_terminate_timeout_seconds(30);
-    debug->set_xla_enable_dumping(true);
-    debug->set_xla_dump_hlo_as_text(true);
-    debug->set_xla_dump_to(
-        "./xla/jforce-sharding" +
-        std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
-                           std::chrono::system_clock::now().time_since_epoch())
-                           .count()));
-    debug->set_xla_dump_hlo_pass_re("spmd|propagation|sharding-remov|shardy");
-
-    // Special option for CUDA
-    if (this->targetDeviceTy == TargetDeviceType::CUDA) {
-      // TODO: this might make compiled code slower!!!
-      auto debugOptions = build_opts->mutable_debug_options();
-      debugOptions->set_xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found(
-          true);
-      if (const char *cuda_path_env = std::getenv("MY_CUDA_PATH")) {
-        debugOptions->set_xla_gpu_cuda_data_dir(cuda_path_env);
-      } else {
-        // DO NOTHING, this might cause warning
-      }
-    }
+    // Do not touch debug_options: a proto we create starts with every field
+    // 0, and XLA uses it as is instead of its defaults. Set dump and CUDA
+    // options through XLA_FLAGS (see scripts/utils.py).
 
     DEBUG_PRINT("Before compile check: " << opts.DebugString());
 
