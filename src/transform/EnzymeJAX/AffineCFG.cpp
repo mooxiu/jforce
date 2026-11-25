@@ -3083,6 +3083,72 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// Returns the affine reduction kind of an scf.reduce region whose only op
+// combines its two arguments, e.g.
+//   ^bb0(%a: f64, %b: f64):
+//     %s = arith.addf %a, %b : f64
+//     scf.reduce.return %s : f64
+// affine.parallel only takes such a kind, not a region.
+static std::optional<arith::AtomicRMWKind>
+getReductionKind(Region &region) {
+  Block &block = region.front();
+  auto ret = dyn_cast<scf::ReduceReturnOp>(block.getTerminator());
+  if (!ret || !llvm::hasSingleElement(block.without_terminator())) {
+    return std::nullopt;
+  }
+  Operation *op = ret.getResult().getDefiningOp();
+  if (!op || op->getNumOperands() != 2) {
+    return std::nullopt;
+  }
+  // All kinds below are commutative, so either operand order is fine.
+  Value a = block.getArgument(0);
+  Value b = block.getArgument(1);
+  bool combinesArgs =
+      (op->getOperand(0) == a && op->getOperand(1) == b) ||
+      (op->getOperand(0) == b && op->getOperand(1) == a);
+  if (!combinesArgs) {
+    return std::nullopt;
+  }
+  // Only the kinds AffineToStableHLO can raise to stablehlo.reduce.
+  if (isa<arith::AddFOp>(op)) {
+    return arith::AtomicRMWKind::addf;
+  }
+  if (isa<arith::AddIOp>(op)) {
+    return arith::AtomicRMWKind::addi;
+  }
+  if (isa<arith::MulFOp>(op)) {
+    return arith::AtomicRMWKind::mulf;
+  }
+  if (isa<arith::MulIOp>(op)) {
+    return arith::AtomicRMWKind::muli;
+  }
+  if (isa<arith::MaximumFOp>(op)) {
+    return arith::AtomicRMWKind::maximumf;
+  }
+  if (isa<arith::MaxNumFOp>(op)) {
+    return arith::AtomicRMWKind::maxnumf;
+  }
+  if (isa<arith::MaxSIOp>(op)) {
+    return arith::AtomicRMWKind::maxs;
+  }
+  if (isa<arith::MaxUIOp>(op)) {
+    return arith::AtomicRMWKind::maxu;
+  }
+  if (isa<arith::MinimumFOp>(op)) {
+    return arith::AtomicRMWKind::minimumf;
+  }
+  if (isa<arith::MinNumFOp>(op)) {
+    return arith::AtomicRMWKind::minnumf;
+  }
+  if (isa<arith::MinSIOp>(op)) {
+    return arith::AtomicRMWKind::mins;
+  }
+  if (isa<arith::MinUIOp>(op)) {
+    return arith::AtomicRMWKind::minu;
+  }
+  return std::nullopt;
+}
+
 struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
@@ -3114,9 +3180,18 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
                                 PatternRewriter &rewriter) const final {
     OpBuilder builder(loop);
 
-    if (loop.getResults().size())
-      return rewriter.notifyMatchFailure(
-          loop, "not dependent on a conditional result");
+    // Each result is a reduction. affine.parallel needs it as a kind, not a
+    // region; keep the scf.parallel if a region is not one of the kinds.
+    auto mergedYieldOp =
+        cast<scf::ReduceOp>(loop.getRegion().front().getTerminator());
+    SmallVector<arith::AtomicRMWKind> reductions;
+    for (Region &region : mergedYieldOp.getReductions()) {
+      std::optional<arith::AtomicRMWKind> kind = getReductionKind(region);
+      if (!kind) {
+        return rewriter.notifyMatchFailure(loop, "unsupported reduction");
+      }
+      reductions.push_back(*kind);
+    }
 
     auto scope = getLocalAffineScope(loop);
     for (auto idx : loop.getLowerBound()) {
@@ -3135,7 +3210,6 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
       else
         return failure();
 
-    ArrayRef<AtomicRMWKind> reductions;
     SmallVector<AffineMap> bounds;
     for (size_t i = 0; i < loop.getLowerBound().size(); i++)
       bounds.push_back(AffineMap::get(
@@ -3144,12 +3218,9 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
     affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
         rewriter, loop.getLoc(), loop.getResultTypes(), reductions, bounds,
         loop.getLowerBound(), bounds, loop.getUpperBound(),
-        steps); //, loop.getInitVals());
+        steps);
 
     canonicalizeLoopBounds(rewriter, affineLoop);
-
-    auto mergedYieldOp =
-        cast<scf::ReduceOp>(loop.getRegion().front().getTerminator());
 
     Block &newBlock = affineLoop.getRegion().front();
 
@@ -3172,7 +3243,16 @@ struct ParallelOpRaising : public OpRewritePattern<scf::ParallelOp> {
                                   mergedYieldOp.getOperands());
     rewriter.eraseOp(mergedYieldOp);
 
-    rewriter.replaceOp(loop, affineLoop.getResults());
+    // scf.parallel reduces starting from its init values, affine.parallel from
+    // the identity of each kind, so combine the init values back in.
+    rewriter.setInsertionPointAfter(affineLoop);
+    SmallVector<Value> results;
+    for (auto [kind, init, result] :
+         llvm::zip(reductions, loop.getInitVals(), affineLoop.getResults())) {
+      results.push_back(
+          arith::getReductionOp(kind, rewriter, loop.getLoc(), init, result));
+    }
+    rewriter.replaceOp(loop, results);
 
     return success();
   }
