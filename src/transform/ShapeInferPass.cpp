@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -25,6 +26,60 @@
 using namespace mlir;
 
 namespace {
+
+static std::optional<int64_t> getConstInt(Value val) {
+  if (auto convertOp = val.getDefiningOp<fir::ConvertOp>()) {
+    val = convertOp.getValue();
+  }
+  APInt intVal;
+  if (matchPattern(val, m_ConstantInt(&intVal))) {
+    return intVal.getSExtValue();
+  }
+  return std::nullopt;
+}
+
+// Values of a constant array constructor. flang lowers [420, 93] to a
+// temporary filled element by element:
+//   %8 = fir.allocmem !fir.array<2xi32>
+//   %10:2 = hlfir.declare %8(%9)
+//   hlfir.assign %c420 to (hlfir.designate %10#0 (%c1))
+//   hlfir.assign %c93 to (hlfir.designate %10#0 (%c2))
+//   %17 = hlfir.as_expr %10#0 move %true
+// Returns {420, 93} for %17.
+static llvm::SmallVector<int64_t> getConstArrayCtor(Value arrayCtor) {
+  auto exprTy = llvm::cast<hlfir::ExprType>(arrayCtor.getType());
+  assert(exprTy.getRank() == 1 && !isDynamicShape(exprTy) &&
+         "Array constructor should be a static 1-D array");
+  llvm::SmallVector<int64_t> values(exprTy.getShape()[0], ShapedType::kDynamic);
+
+  auto asExprOp = arrayCtor.getDefiningOp<hlfir::AsExprOp>();
+  assert(asExprOp && "Expect an array constructor");
+  auto declareOp = asExprOp.getVar().getDefiningOp<hlfir::DeclareOp>();
+  assert(declareOp && "Expect an array constructor");
+  for (Value var : declareOp->getResults()) {
+    for (Operation *user : var.getUsers()) {
+      auto designateOp = llvm::dyn_cast<hlfir::DesignateOp>(user);
+      if (!designateOp) {
+        continue;
+      }
+      assert(designateOp.getIndices().size() == 1);
+      std::optional<int64_t> idx = getConstInt(designateOp.getIndices()[0]);
+      assert(idx && "Array constructor index should be constant");
+      for (Operation *elemUser : designateOp->getUsers()) {
+        if (auto assignOp = llvm::dyn_cast<hlfir::AssignOp>(elemUser)) {
+          std::optional<int64_t> val = getConstInt(assignOp.getRhs());
+          assert(val && "Array constructor value should be constant");
+          values[*idx - 1] = *val;
+        }
+      }
+    }
+  }
+  assert(llvm::none_of(values,
+                       [](int64_t v) { return v == ShapedType::kDynamic; }) &&
+         "Every element of the array constructor should be assigned");
+  return values;
+}
+
 struct ShapeInferPass
     : public PassWrapper<ShapeInferPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ShapeInferPass)
@@ -232,6 +287,45 @@ struct ShapeInferPass
             shapeMap[neoMMOp] = resShape;
             matmulOp.replaceAllUsesWith(neoMMOp.getResult());
             matmulOp.erase();
+          })
+          .Case<hlfir::MatmulTransposeOp>([&](hlfir::MatmulTransposeOp mmtOp) {
+            // MATMUL(TRANSPOSE(A), B): A(K,M), B(K,N) -> (M,N)
+            auto res = mmtOp.getResult();
+            if (!isDynamicShape(res.getType())) {
+              return;
+            }
+            auto lhsTyInfo = inspectTypeInfo(mmtOp.getLhs().getType());
+            auto rhsTyInfo = inspectTypeInfo(mmtOp.getRhs().getType());
+            assert(!lhsTyInfo.isDynamic && !rhsTyInfo.isDynamic);
+            assert(lhsTyInfo.rank == 2 && rhsTyInfo.rank == 2);
+            llvm::SmallVector<int64_t> resShape{lhsTyInfo.shape[1],
+                                                rhsTyInfo.shape[1]};
+            opBuilder.setInsertionPoint(mmtOp);
+            auto neoOp = hlfir::MatmulTransposeOp::create(
+                opBuilder, mmtOp.getLoc(),
+                convertToStaticShape(res.getType(), resShape), mmtOp.getLhs(),
+                mmtOp.getRhs(), mmtOp.getFastmathAttr());
+            shapeMap[neoOp] = resShape;
+            mmtOp.replaceAllUsesWith(neoOp.getResult());
+            mmtOp.erase();
+          })
+          .Case<hlfir::ReshapeOp>([&](hlfir::ReshapeOp reshapeOp) {
+            // %18 = hlfir.reshape %bi %17 -> !hlfir.expr<?x?xf64>, where %17
+            // is the array constructor [420, 93].
+            auto res = reshapeOp.getResult();
+            if (!isDynamicShape(res.getType())) {
+              return;
+            }
+            auto resShape = getConstArrayCtor(reshapeOp.getShape());
+            opBuilder.setInsertionPoint(reshapeOp);
+            auto neoOp = hlfir::ReshapeOp::create(
+                opBuilder, reshapeOp.getLoc(),
+                convertToStaticShape(res.getType(), resShape),
+                reshapeOp.getArray(), reshapeOp.getShape(), reshapeOp.getPad(),
+                reshapeOp.getOrder());
+            shapeMap[neoOp] = resShape;
+            reshapeOp.replaceAllUsesWith(neoOp.getResult());
+            reshapeOp.erase();
           })
           .Case<hlfir::ShapeOfOp>([&](hlfir::ShapeOfOp shapeOp) {
             auto exprTy =
