@@ -83,6 +83,8 @@ struct RefValue {
   };
 };
 
+static RankedTensorType toCorrespondingTensorTy(mlir::Type srcTy);
+
 struct TranslationState {
   // Fortran's IR value to StableHLO IR value.
   llvm::DenseMap<Value, Value> valueMap;
@@ -129,9 +131,14 @@ struct TranslationState {
     auto rootVal = memoryMap.at(refVal.root);
     if (refVal.triplets.empty()) {
       return rootVal;
-    } else {
-      return slicing(opBuilder, rootVal, refVal.getZipTriplets());
     }
+    Value sliced = slicing(opBuilder, rootVal, refVal.getZipTriplets());
+    // A single index drops its dim, e.g. x(2) is a scalar, x(:, j) is 1-D.
+    auto refTy = toCorrespondingTensorTy(ref.getType());
+    if (refTy.hasStaticShape() && sliced.getType() != refTy) {
+      sliced = stablehlo::ReshapeOp::create(opBuilder, ref.getLoc(), refTy, sliced);
+    }
+    return sliced;
   }
 
   // Get the corresponding tensor value in stablehlo function.
@@ -182,7 +189,7 @@ static RankedTensorType toCorrespondingTensorTy(mlir::Type srcTy) {
       .Case<fir::BoxType>([](fir::BoxType bTy) {
         return toCorrespondingTensorTy(bTy.getEleTy());
       })
-      .Case<fir::ReferenceType>([](fir::ReferenceType refTy) {
+      .Case<fir::ReferenceType, fir::HeapType>([](auto refTy) {
         return toCorrespondingTensorTy(refTy.getEleTy());
       })
       .Case<fir::SequenceType>([](fir::SequenceType seqTy) {
@@ -588,8 +595,6 @@ static llvm::SmallVector<Triplet> extractStaticTriplets(
   auto isTriplet = designateOp.getIsTriplet();
 
   assert(!isTriplet.empty());
-  assert(llvm::all_of(isTriplet, [](bool flag) { return flag; }) && "Only pure-triplet designates are supported");
-  assert(indices.size() == isTriplet.size() * 3);
   assert(lowerBounds.size() == isTriplet.size());
 
   auto getConstantInt = [](Value val) {
@@ -604,7 +609,13 @@ static llvm::SmallVector<Triplet> extractStaticTriplets(
   result.reserve(isTriplet.size());
   auto it = indices.begin();
   for (auto [dim, flag] : llvm::enumerate(isTriplet)) {
-    assert(flag);
+    if (!flag) {
+      // A single index i is the triplet i:i:1. The dim is kept with size 1,
+      // reads and writes reshape it to the designate's type.
+      int64_t idx = getConstantInt(*it++) - lowerBounds[dim];
+      result.push_back({.lb = idx, .ub = idx + 1, .step = 1});
+      continue;
+    }
     int64_t fortranLower = getConstantInt(*it++);
     int64_t fortranUpper = getConstantInt(*it++);
     int64_t stride = getConstantInt(*it++);
@@ -672,6 +683,25 @@ static void translateOperation(
             return triplet.lb == 0 && triplet.step == 1 && triplet.ub == rootTy.getDimSize(dim);
           });
 
+      if (!assignToRefVal.triplets.empty()) {
+        // The value can have fewer dims than the slice, e.g. x(2) = v.
+        llvm::SmallVector<int64_t> sliceShape;
+        for (const auto& t : assignToRefVal.triplets) {
+          sliceShape.push_back((t.ub - t.lb + t.step - 1) / t.step);
+        }
+        auto fromTy = llvm::cast<RankedTensorType>(assignFromVal.getType());
+        auto sliceTy = RankedTensorType::get(sliceShape, fromTy.getElementType());
+        if (fromTy.getRank() == 0) {
+          // Scalar to slice, e.g. x(2) = v or x(1:5) = 0.0
+          assignFromVal = stablehlo::BroadcastInDimOp::create(
+            opBuilder, assignOp.getLoc(), sliceTy, assignFromVal,
+            llvm::ArrayRef<int64_t>{});
+        } else if (fromTy != sliceTy) {
+          assignFromVal = stablehlo::ReshapeOp::create(
+            opBuilder, assignOp.getLoc(), sliceTy, assignFromVal);
+        }
+      }
+
       if (assignToRefVal.triplets.empty() || isFullSlice) {
         state.memoryMap[assignToRefVal.root] = assignFromVal;
       } else {
@@ -730,7 +760,7 @@ static void translateOperation(
         .triplets = std::move(triplets),
       };
     })
-    .Case<fir::AllocaOp, memref::AllocaOp>([&](auto allocaOp){
+    .Case<fir::AllocaOp, memref::AllocaOp, fir::AllocMemOp>([&](auto allocaOp){
       Value root = allocaOp.getResult();
       state.referenceMap[root] = {root, {}};
 
@@ -745,6 +775,12 @@ static void translateOperation(
     .Case([&](hlfir::NoReassocOp nop){
       assert(state.valueMap.contains(nop.getOperand()));
       state.valueMap[nop.getResult()] = state.valueMap.at(nop.getOperand());
+    })
+    .Case([&](hlfir::AsExprOp asExprOp){
+      // Read the whole variable as a value. `move` only says who frees the
+      // buffer, tensors have no buffers, so it is ignored.
+      state.valueMap[asExprOp.getResult()] =
+        state.getReferenceValue(opBuilder, asExprOp.getVar());
     })
     .Case<
       arith::AddFOp, arith::AddIOp, arith::SubFOp, arith::SubIOp, 
@@ -793,6 +829,37 @@ static void translateOperation(
       auto stablehloDotGeneralOp = stablehlo::DotGeneralOp::create(
           opBuilder, op->getLoc(), resTy, op1, op0, dims, config, algo);
       state.valueMap[mmOp.getResult()] = stablehloDotGeneralOp.getResult();
+    })
+    .Case([&](hlfir::MatmulTransposeOp mmtOp){
+      // MATMUL(TRANSPOSE(A), B). With reversed dims, A(K,M) is tensor<MxK>,
+      // B(K,N) is tensor<NxK>, and C(M,N) is tensor<NxM>:
+      //   C[n,m] = sum_k B[n,k] * A[m,k], so both contract dim 1.
+      auto lhs = state.getTensorValue(opBuilder, mmtOp.getLhs());
+      auto rhs = state.getTensorValue(opBuilder, mmtOp.getRhs());
+      auto lhsTy = toCorrespondingTensorTy(lhs.getType());
+      auto rhsTy = toCorrespondingTensorTy(rhs.getType());
+      auto resTy = RankedTensorType::get(
+          llvm::SmallVector<int64_t>{rhsTy.getShape()[0], lhsTy.getShape()[0]},
+          lhsTy.getElementType());
+      auto dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
+          op->getContext(), SmallVector<int64_t>{}, SmallVector<int64_t>{},
+          SmallVector<int64_t>{1}, SmallVector<int64_t>{1});
+      auto dotOp = stablehlo::DotGeneralOp::create(
+          opBuilder, op->getLoc(), resTy, rhs, lhs, dims,
+          mlir::ArrayAttr{}, mlir::stablehlo::DotAlgorithmAttr{});
+      state.valueMap[mmtOp.getResult()] = dotOp.getResult();
+    })
+    .Case([&](hlfir::ReshapeOp reshapeOp){
+      assert(!reshapeOp.getPad() && !reshapeOp.getOrder() &&
+             "RESHAPE with PAD or ORDER is not supported");
+      // Fortran is column major and our tensors reverse the dims, so both
+      // keep the same linear order: RESHAPE is a plain stablehlo.reshape.
+      auto resTy = toCorrespondingTensorTy(reshapeOp.getResult().getType());
+      assert(resTy.hasStaticShape() &&
+             "RESHAPE shape should be made static by ShapeInferPass");
+      auto src = state.getTensorValue(opBuilder, reshapeOp.getArray());
+      state.valueMap[reshapeOp.getResult()] =
+        stablehlo::ReshapeOp::create(opBuilder, op->getLoc(), resTy, src).getResult();
     })
     .Case([&](hlfir::SumOp sumOp){
       assert(!sumOp.getMask() && "Masked SUM is not supported");

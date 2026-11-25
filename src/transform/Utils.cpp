@@ -1,5 +1,6 @@
 #include "Utils.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIRDialect.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
@@ -74,6 +75,14 @@ TypeInfo inspectTypeInfoInternal(mlir::Type ty, TypeInfo& typeInfo) {
   }
   if (auto boxTy = llvm::dyn_cast<fir::BoxType>(ty)) {
     return inspectTypeInfoInternal(boxTy.getElementType(), typeInfo);
+  }
+  // e.g. !hlfir.expr<420x93xf64>, the result of hlfir.reshape
+  if (auto exprTy = llvm::dyn_cast<hlfir::ExprType>(ty)) {
+    typeInfo.isDynamic = llvm::is_contained(exprTy.getShape(),
+                                            mlir::ShapedType::kDynamic);
+    typeInfo.rank = exprTy.getRank();
+    typeInfo.shape = exprTy.getShape();
+    return inspectTypeInfoInternal(exprTy.getEleTy(), typeInfo);
   }
   if (ty.isIntOrIndexOrFloat()) {
     if (typeInfo.rank == 0) {
