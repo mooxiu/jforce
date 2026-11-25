@@ -123,8 +123,12 @@ static LogicalResult liftStoreOps(scf::IfOp ifOp, func::FuncOp f,
                                   OpBuilder &b) {
 
   Location loc = ifOp.getLoc();
-  if (!hasMatchingStores({ifOp.thenBlock(), ifOp.elseBlock()}))
+  // An scf.if without else (e.g. Fortran `IF (c) x = y`) has a null else
+  // block; only compare stores when both blocks exist.
+  if (ifOp.elseBlock() &&
+      !hasMatchingStores({ifOp.thenBlock(), ifOp.elseBlock()})) {
     return failure();
+  }
 
   llvm::MapVector<Value, MemRefStoreInfo> storeInfo;
   getMemRefStoreInfo(ifOp.thenBlock(), storeInfo);
@@ -174,7 +178,25 @@ static LogicalResult liftStoreOps(scf::IfOp ifOp, func::FuncOp f,
   };
 
   cloneBlock(newIfOp.thenBlock(), ifOp.thenBlock());
-  cloneBlock(newIfOp.elseBlock(), ifOp.elseBlock());
+  if (ifOp.elseBlock()) {
+    cloneBlock(newIfOp.elseBlock(), ifOp.elseBlock());
+  } else {
+    // No else: each memref keeps its old value, so the else branch yields a
+    // load of it. The indices are defined above the if (see hasSingleStore).
+    OpBuilder::InsertionGuard g(b);
+    b.setInsertionPointToStart(newIfOp.elseBlock());
+    SmallVector<mlir::Value> results(storeInfo.size());
+    for (auto &[memref, info] : storeInfo) {
+      if (auto storeOp = dyn_cast<mlir::affine::AffineStoreOp>(info.source)) {
+        results[info.index] = b.create<mlir::affine::AffineLoadOp>(
+            loc, memref, storeOp.getAffineMap(), info.operands);
+      } else {
+        results[info.index] =
+            b.create<memref::LoadOp>(loc, memref, info.operands);
+      }
+    }
+    b.create<scf::YieldOp>(loc, results);
+  }
 
   b.setInsertionPointAfter(newIfOp);
 
