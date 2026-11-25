@@ -12,7 +12,6 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
@@ -160,16 +159,51 @@ static double getBytes(Type type) {
          tensorType.getElementTypeBitWidth() / 8.0;
 }
 
+// A 2D matmul: two rank-2 operands, one contracting dim each, no batching.
+// The contracting dims can be any of the two, e.g. MATMUL(TRANSPOSE(A), B)
+// contracts dim 1 of both operands.
 static bool isMatmul(Operation *op) {
   auto dot = llvm::dyn_cast<stablehlo::DotGeneralOp>(op);
   if (!dot) {
     return false;
   }
+  auto lhsType = llvm::dyn_cast<RankedTensorType>(dot.getLhs().getType());
+  auto rhsType = llvm::dyn_cast<RankedTensorType>(dot.getRhs().getType());
   auto dims = dot.getDotDimensionNumbers();
-  return dims.getLhsBatchingDimensions().empty() &&
+  return lhsType && rhsType && lhsType.getRank() == 2 &&
+         rhsType.getRank() == 2 && dims.getLhsBatchingDimensions().empty() &&
          dims.getRhsBatchingDimensions().empty() &&
-         dims.getLhsContractingDimensions() == llvm::ArrayRef<int64_t>{1} &&
-         dims.getRhsContractingDimensions() == llvm::ArrayRef<int64_t>{0};
+         dims.getLhsContractingDimensions().size() == 1 &&
+         dims.getRhsContractingDimensions().size() == 1;
+}
+
+// Strategies of a 2D matmul with any contracting dims: generate them for the
+// equivalent A[M,K] x B[K,N], then swap back the dims of an operand stored as
+// A[K,M] or B[N,K]. The result is [M,N] either way.
+static llvm::SmallVector<OpStrategy>
+getDotStrategies(stablehlo::DotGeneralOp dot,
+                 llvm::ArrayRef<MeshAxis> meshAxes) {
+  auto dims = dot.getDotDimensionNumbers();
+  bool swapLhs = dims.getLhsContractingDimensions()[0] == 0; // A[K,M]
+  bool swapRhs = dims.getRhsContractingDimensions()[0] == 1; // B[N,K]
+  auto transposed = [](RankedTensorType type) {
+    return RankedTensorType::get({type.getDimSize(1), type.getDimSize(0)},
+                                 type.getElementType());
+  };
+  auto lhsType = llvm::cast<RankedTensorType>(dot.getLhs().getType());
+  auto rhsType = llvm::cast<RankedTensorType>(dot.getRhs().getType());
+  auto strategies = getMatmulStrategies(
+      swapLhs ? transposed(lhsType) : lhsType,
+      swapRhs ? transposed(rhsType) : rhsType, meshAxes);
+  for (auto &strategy : strategies) {
+    if (swapLhs) {
+      std::swap(strategy.operands[0][0], strategy.operands[0][1]);
+    }
+    if (swapRhs) {
+      std::swap(strategy.operands[1][0], strategy.operands[1][1]);
+    }
+  }
+  return strategies;
 }
 
 // Fallback for unsupported ops: every operand and result replicated.
@@ -192,10 +226,8 @@ static llvm::SmallVector<OpStrategy>
 getOpStrategies(Operation *op, llvm::ArrayRef<MeshAxis> meshAxes) {
   llvm::SmallVector<OpStrategy> strategies;
   if (isMatmul(op)) {
-    strategies = getMatmulStrategies(
-        llvm::dyn_cast<RankedTensorType>(op->getOperand(0).getType()),
-        llvm::dyn_cast<RankedTensorType>(op->getOperand(1).getType()),
-        meshAxes);
+    strategies =
+        getDotStrategies(llvm::cast<stablehlo::DotGeneralOp>(op), meshAxes);
   } else if (op->hasTrait<OpTrait::Elementwise>() &&
              op->getNumOperands() == 2) {
     strategies = getEleBinaryOpStrategies(
@@ -221,8 +253,11 @@ static double getCommCost(Operation *op,
     if (!isMatmul(op) || strategy.operands.size() != 2) {
       return 0;
     }
+    // Axes on A's K dimension
+    auto dims = llvm::cast<stablehlo::DotGeneralOp>(op).getDotDimensionNumbers();
+    int64_t lhsK = dims.getLhsContractingDimensions()[0];
     int64_t n = 1;
-    for (const auto &axis : strategy.operands[0][1]) {
+    for (const auto &axis : strategy.operands[0][lhsK]) {
       n *= axis.get().size;
     }
     if (n == 1) {
@@ -249,20 +284,35 @@ static double getCommCost(Operation *op,
     return 2.0 * (n - 1) / n * shardBytes;
   };
 
-  auto cost = llvm::TypeSwitch<Operation *, double>(op)
-      .Case<stablehlo::DotGeneralOp>(
-          [&](auto) { return getDotGeneralCost(op); })
-      .Case<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp>(
-          // If we have inputs of different inputs, we should first reshard them
-          // to be compatible. Therefore the cost is all in resharding cost.
-          [&](auto) { return 0; })
-      .Default([&](auto) {
-        llvm::errs() << "Unexpected stablehlo operatior: ";
-        op->print(llvm::errs());
-        std::exit(EXIT_FAILURE);
-        return 0;        
-      });
-  return cost;
+  // With every operand and result replicated, each device computes the whole
+  // op on full data: no communication inside the op. A reshard it needs (e.g.
+  // gathering a sharded operand) is counted on its edges. This covers every op
+  // getOpStrategies only gives the replicated strategy (reduce, gather, ...).
+  auto isReplicated = [](const TensorShardings &shardings) {
+    return llvm::all_of(shardings, [](const TensorSharding &sharding) {
+      return llvm::all_of(sharding,
+                          [](const DimSharding &dim) { return dim.empty(); });
+    });
+  };
+  if (isReplicated(strategy.operands) && isReplicated(strategy.results)) {
+    return 0;
+  }
+
+  if (isMatmul(op)) {
+    return getDotGeneralCost(op);
+  }
+  // Binary elementwise ops (the ones getOpStrategies shards): operands and
+  // result share one sharding, so each device works on its own shard. Inputs
+  // with other shardings are resharded first, which is counted on the edges.
+  if (op->hasTrait<OpTrait::Elementwise>() && op->getNumOperands() == 2) {
+    return 0;
+  }
+  // A sharded strategy for an op without a cost model: getOpStrategies and
+  // this function are out of sync.
+  llvm::errs() << "No communication cost model for a sharded strategy of: ";
+  op->print(llvm::errs());
+  std::exit(EXIT_FAILURE);
+  return 0;
 }
 
 // True if `to` shards a dimension other than `dim` with `axis`.
