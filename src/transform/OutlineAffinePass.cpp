@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Block.h"
@@ -264,8 +265,12 @@ struct AffineLoopsToOutline : public OpRewritePattern<LoopType> {
 
   LogicalResult matchAndRewrite(LoopType loopOp,
                                 PatternRewriter &rewritter) const final {
+    // Only outline outermost loops; nested ones go with them. scf.parallel
+    // comes from OpenMP loops (flang FlattenTarget) and is raised to
+    // affine.parallel by ParallelOpRaising inside the outlined function.
     if (loopOp -> template getParentOfType<affine::AffineForOp>() 
-        || loopOp -> template getParentOfType<affine::AffineParallelOp>()) {
+        || loopOp -> template getParentOfType<affine::AffineParallelOp>()
+        || loopOp -> template getParentOfType<scf::ParallelOp>()) {
       return failure();
     }
 
@@ -347,6 +352,7 @@ struct OutlineAffinePass
     registry.insert<memref::MemRefDialect>();
     registry.insert<func::FuncDialect>();
     registry.insert<arith::ArithDialect>();
+    registry.insert<scf::SCFDialect>();
     return;
   }
 
@@ -363,6 +369,7 @@ struct OutlineAffinePass
     RewritePatternSet patterns(ctx);
     patterns.add<AffineLoopsToOutline<affine::AffineForOp>>(ctx);
     patterns.add<AffineLoopsToOutline<affine::AffineParallelOp>>(ctx);
+    patterns.add<AffineLoopsToOutline<scf::ParallelOp>>(ctx);
     GreedyRewriteConfig config;
     config.enableFolding();
 
