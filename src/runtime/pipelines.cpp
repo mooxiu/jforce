@@ -59,6 +59,10 @@ void createTranslateToStableHLOPipeline(PassManager& pm) {
   // 4. Outline Affine loops, Tensorize, mergeback
   pm.addPass(xla_jit::createOutlineAffinePass());
   pm.addPass(xla_jit::createAffineCFGPass());
+  // AffineCFG turns loop-carried memory into iter_args but leaves straight-line
+  // store/load on the alloca in the block that defines it; Mem2Reg removes
+  // those so raising sees no memref.alloca.
+  pm.addNestedPass<mlir::func::FuncOp>(xla_jit::createPolygeistMem2RegPass());
   pm.addPass(xla_jit::createAffineToStableHLORaisingPass());
   auto &nestedPMPhase3 = pm.nest<mlir::func::FuncOp>();
   nestedPMPhase3.addPass(xla_jit::createArithRaisingPass());
