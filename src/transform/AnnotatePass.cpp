@@ -1,6 +1,7 @@
 #include "Utils.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
+#include "flang/Optimizer/HLFIR/HLFIROps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -11,7 +12,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include <cassert>
 
 using namespace mlir;
@@ -63,13 +63,16 @@ static llvm::DenseSet<Value> markShapeOperands(func::FuncOp funcOp) {
           insertOptional(pop.getLoopUpperBounds());
           insertOptional(pop.getLoopSteps());
         })
+        .Case<hlfir::ReshapeOp>(
+            [&](hlfir::ReshapeOp rop) { shapeOperandsSet.insert(rop.getShape()); })
         .Default([](auto) {});
   });
   return shapeOperandsSet;
 }
 
 // WARNING: following situation, we can not say  %arg0 contribute to the value
-// of %shape0, but it should not happen in real practice? %1 = alloca i32
+// of %shape0, but it should not happen in real practice? 
+// %1 = alloca i32
 // %arg0Val = load %arg0
 // store %arg0Val to %1
 // store %c1 to %1
@@ -95,6 +98,30 @@ static void annotateArgs(func::FuncOp funcOp, OpBuilder &opBuilder,
         for (Operation *user : addr.getUsers()) {
           if (auto storeOp = dyn_cast<fir::StoreOp>(user))
             worklist.push_back(storeOp.getValue());
+        }
+      }
+      // An array constructor, e.g. the SHAPE of RESHAPE. Its elements are
+      // written through designates of the temporary, which are users of the
+      // variable, not operands of as_expr:
+      //   %10:2 = hlfir.declare %8(%9)
+      //   hlfir.assign %11 to (hlfir.designate %10#0 (%c1))
+      //   %17 = hlfir.as_expr %10#0 move %true
+      if (auto asExprOp = dyn_cast<hlfir::AsExprOp>(defOp)) {
+        if (auto declareOp =
+                asExprOp.getVar().getDefiningOp<hlfir::DeclareOp>()) {
+          for (Value var : declareOp->getResults()) {
+            for (Operation *user : var.getUsers()) {
+              auto designateOp = dyn_cast<hlfir::DesignateOp>(user);
+              if (!designateOp) {
+                continue;
+              }
+              for (Operation *elemUser : designateOp->getUsers()) {
+                if (auto assignOp = dyn_cast<hlfir::AssignOp>(elemUser)) {
+                  worklist.push_back(assignOp.getRhs());
+                }
+              }
+            }
+          }
         }
       }
       worklist.append(defOp->operand_begin(), defOp->operand_end());
