@@ -25,9 +25,19 @@ struct AliasingPass :
     auto funcOp = getOperation();
     auto context = funcOp.getContext();
     OpBuilder opBuilder(context);
+    auto returnOp =
+        llvm::dyn_cast<func::ReturnOp>(funcOp.front().getTerminator());
     for (int i = 0; i < funcOp.getNumArguments(); i++) {
       // do not donate literal buffers, as we will not reuse
       if (funcOp.getArgument(i).getType().isSignlessIntOrIndexOrFloat()) {
+        continue;
+      }
+      // An argument returned as is was not written, so donating it saves
+      // nothing. Donating it also fails when two arguments are the same
+      // buffer, e.g. RIMP2_ENERGYIJ(..., B32(1,J), B32(1,J), ...): PJRT
+      // rejects donating one buffer twice.
+      if (returnOp && i < returnOp.getNumOperands() &&
+          returnOp.getOperand(i) == funcOp.getArgument(i)) {
         continue;
       }
       funcOp.setArgAttr(i, ALIASING_ATTRIBUTE, opBuilder.getI64IntegerAttr(i));
