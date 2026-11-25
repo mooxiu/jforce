@@ -520,7 +520,9 @@ void JitManager::prepareInputBuffers(
     auto devPos = getDevPosInMesh(devIdx, sharder.deviceMesh);
     for (unsigned argIdx = 0; argIdx < count; argIdx++) {
       const TensorDesc &arg = args[argIdx];
-      if (arg.rank == 0) {
+      // Only by-value arguments carry their value in `data`. A mapped scalar
+      // (e.g. map(tofrom: E2)) is also rank 0, but `data` points to it.
+      if (arg.isLiteral) {
         inBuffers[devIdx][argIdx] =
             deviceManager.createLiteralBuffer(devIdx, arg);
         continue;
