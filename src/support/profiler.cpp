@@ -32,6 +32,20 @@ static std::string serializePhase(Phase phase) {
     return "Execution_Run";
   case Phase::EXECUTION_BUFFER_CLEARUP:
     return "Execution_BufferClearUp";
+  case Phase::KERNEL_LOOKUP:
+    return "KernelLookup";
+  case Phase::H2D_CALL:
+    return "H2DCall";
+  case Phase::DATA_INVALIDATE:
+    return "DataInvalidate";
+  case Phase::DATA_RETRIEVE:
+    return "DataRetrieve";
+  case Phase::D2H_TRANSFER:
+    return "D2HTransfer";
+  case Phase::D2H_SCATTER:
+    return "D2HScatter";
+  case Phase::BUFFER_DESTROY:
+    return "BufferDestroy";
   }
 };
 
@@ -121,6 +135,16 @@ Profiler::~Profiler() {
                   totalExecution;
   printHLPhase(timeLeft, "Data Preparation");
   std::cout << "TOTAL: " << perPhaseTimes[Phase::TOTAL] << " mus\n";
+
+  std::cout << "Nested in TOTAL:\n";
+  printLLPhase(perPhaseTimes[Phase::KERNEL_LOOKUP], "Kernel Lookup");
+  printLLPhase(perPhaseTimes[Phase::H2D_CALL], "H2D Call");
+  std::cout << "Called by the plugin, outside TOTAL (ratio still vs TOTAL):\n";
+  printLLPhase(perPhaseTimes[Phase::DATA_INVALIDATE], "Data Invalidate");
+  printLLPhase(perPhaseTimes[Phase::DATA_RETRIEVE], "Data Retrieve");
+  printLLPhase(perPhaseTimes[Phase::D2H_TRANSFER], "  D2H Transfer");
+  printLLPhase(perPhaseTimes[Phase::D2H_SCATTER], "  D2H Scatter");
+  printLLPhase(perPhaseTimes[Phase::BUFFER_DESTROY], "Buffer Destroy");
 };
 
 /// ProfilerRecorder

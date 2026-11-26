@@ -78,12 +78,13 @@ extern "C" {
 // For JForce, it interacts with a forged pointer of OpenMP offloading runtime plugin,
 // hostPtr, tgtPtr, forgedTgtPtr are used interchangeably for now.
 __attribute__((visibility("default"))) bool InvalidateBuffer(void *tgtPtr, int64_t size) {
+  PROFILE_SCOPE("invalidate " + std::to_string(size), Phase::DATA_INVALIDATE);
   return JitManager::getInstance().invalidateCachedDeviceBuffers(tgtPtr, size);
 }
 
 __attribute__((visibility("default"))) void RetrieveData(void *hostPtr,
                                                          size_t size) {
-  ;
+  PROFILE_SCOPE("retrieve " + std::to_string(size), Phase::DATA_RETRIEVE);
   DEBUG_PRINT(
       llvm::formatv("retrieve data for pointer address: {0}, of size: {1}",
                     reinterpret_cast<std::uintptr_t>(hostPtr), size));
@@ -91,6 +92,7 @@ __attribute__((visibility("default"))) void RetrieveData(void *hostPtr,
 }
 
 __attribute__((visibility("default"))) void DestroyPjrtBuffer(void *cpu_ptr) {
+  PROFILE_SCOPE("destroy", Phase::BUFFER_DESTROY);
   JitManager::getInstance().destroyHostBoundBuffers(cpu_ptr);
 }
 
@@ -103,7 +105,7 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
                         ptrdiff_t *TgtOffsets, void *DeviceArgs,
                         int64_t NumHostArgs, void **ArgBasePtrs, void **ArgPtrs,
                         int64_t *ArgSizes, int64_t *ArgTypes, void **ArgNames) {
-  PROFILE_SCOPE("total", Phase::TOTAL);
+  PROFILE_SCOPE("total nargs=" + std::to_string(NumArgs), Phase::TOTAL);
 
 #ifdef ENABLE_XLA_DEBUG
   // Uncomment if necessary
@@ -120,8 +122,12 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
 
   // -----------------------------------------------
   auto &jm = JitManager::getInstance();
-  auto l2Cache = jm.getOrCompileKernel(JitCode, NumArgs, TgtArgs, ArgSizes,
-                                       ArgPtrs, ArgTypes);
+  L2JitMetas *l2Cache = nullptr;
+  {
+    PROFILE_SCOPE("lookup", Phase::KERNEL_LOOKUP);
+    l2Cache = jm.getOrCompileKernel(JitCode, NumArgs, TgtArgs, ArgSizes,
+                                    ArgPtrs, ArgTypes);
+  }
   assert(l2Cache);
   auto newArgs = assembleXLAFuncArgs(l2Cache->kernelFuncTypes, NumHostArgs,
                                      ArgTypes, TgtArgs);

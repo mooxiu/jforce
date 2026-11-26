@@ -1,3 +1,4 @@
+#include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "jit-manager.h"
 #include "runtime/jit-manager.h"
@@ -231,7 +232,11 @@ PJRT_Buffer *DeviceManager::createBufferFromForgedTgtPointers(
       .byte_strides = byteStrides.data(),
       .num_byte_strides = byteStrides.size(),
       .device = pjrtDevices_[deviceIdx]};
-  auto err = api_->PJRT_Client_BufferFromHostBuffer(&args);
+  PJRT_Error *err = nullptr;
+  {
+    PROFILE_SCOPE("h2d", Phase::H2D_CALL);
+    err = api_->PJRT_Client_BufferFromHostBuffer(&args);
+  }
   if (err) {
     llvm::errs() << "BufferFromHostBuffer fails: "
                  << JitManager::getErrMsg(api_, err) << "\n";
@@ -700,39 +705,43 @@ void DeviceManager::moveDataToHostBuffer(void *hostPtr, size_t size) {
 
   std::vector<std::vector<std::byte>> shards(toRead.size());
   llvm::SmallVector<PJRT_Event *> events;
-  for (size_t i = 0; i < toRead.size(); ++i) {
-    size_t shardBytes = elementSize;
-    for (const auto &[start, end] : toRead[i]->slices) {
-      shardBytes *= end - start;
+  {
+    PROFILE_SCOPE("d2h", Phase::D2H_TRANSFER);
+    for (size_t i = 0; i < toRead.size(); ++i) {
+      size_t shardBytes = elementSize;
+      for (const auto &[start, end] : toRead[i]->slices) {
+        shardBytes *= end - start;
+      }
+      shards[i].resize(shardBytes);
+      PJRT_Buffer_ToHostBuffer_Args toHostArg = {
+          .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
+          .src = toRead[i]->bufferPtr,
+          .dst = shards[i].data(),
+          .dst_size = shardBytes};
+      auto *err = api_->PJRT_Buffer_ToHostBuffer(&toHostArg);
+      if (err) {
+        llvm::errs() << "Error in moving buffer to host: "
+                     << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+        std::exit(EXIT_FAILURE);
+      }
+      events.push_back(toHostArg.event);
     }
-    shards[i].resize(shardBytes);
-    PJRT_Buffer_ToHostBuffer_Args toHostArg = {
-        .struct_size = PJRT_Buffer_ToHostBuffer_Args_STRUCT_SIZE,
-        .src = toRead[i]->bufferPtr,
-        .dst = shards[i].data(),
-        .dst_size = shardBytes};
-    auto *err = api_->PJRT_Buffer_ToHostBuffer(&toHostArg);
-    if (err) {
-      llvm::errs() << "Error in moving buffer to host: "
-                   << JitManager::getInstance().getErrMsg(api_, err) << "\n";
-      std::exit(EXIT_FAILURE);
+    for (PJRT_Event *event : events) {
+      auto awaitArgs = PJRT_Event_Await_Args{
+          .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE, .event = event};
+      auto *err = api_->PJRT_Event_Await(&awaitArgs);
+      if (err) {
+        llvm::errs() << "Error in waiting for readback: "
+                     << JitManager::getInstance().getErrMsg(api_, err) << "\n";
+        std::exit(EXIT_FAILURE);
+      }
+      PJRT_Event_Destroy_Args destroyArgs = {
+          .struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE, .event = event};
+      api_->PJRT_Event_Destroy(&destroyArgs);
     }
-    events.push_back(toHostArg.event);
-  }
-  for (PJRT_Event *event : events) {
-    auto awaitArgs = PJRT_Event_Await_Args{
-        .struct_size = PJRT_Event_Await_Args_STRUCT_SIZE, .event = event};
-    auto *err = api_->PJRT_Event_Await(&awaitArgs);
-    if (err) {
-      llvm::errs() << "Error in waiting for readback: "
-                   << JitManager::getInstance().getErrMsg(api_, err) << "\n";
-      std::exit(EXIT_FAILURE);
-    }
-    PJRT_Event_Destroy_Args destroyArgs = {
-        .struct_size = PJRT_Event_Destroy_Args_STRUCT_SIZE, .event = event};
-    api_->PJRT_Event_Destroy(&destroyArgs);
   }
 
+  PROFILE_SCOPE("scatter", Phase::D2H_SCATTER);
   for (size_t i = 0; i < toRead.size(); ++i) {
     scatterShardToHost(shards[i].data(), static_cast<std::byte *>(hostPtr),
                        fullShape, toRead[i]->slices, elementSize);

@@ -2,6 +2,7 @@
 #define PROFILER_H
 
 #ifdef ENABLE_PROFILING
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -17,6 +18,17 @@ enum class Phase {
   EXECUTION_BUFFER_PREPARE,
   EXECUTION_RUN,
   EXECUTION_BUFFER_CLEARUP,
+
+  // Nested in TOTAL: getOrCompileKernel (lowering + compile on a cache miss).
+  KERNEL_LOOKUP,
+  // Nested in EXECUTION_BUFFER_PREPARE: PJRT BufferFromHostBuffer calls.
+  H2D_CALL,
+  // Called by the offload plugin, outside TOTAL.
+  DATA_INVALIDATE, // InvalidateBuffer, from dataSubmit
+  DATA_RETRIEVE,   // RetrieveData, from dataRetrieve
+  D2H_TRANSFER,    // nested in DATA_RETRIEVE: ToHostBuffer + await
+  D2H_SCATTER,     // nested in DATA_RETRIEVE: host copy into the full tensor
+  BUFFER_DESTROY,  // DestroyPjrtBuffer, from free
 };
 
 struct ProfilerRecord {

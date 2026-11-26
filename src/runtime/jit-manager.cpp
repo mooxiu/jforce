@@ -1,4 +1,5 @@
 #include "jit-manager.h"
+#include "../support/profiler.h"
 #include "../support/utilities.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/HLFIR/HLFIRDialect.h"
@@ -618,8 +619,11 @@ void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
   // Move data from input data `offloading -> inputArgs` to `inputBufs`.
   // InputBufs are buffers in each devices.
   DEBUG_PRINT("Before manage input buffers");
-  prepareInputBuffers(kernelArgs->inputArgs, kernelArgs->inputArgCount,
-                      inputBufs, l2Cache->ioShardings.inputs);
+  {
+    PROFILE_SCOPE("prepare", Phase::EXECUTION_BUFFER_PREPARE);
+    prepareInputBuffers(kernelArgs->inputArgs, kernelArgs->inputArgCount,
+                        inputBufs, l2Cache->ioShardings.inputs);
+  }
   DEBUG_PRINT("Finish manage input buffers");
 
   PJRT_Buffer ***inputBufsList;
@@ -643,14 +647,20 @@ void JitManager::launch(const L2JitMetas* l2Cache, KernelArgs *kernelArgs) {
   outputBufsList = rawOutputBufs.data();
 
   DEBUG_PRINT("Before executing");
-  executeOnMultiDevices(l2Cache->exe, inputBufsList, outputBufsList,
-                        kernelArgs->inputArgCount);
+  {
+    PROFILE_SCOPE("execute", Phase::EXECUTION_RUN);
+    executeOnMultiDevices(l2Cache->exe, inputBufsList, outputBufsList,
+                          kernelArgs->inputArgCount);
+  }
   DEBUG_PRINT("Finish executing");
 
   // move data back to the host
-  manageOutBuffers(kernelArgs->inputArgCount, outputBufsList,
-                   kernelArgs->inputArgs, kernelArgs->outputArgs,
-                   l2Cache->ioShardings.outputs);
+  {
+    PROFILE_SCOPE("manageOut", Phase::EXECUTION_BUFFER_CLEARUP);
+    manageOutBuffers(kernelArgs->inputArgCount, outputBufsList,
+                     kernelArgs->inputArgs, kernelArgs->outputArgs,
+                     l2Cache->ioShardings.outputs);
+  }
   DEBUG_PRINT("Finish manage out buffers");
   sharder.endRecordProfile(idAndStartPair.first, std::move(idAndStartPair.second));
   return;
