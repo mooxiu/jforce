@@ -118,7 +118,6 @@ int64_t __botw_jit_code(void *JitCode, int64_t NumArgs, void **TgtArgs,
   // is irrelevant to our project.
   NumArgs -= 1;
   NumHostArgs -= 1;
-  ArgSizes -= 1;
 
   // -----------------------------------------------
   auto &jm = JitManager::getInstance();
