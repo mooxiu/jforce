@@ -462,6 +462,25 @@ static void addIlpEdge(Highs &highs, HighsInt firstV, size_t kv,
 // - e_vu continuous in [0, 1]; the constraints force e_vu = s_v s_u^T.
 ShardingPlan
 Graph::tune(llvm::ArrayRef<MeshAxis> meshAxes) {
+  // Evaluation baseline (JFORCE_SHARDING=naive): no ILP, every op takes its
+  // first strategy that shards dim 0 of its first result, else replicated.
+  const char *mode = std::getenv("JFORCE_SHARDING");
+  if (mode && llvm::StringRef(mode) == "naive") {
+    ShardingPlan chosen;
+    for (Operation *op : opSet) {
+      auto candidates = getOpStrategies(op, meshAxes);
+      chosen[op] = getReplicatedStrategy(op);
+      for (const OpStrategy &strategy : candidates) {
+        if (!strategy.results.empty() && !strategy.results[0].empty() &&
+            !strategy.results[0][0].empty()) {
+          chosen[op] = strategy;
+          break;
+        }
+      }
+    }
+    return chosen;
+  }
+
   Highs highs;
   highs.setOptionValue("output_flag", false);
 
